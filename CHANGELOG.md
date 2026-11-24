@@ -4,6 +4,10 @@ All notable changes to this project are documented here. The format is based on 
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-11-23
+
+First release of the public repository. The history before it lives in the private archive.
+
 ### Added
 - Screensaver: seven more scenes built on the shading engine: `boreal` (aurora over mountains, reflected in a lake), `nubes` (flight over a sea of clouds), `agujero` (black hole with its gas disc), `estanque` (raindrops under the moon), `fuego`, `tunel` and `fractal`.
 - Screensaver: **`galeria`** scene, which shows your images and animated GIFs converted to characters with `chafa` (true color). Put the files in `~/.config/tmux-claude/galeria`; if there are images and `chafa` is installed, it also joins the random rotation. `ws-tools` now offers to install `chafa` and `numpy`.
