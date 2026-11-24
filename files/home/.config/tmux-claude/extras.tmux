@@ -11,9 +11,10 @@ bind N run-shell -b "~/.local/bin/tmux-notify-me '#{pane_id}'"
 bind u display-popup -E -w 85% -h 70% -T ' Extract from the screen ' "~/.local/bin/tmux-popup-run ~/.local/bin/tmux-extract '#{pane_id}'"
 bind ? display-popup -E -w 80% -h 70% -d "#{pane_current_path}" -T ' Quick question ' "~/.local/bin/tmux-popup-run ~/.local/bin/tmux-ask '#{pane_id}'"
 bind E run-shell -b "~/.local/bin/tmux-label --menu '#{window_id}'"
-# Favorites: * adds or removes the current tab, F opens the list. The ★ is restored when tabs open or a client attaches.
+# Favorites: * adds or removes the current tab, F opens the finder on the favorites view. The ★ is restored when tabs
+# open or a client attaches.
 bind * run-shell -b "~/.local/bin/tmux-favorites --toggle '#{window_id}'"
-bind F display-popup -E -w 85% -h 70% -T ' Favorites ' "~/.local/bin/tmux-popup-run ~/.local/bin/tmux-favorites"
+bind F display-popup -E -w 92% -h 80% -T ' Find ' "~/.local/bin/tmux-popup-run ~/.local/bin/tmux-find --view favorites"
 set-hook -g 'after-new-window[62]' 'run-shell -b "~/.local/bin/tmux-favorites --mark"'
 set-hook -g 'client-attached[62]' 'run-shell -b "~/.local/bin/tmux-favorites --mark"'
 run-shell -b "~/.local/bin/tmux-background --bar"

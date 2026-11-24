@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""tmux-recent — your recent work with Claude, from ALL projects, in one list: open or not, go straight to it.
-Not in the menu and without a shortcut (Ctrl+b j was freed): run it by name.
+"""tmux-recent — your recent work with Claude, from ALL projects: the data behind the «recent» view of tmux-find.
 
 Each row: how long ago, project, branch, whether it has an open tab (● group:tab) and your last request (redacted).
-On the right, a preview: your latest requests and the last thing Claude answered.
-  Enter   if it has a tab, goes to it; otherwise opens one in its group and resumes THAT conversation (claude --resume <id>)
-  Ctrl+Y  copies the command to resume it · Ctrl+R refreshes · type to filter by project, branch or text
-Usage: tmux-recent [--days 7]   ·   tmux-recent --list [--days N]   ·   tmux-recent --show <file.jsonl>
+The conversation text (your latest requests and the last thing Claude answered) is what the finder shows on the right.
+Usage:
+  tmux-recent [--days 7]             opens the finder on the recent view (Ctrl+b j)
+  tmux-recent --list [--days N]      the rows: go|open<TAB>tab|folder<TAB>id<TAB>file<TAB>visible text
+  tmux-recent --show <file.jsonl>    your latest requests and Claude's last answer in that conversation (redacted)
+  tmux-recent --latest <folder>      path of the latest conversation of that folder (nothing if there is none)
+  tmux-recent --open <file.jsonl>    opens a tab in the conversation's group and resumes THAT conversation
 Reads the header and the end of each conversation (not the whole file) with a per-file cache: it is fast even with
 hundreds of conversations.
 """
@@ -16,8 +18,7 @@ import datetime as dt
 import json
 import os
 import re
-import shutil
-import subprocess  # nosec B404 — tmux, fzf, ws-redact, ws-copy with fixed arguments
+import subprocess  # nosec B404 — tmux and ws-redact with fixed arguments
 import sys
 import time
 from pathlib import Path
@@ -177,31 +178,28 @@ def group_of(folder: str) -> str:
     return sh("tmux", "display", "-p", "#S").strip() or "dev"
 
 
-def main() -> int:
-    a = sys.argv[1:]
-    days = int(a[a.index("--days") + 1]) if "--days" in a else 7
-    if a and a[0] == "--list":
-        print(listing(days)); return 0
-    if a and a[0] == "--show":
-        print(show(a[1])); return 0
-    if not shutil.which("fzf"):
-        print(listing(days)); input(); return 0
-    me = os.path.abspath(sys.argv[0])
-    r = subprocess.run(["fzf", "--ansi", "--delimiter", SEP, "--with-nth", "5", "--no-sort", "--reverse", "--expect", "ctrl-y",  # nosec B603 B607
-                        "--prompt", "recent> ", "--preview", f"{me} --show {{4}}", "--preview-window", "right,45%,wrap",
-                        "--header", f"Work from the last {days} days · Enter: go (or open and resume) · Ctrl+Y copies the command · Ctrl+R refreshes",
-                        "--bind", f"ctrl-r:reload({me} --list --days {days})"],
-                       input=listing(days), capture_output=True, text=True)
-    out = r.stdout.splitlines()
-    if len(out) < 2:
-        return 0
-    key, fields = out[0], out[1].split(SEP)
-    action, target, sid = fields[0], fields[1], fields[2]
-    if key == "ctrl-y":
-        sh(str(BIN / "ws-copy"), stdin=f"claude --resume {sid}"); sh("tmux", "display", f"Copied: claude --resume {sid}"); return 0
-    if action == "go":
-        s, w = target.split(":", 1)
-        sh("tmux", "switch-client", "-t", f"={s}"); sh("tmux", "select-window", "-t", w); return 0
+def latest(folder: str) -> str:
+    """Latest conversation of a folder: Claude keeps them under projects/<folder with every non-alphanumeric as «-»>."""
+    key = re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(folder))
+    found = []
+    for f in (CLAUDE / "projects" / key).glob("*.jsonl"):
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        if st.st_size >= 200:
+            found.append((st.st_mtime, str(f)))
+    return max(found)[1] if found else ""
+
+
+def open_conversation(file: str) -> int:
+    """New tab in the group of the conversation's folder, resuming that conversation (claude --resume <id>)."""
+    info, sid = summarize(Path(file)), Path(file).stem
+    if not info or not re.fullmatch(r"[A-Za-z0-9_-]+", sid):
+        print(f"Not a conversation that can be resumed: {file}"); return 1
+    target = info["cwd"]
+    if not os.path.isdir(target):
+        print(f"The folder of that conversation no longer exists: {target}"); return 1
     g = group_of(target)
     if subprocess.run(["tmux", "has-session", "-t", f"={g}"], capture_output=True).returncode:  # nosec B603 B607
         sh("tmux", "new-session", "-d", "-s", g, "-c", target)
@@ -211,6 +209,29 @@ def main() -> int:
     sh("tmux", "send-keys", "-t", w, f"claude --resume {sid}", "Enter")
     sh("tmux", "switch-client", "-t", f"={g}"); sh("tmux", "select-window", "-t", w)
     return 0
+
+
+def main() -> int:
+    a = sys.argv[1:]
+    days = int(a[a.index("--days") + 1]) if "--days" in a else 7
+    if a and a[0] == "--list":
+        print(listing(days)); return 0
+    if len(a) > 1 and a[0] == "--show":
+        print(show(a[1])); return 0
+    if len(a) > 1 and a[0] == "--latest":
+        f = latest(a[1])
+        if f:
+            print(f)
+        return 0 if f else 1
+    if len(a) > 1 and a[0] == "--open":
+        return open_conversation(a[1])
+    # No mode: the list itself lives in the finder (tmux-find), where «recent» is one of its views.
+    find = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "tmux-find")
+    try:
+        os.execv(find, [find, "--view", "recent", "--days", str(days)])  # nosec B606 — fixed sibling script
+    except OSError as e:
+        print(f"tmux-find is not installed next to tmux-recent: {e}", file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":

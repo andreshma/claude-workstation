@@ -82,7 +82,7 @@ flowchart TB
     watch["tmux-watch"]
     bg["tmux-background"]
     status["tmux-status"]
-    views["tmux-dash, tmux-active<br/>tmux-pick, tmux-agents"]
+    views["tmux-dash, tmux-find<br/>tmux-active, tmux-agents"]
     levels["tmux-level, tmux-solo<br/>tmux-claude-restart"]
   end
 
@@ -130,7 +130,7 @@ flowchart TB
 | Menus | `.config/tmux-claude/menu*.tmux`, `tmux-palette`, `ws-menus` | The main menu and its submenus; a palette that searches them; a checker and manual generator. |
 | Watcher | `tmux-watch`, `tmux-background` | Run on every status refresh: waiting and stalled tabs, spend rate, reminders, keeping `ws-otel` alive, background tasks. |
 | State | `.claude/hooks/tmux-state.sh`, `tmux-status` | Hooks record the phase per tab; the painter turns it into a label with elapsed time and corrects it against the screen. |
-| Views | `tmux-dash`, `tmux-active`, `tmux-pick`, `tmux-agents`, `tmux-summary`, `tmux-hud` | Dashboard, active tabs, tab search, live subagents, tab summary, compute monitor. |
+| Views | `tmux-dash`, `tmux-find`, `tmux-active`, `tmux-favorites`, `tmux-recent`, `tmux-agents`, `tmux-summary`, `tmux-hud` | Dashboard, the finder and the lists behind its views (active tabs, favorites, recent conversations), live subagents, tab summary, compute monitor. |
 | Protection | `tmux-level`, `tmux-solo`, `.config/claude-solo/settings.json`, `tmux-claude-restart` | Restart Claude in a tab with a generated settings profile; restart all idle tabs. |
 | Claude settings | `.claude/settings.json`, `.claude/statusline.sh`, `.claude/agents/` | Model, permission rules, sandbox, OpenTelemetry export, hook wiring, status line, subagents. |
 | Guard and audit | `.claude/hooks/guard.sh`, `audit.sh` | Deterministic PreToolUse blocking; a local audit log of metadata. |

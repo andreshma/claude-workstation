@@ -21,6 +21,7 @@ if ! declare -F _init_completion >/dev/null && [[ -f /usr/share/bash-completion/
 fi
 # Completion for the workstation's own commands.
 complete -W "this normal new worktree" tmux-solo
+complete -W "--view all active favorites recent --list --preview" tmux-find
 complete -W "install groups" ws-tools
 complete -W "--now --if-due" ws-backup-lite
 complete -W "--test --restore" ws-restore-lite

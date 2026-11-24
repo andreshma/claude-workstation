@@ -15,8 +15,7 @@ display-menu -O -T "#[align=centre] 🗂  Tabs and session · #S › #W " -x C -
   "Close tab" x "confirm-before -p \"Close tab #W? (y/n)\" kill-window" \
   "-#[nodim]── Save and restore ──" "" "" \
   "Save session now" s "run-shell ~/.tmux/plugins/tmux-resurrect/scripts/save.sh" \
-  "Restore saved session" R "confirm-before -p \"Restore? Tabs that are already open may be duplicated (y/n)\" \"run-shell ~/.tmux/plugins/tmux-resurrect/scripts/restore.sh\"" \
-  "Recover tabs from an earlier save" u "display-popup -E -w 90% -h 70% -T ' Recover tabs ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-recover\"" \
+  "Restore tabs from a save…" R "display-popup -E -w 90% -h 70% -T ' Restore tabs ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-recover\"" \
   "Bring recent conversations into tmux" t "display-popup -E -w 90% -h 80% -T ' Bring conversations ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-bring\"" \
   "Save this tab as a template" G "command-prompt -p 'Template name:' \"run-shell -b '~/.local/bin/tmux-template --save %% #{window_id}'\"" \
   '' \

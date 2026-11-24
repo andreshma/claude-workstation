@@ -3,7 +3,7 @@
 .tmux.conf
 .config/tmux-claude/functions.sh
 .local/bin/tmux-open
-.local/bin/tmux-pick
+.local/bin/tmux-find
 .local/bin/tmux-dash
 .local/bin/tmux-backup
 .local/bin/claude-report

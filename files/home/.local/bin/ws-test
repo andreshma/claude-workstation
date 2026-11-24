@@ -192,7 +192,12 @@ test_persistence() {
   local R="$TH/.local/share/tmux/resurrect" conf="$T/persist.conf"
   printf 'set -g @resurrect-dir "%s"\nrun-shell "~/.local/bin/tmux-recover --mark-startup"\nrun-shell "%s/.tmux/plugins/tmux-resurrect/resurrect.tmux"\nrun-shell -b "~/.local/bin/tmux-recover --auto-startup"\n' "$R" "$TH" > "$conf"
   tm -f "$conf" new-session -d -s dev -n one -c /tmp; for n in two three; do tm new-window -t dev -n "$n" -c /tmp; done; sleep 1
-  E "$TH/.tmux/plugins/tmux-resurrect/scripts/save.sh" quiet; sleep 1; tm kill-server; sleep 1
+  E "$TH/.tmux/plugins/tmux-resurrect/scripts/save.sh" quiet; sleep 1
+  # A good save gets its date refreshed on every check, so the date means «last confirmed».
+  touch -d '2 hours ago' "$(readlink -f "$R/last")"; E tmux-recover --validate
+  (( $(date +%s) - $(stat -c %Y "$(readlink -f "$R/last")") < 60 )) \
+    && ok "checking a good save refreshes its date (confirmed now)" || fail "tmux-recover --validate did not refresh the date of the save"
+  tm kill-server; sleep 1
   # The save is days old on purpose: resurrect discards saves equal to the previous one, so tabs that did not change
   # keep an old file, and an age limit used to leave them unrestored.
   touch -d '3 days ago' "$R"/tmux_resurrect_*.txt
@@ -999,6 +1004,137 @@ test_ux() {
   tm kill-server 2>/dev/null
 }
 
+test_find() {
+  use_socket find
+  section "Finder: tabs, active, favorites and recent conversations in one list (tmux-find)"
+  have tmux-find && have tmux-active && have tmux-favorites && have tmux-recent || { warn "tmux-find is not installed"; return; }
+  local fc="$T/fake-claude-find" d="$T/find" fav="$TH/.config/tmux-claude/favorites" r rc n k wapi wweb wkit wask wbusy pkit pask pbusy
+  # Fake «Claude»: a copy of cat named claude (the finder recognizes Claude by the process name), which ignores
+  # Ctrl+C and echoes every line it receives.
+  mkdir -p "$fc" "$d/open" "$d/closed" "$d/plain"; cp "$(command -v cat)" "$fc/claude"; touch "$d/plain/README.md"
+  tm -f /dev/null new-session -d -s repos -n api -c "$d/open" "exec sleep 600"; tm new-window -d -t repos -n web "exec sleep 600"
+  tm new-session -d -s code -n kit "printf '%s\\n' 'Do you want to proceed?' '❯ 1. Yes' '  2. No'; trap '' INT; exec $fc/claude"
+  tm new-window -d -t code -n ask "printf '%s\\n' 'waiting'; trap '' INT; exec $fc/claude"
+  tm new-window -d -t code -n busy "printf '%s\\n' 'Working… (esc to interrupt)'; trap '' INT; exec $fc/claude"; sleep 0.6
+  wapi="$(tm display -p -t repos:api '#{window_id}')"; wweb="$(tm display -p -t repos:web '#{window_id}')"
+  wkit="$(tm display -p -t code:kit '#{window_id}')"; wask="$(tm display -p -t code:ask '#{window_id}')"; wbusy="$(tm display -p -t code:busy '#{window_id}')"
+  pkit="$(tm display -p -t code:kit '#{pane_id}')"; pask="$(tm display -p -t code:ask '#{pane_id}')"; pbusy="$(tm display -p -t code:busy '#{pane_id}')"
+  tm select-window -t repos:web
+  local now; now=$(date +%s)
+  tm set -w -t code:kit @cphase permission; tm set -w -t code:kit @cdet "Bash: terraform plan"; tm set -w -t code:kit @cs "✋ approve Bash"
+  tm set -w -t code:kit @cmain "needs you"; tm set -w -t code:kit @cts "$now"; tm set -w -t code:kit @csince "$now"
+  # Favorites: one folder with an open tab, one without. Conversations: one per folder (the «closed» one has no tab).
+  mkdir -p "${fav%/*}"; printf '%s\n' "$d/open" "$d/closed" > "$fav"
+  conv() {   # folder id request → writes the conversation where Claude keeps it and prints the file
+    local dir; dir="$TH/.claude/projects/$(sed 's/[^A-Za-z0-9]/-/g' <<<"$1")"; mkdir -p "$dir"
+    printf '%s\n' '{"type":"user","cwd":"'"$1"'","gitBranch":"feature/FIND-1","message":{"content":"'"$3"'"}}' \
+      '{"type":"assistant","message":{"content":[{"type":"text","text":"Done: '"$3"'."}]}}' > "$dir/$2.jsonl"
+    echo "$dir/$2.jsonl"
+  }
+  local copen cclosed; copen="$(conv "$d/open" find-open 'refactor the open billing module please')"
+  cclosed="$(conv "$d/closed" find-closed 'migrate the closed reports to the new schema')"
+  F() { E env XDG_RUNTIME_DIR="$T" tmux-find "$@"; }
+  sleep 1.2   # «active» with --minutes 0 leaves out what had no activity in this very second
+
+  # 1. The four views, in one row format.
+  r="$(F --list all)"
+  [[ "$(head -1 <<<"$r")" == "tab:code:$wkit"$'\t'*kit*approve* && "$(grep -c $'^tab:repos:@' <<<"$r")" == 2 && "$(wc -l <<<"$r")" == 5 ]] \
+    && ok "view all: every open tab, first the one waiting for you" || fail "tmux-find --list all: $r"
+  r="$(F --list active --minutes 0)"
+  [[ "$r" == "tab:code:$wkit"$'\t'*kit*approve* && "$(wc -l <<<"$r")" == 1 ]] && ok "view active: the rows of tmux-active as tab: refs" || fail "tmux-find --list active: $r"
+  r="$(F --list favorites)"
+  [[ "$(sed -n 1p <<<"$r")" == "tab:repos:$wapi"$'\t'*$'\t'"$d/open" && "$(sed -n 2p <<<"$r")" == "dir:$d/closed"$'\t'*$'\t'"$d/closed" ]] \
+    && ok "view favorites: a favorite with a tab is a tab: row, one without is a dir: row; both keep their folder" || fail "tmux-find --list favorites: $r"
+  r="$(F --list recent)"
+  grep -qF "tab:repos:$wapi"$'\t' <<<"$r" && grep -q $'\t'"$copen\$" <<<"$r" && grep -qF "conv:$cclosed"$'\t' <<<"$r" \
+    && ok "view recent: a conversation with a tab is a tab: row (it keeps its file), one without is a conv: row" || fail "tmux-find --list recent: $r"
+  r="$(for k in all active favorites recent; do F --list "$k" --minutes 0; done)"
+  n="$(grep -cvP '^(tab:[^:\t]+:@[0-9]+|dir:/[^\t]*|conv:/[^\t]*\.jsonl)\t[^\t]+\t[^\t]*$' <<<"$r")"
+  [[ "$n" == 0 && "$(wc -l <<<"$r")" -ge 10 ]] && ok "every row of every view is <ref><TAB>text<TAB>extra" || fail "tmux-find: $n rows out of format: $r"
+  F --list nowhere >/dev/null 2>&1; [[ $? == 2 ]] && ok "an unknown view is refused" || fail "tmux-find --list nowhere did not fail"
+
+  # 2. The right pane.
+  r="$(F --preview "tab:code:$wkit")"; grep -q 'Do you want to proceed' <<<"$r" && ok "preview of a tab: its live screen" || fail "tmux-find --preview tab: $r"
+  r="$(F --preview "conv:$cclosed")"
+  grep -q 'Your latest requests' <<<"$r" && grep -q 'migrate the closed reports' <<<"$r" && grep -q 'Done: migrate' <<<"$r" \
+    && ok "preview of a conversation: your latest requests and Claude's last answer" || fail "tmux-find --preview conv: $r"
+  r="$(F --preview "dir:$d/closed")"; grep -q 'migrate the closed reports' <<<"$r" && ok "preview of a folder: its latest conversation" || fail "tmux-find --preview dir: $r"
+  r="$(F --preview "dir:$d/plain")"; grep -q 'README.md' <<<"$r" && ! grep -q 'Your latest' <<<"$r" && ok "preview of a folder without conversations: its listing" || fail "tmux-find --preview dir (plain): $r"
+
+  # 3. Quick reply: clears what is typed when Claude is waiting; does not interrupt it when it is working.
+  tm send-keys -t "$pask" -l 'previous text'; sleep 0.2
+  r="$(F --reply "tab:code:$wask" 'hello from the finder')"; sleep 0.6
+  [[ "$r" == "Sent to"* ]] && tm capture-pane -p -t "$pask" | grep -qx 'hello from the finder' \
+    && ok "quick reply: the line reaches Claude alone (what was typed is cleared first)" || fail "tmux-find --reply: $r / $(tm capture-pane -p -t "$pask" | tr '\n' '|')"
+  tm send-keys -t "$pbusy" -l 'previous text'; sleep 0.2
+  F --reply "tab:code:$wbusy" 'queued line' >/dev/null; sleep 0.6
+  tm capture-pane -p -t "$pbusy" | grep -qx 'previous textqueued line' && ok "quick reply: if Claude is working, no Ctrl+C is sent" || fail "tmux-find --reply (working): $(tm capture-pane -p -t "$pbusy" | tr '\n' '|')"
+  r="$(F --reply "tab:code:$wask" '')"; [[ "$r" == Cancelled* ]] && ok "quick reply: an empty line cancels" || fail "tmux-find --reply (empty): $r"
+  r="$(F --reply "tab:code:$wkit" 'not into a dialog')"; rc=$?
+  [[ $rc != 0 && "$r" == *"waiting for your approval"* ]] && ! tm capture-pane -p -t "$pkit" | grep -q 'not into a dialog' \
+    && ok "quick reply: nothing is typed into a permission dialog" || fail "tmux-find --reply (dialog): exit $rc «$r»"
+  r="$(F --reply "tab:repos:$wapi" 'not into a shell')"; rc=$?
+  [[ $rc != 0 && "$r" == "No Claude running"* ]] && ok "quick reply: nothing is typed into a tab without Claude" || fail "tmux-find --reply (no Claude): exit $rc «$r»"
+  local accepted=""
+  for k in --reply --approve --reject --peek-start; do
+    for r in "dir:$d/closed" "conv:$cclosed"; do
+      F "$k" "$r" x >/dev/null 2>&1 || continue
+      accepted+=" $k:${r%%:*}"
+    done
+  done
+  [[ -z "$accepted" ]] && ok "reply, approve, reject and open here refuse a folder or a conversation without a tab" || fail "accepted without a tab:$accepted"
+
+  # 4. Approve and reject: only in the «permission» phase, with the same keys as the Telegram buttons.
+  tm set -w -t code:kit @cphase tool
+  r="$(F --approve "tab:code:$wkit")"; rc=$?; sleep 0.3
+  [[ $rc != 0 && "$r" == *"not waiting for approval"* ]] && ! tm capture-pane -p -t "$pkit" | grep -qx '1' \
+    && ok "approve: outside the permission phase nothing is sent" || fail "tmux-find --approve (phase tool): exit $rc «$r»"
+  tm set -w -t code:kit @cphase permission
+  r="$(F --approve "tab:code:$wkit")"; sleep 0.3
+  [[ "$r" == Approved* ]] && tm capture-pane -p -t "$pkit" | grep -qx '1' && ok "approve: sends option 1 to the dialog" || fail "tmux-find --approve: $r / $(tm capture-pane -p -t "$pkit" | tr '\n' '|')"
+  r="$(F --reject "tab:code:$wkit")"; sleep 0.3
+  [[ "$r" == Rejected* ]] && tm capture-pane -p -t "$pkit" | grep -qxF '1^[' && ok "reject: sends Escape to the dialog" || fail "tmux-find --reject: $r / $(tm capture-pane -p -t "$pkit" | tr '\n' '|')"
+  tm set -w -t code:ask @cphase permission
+  r="$(F --approve "tab:code:$wask")"; rc=$?
+  [[ $rc != 0 && "$r" == *"no dialog"* ]] && ok "approve: without a dialog on screen nothing is sent" || fail "tmux-find --approve (no dialog): exit $rc «$r»"
+  tm set -wu -t code:ask @cphase
+
+  # 5. Open here: a temporary session grouped with the tab's session, removed afterwards; your own client stays put.
+  n="$(F --peek-start "tab:repos:$wapi")"
+  [[ "$n" == find-peek-* && "$(tm display -p -t "=$n:" '#{session_grouped} #{session_group} #{window_id}')" == "1 repos $wapi" \
+     && "$(tm display -p -t '=repos:' '#{window_id}')" == "$wweb" ]] \
+    && ok "open here: a session grouped with the tab's group shows the tab; the group's own current tab does not move" \
+    || fail "tmux-find --peek-start: «$n» $(tm display -p -t "=$n:" '#{session_grouped} #{session_group} #{window_id}' 2>&1) / $(tm display -p -t '=repos:' '#{window_id}')"
+  [[ "$(F --list all | grep -c $'^tab:repos:@')" == 2 ]] && ok "open here: the temporary session does not repeat tabs in the list" || fail "tmux-find --list all repeats tabs: $(F --list all)"
+  F --peek-end "$n"; ! tm has-session -t "=$n" 2>/dev/null && ok "open here: the temporary session is removed" || fail "tmux-find --peek-end left $n"
+  F --peek-end repos >/dev/null 2>&1; rc=$?
+  [[ $rc != 0 ]] && tm has-session -t '=repos' 2>/dev/null && ok "open here: only its own temporary sessions can be removed" || fail "tmux-find --peek-end repos: exit $rc"
+  # The whole path, attached to a real terminal (script) and detached from outside as Ctrl+b d would.
+  E env XDG_RUNTIME_DIR="$T" timeout 20 script -qec "tmux-find --peek 'tab:repos:$wapi'" /dev/null </dev/null >/dev/null 2>&1 &
+  local sp=$! i; n=""
+  for i in $(seq 1 25); do
+    n="$(tm list-sessions -F '#{session_name} #{session_attached}' 2>/dev/null | awk '$1 ~ /^find-peek-/ && $2 >= 1 { print $1; exit }')"
+    [[ -n "$n" ]] && break; sleep 0.2
+  done
+  if [[ -n "$n" ]]; then
+    tm detach-client -s "=$n" 2>/dev/null; wait "$sp" 2>/dev/null
+    ! tm has-session -t "=$n" 2>/dev/null && ok "open here: leaving it (detach) removes the temporary session" || fail "open here: $n stayed after detaching"
+  else
+    kill "$sp" 2>/dev/null; wait "$sp" 2>/dev/null
+    tm list-sessions -F '#{session_name}' 2>/dev/null | grep '^find-peek-' | while IFS= read -r n; do tm kill-session -t "=$n"; done
+    warn "open here: could not attach from this terminal (script); the attached path was not tested"
+  fi
+
+  # 6. The old entry points open the finder on their view.
+  local ep="$T/find-entry"; mkdir -p "$ep"; cp "$TH/.local/bin/tmux-active" "$TH/.local/bin/tmux-favorites" "$TH/.local/bin/tmux-recent" "$ep/"
+  printf '#!/bin/sh\necho "find $*"\n' > "$ep/tmux-find"; chmod +x "$ep/tmux-find"
+  r="$(E "$ep/tmux-active"; E "$ep/tmux-favorites"; E "$ep/tmux-recent")"
+  [[ "$r" == $'find --view active --minutes 15\nfind --view favorites\nfind --view recent --days 7' ]] \
+    && ok "tmux-active, tmux-favorites and tmux-recent without a mode open the finder on their view" || fail "old entry points: ${r//$'\n'/ · }"
+  rm -f "$fav" "$copen" "$cclosed"
+  tm kill-server 2>/dev/null
+}
+
 test_level() {
   use_socket level
   section "Protection per tab: full, normal, bare"
@@ -1095,6 +1231,28 @@ test_menus_consistency() {
     [[ -x "$TH/${f#\~/}" ]] || fz+=" ${f##*/}"
   done
   [[ -z "$fz" ]] && ok "all the scripts the menus call are installed" || fail "missing scripts:$fz"
+  # 5. One finder: the four pickers are views of tmux-find, each key opens its view and the main menu has one entry.
+  local v bind nokey=""
+  for v in "f:tmux-find" "M-s:tmux-find" "a:tmux-find --view active" "F:tmux-find --view favorites" "j:tmux-find --view recent"; do
+    bind="$(grep -hE "^bind (-n )?${v%%:*} " "$TH/.tmux.conf" "$c"/ux.tmux "$c"/extras.tmux 2>/dev/null)"
+    [[ "$bind" == *"tmux-popup-run ~/.local/bin/${v#*:}\"" ]] || nokey+=" ${v%%:*}"
+  done
+  [[ -z "$nokey" ]] && ok "Ctrl+b f, Alt+s, Ctrl+b a, Ctrl+b F and Ctrl+b j open the finder on their view" || fail "keys that do not open the finder:$nokey"
+  [[ "$(grep -c 'tmux-find' "$c/menu.tmux")" == 1 ]] && ! grep -rqs --exclude='*.bak.*' 'tmux-pick' "$c" "$TH/.tmux.conf" \
+    && ! grep -qE 'bin/tmux-(active|favorites|recent)[^-]' "$c/menu.tmux" \
+    && ok "the main menu has one finder entry and nothing calls tmux-pick" || fail "menu.tmux: $(grep -c 'tmux-find' "$c/menu.tmux") finder entries, or an old picker is still called"
+  # 6. Merged entries: each thing lives in one menu.
+  only_in() {   # text menu → the text appears in that menu and in no other
+    local m; grep -qF -- "$1" "$c/$2" || return 1
+    for m in "$c"/menu*.tmux; do [[ "${m##*/}" == "$2" ]] || ! grep -qF -- "$1" "$m" || return 1; done
+  }
+  only_in 'tmux-solo new' menu-claude-level.tmux && only_in 'tmux-solo worktree' menu-claude-level.tmux \
+    && ok "solo mode (this tab, new tab, new worktree) lives in the Protection menu only" || fail "solo entries are not only in menu-claude-level.tmux"
+  only_in 'send-keys /tasks Enter' menu-claude.tmux && only_in 'send-keys C-t' menu-claude.tmux && only_in 'tmux-agents' menu-claude.tmux \
+    && only_in 'send-keys C-x C-k' menu-claude.tmux && grep -q -- '── Tasks and subagents ──' "$c/menu-claude.tmux" \
+    && ok "tasks and subagents (4 entries) live in one section of the Claude menu" || fail "tasks and subagents are not only in menu-claude.tmux"
+  only_in 'tmux-recover' menu-session.tmux && [[ "$(grep -c 'tmux-recover' "$c/menu-session.tmux")" == 1 ]] && ! grep -q 'scripts/restore.sh' "$c"/menu*.tmux \
+    && ok "restoring tabs from a save is one entry (tmux-recover)" || fail "menu-session.tmux: restore is not a single tmux-recover entry"
 }
 
 test_otel() {
@@ -1359,6 +1517,7 @@ test_report
 test_otel
 test_level
 test_ux
+test_find
 test_state
 test_personal
 test_bar_extra

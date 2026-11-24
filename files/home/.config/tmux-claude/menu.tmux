@@ -5,10 +5,8 @@ if -F '#{!=:#{status-interval},0}' 'set -gF @si_prev "#{status-interval}"'
 set -g status-interval 0
 display-menu -O -T "#[align=centre] ☰  #S › #W · #{?#{@cs},#{@cs},no Claude}#{?#{@cctx}, · ctx #{@cctx}%,} " -x C -y C -- \
   "-#[nodim]── Go to ──" "" "" \
-  "Active now, from all groups (Ctrl+b a)" a "display-popup -E -w 92% -h 70% -T ' Active now ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-active\"" \
   "Go to the next one waiting for you or stalled for a while" g "run-shell '~/.local/bin/tmux-watch --goto'" \
-  "Favorites ★ (Ctrl+b F)" F "display-popup -E -w 85% -h 70% -T ' Favorites ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-favorites\"" \
-  "Find a tab by name" f "display-popup -E -w 85% -h 75% -T ' Find tab ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-pick\"" \
+  "Find: tabs, active, favorites, recent (Ctrl+b f)" f "display-popup -E -w 92% -h 80% -T ' Find ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-find\"" \
   "Tab dashboard (Ctrl+b D)" D "display-popup -E -w 92% -h 70% -T ' Tab dashboard ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-dash\"" \
   "Open a folder or repo (Ctrl+b o)" o "display-popup -E -w 80% -h 70% -T ' Open folder ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-open\"" \
   "Open a folder with Opus" O "display-popup -E -w 80% -h 70% -T ' Open with Opus ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-open --opus\"" \

@@ -142,7 +142,7 @@ Everything under `files/home/` is installed into `$HOME`, as listed in `manifest
 | Component | What it does | Where |
 |---|---|---|
 | tmux configuration | Tabs, status bar with agent state, menus, themes, tab templates, shell helpers (`tw`, `twt`, `two`, `tp`), account selection for new shells (`accounts.sh`) | `.tmux.conf`, `.config/tmux-claude/` |
-| tmux commands | Repository and tab pickers, dashboard, active view, state painter (`tmux-status`), watcher (`tmux-watch`), protection levels (`tmux-level`, `tmux-solo`), restart (`tmux-claude-restart`), subagents, focus mode, recording, screensaver (`tmux-saver`, `tmux-art`), summaries | `.local/bin/tmux-*` |
+| tmux commands | Repository picker, finder (`tmux-find`: tabs, active, favorites, recent), dashboard, state painter (`tmux-status`), watcher (`tmux-watch`), protection levels (`tmux-level`, `tmux-solo`), restart (`tmux-claude-restart`), subagents, focus mode, recording, screensaver (`tmux-saver`, `tmux-art`), summaries | `.local/bin/tmux-*` |
 | Workstation commands | Health (`ws-check`, `ws-health`, `ws-verify`, `ws-audit`), backups, tools, the commit gate (`ws-gate`), telemetry and reports (`ws-telemetry`, `ws-report`, `ws-otel`, `ws-hooks`), `ws-cache`, Telegram, secrets and redaction, handoff and learning, the behavior tests (`ws-test`) | `.local/bin/ws-*` |
 | Accounts | Two Claude accounts (`work`, `personal`), per tab and per project | `.local/bin/claude-account` |
 | Claude Code settings and hooks | Model, permissions, sandbox, OpenTelemetry export, status line and the hooks: state, audit, guard, routing, traces, notifications, lint on edit, document conversion | `.claude/settings.json`, `.claude/hooks/` |
@@ -165,9 +165,9 @@ The full guide is [docs/USAGE.md](docs/USAGE.md). `Ctrl+b` is the tmux prefix: p
 |---|---|
 | Enter the session | `dev` in PowerShell, the desktop shortcut or Windows Terminal |
 | Open a repository with Claude | `Ctrl+b o` or `tw <folder>` |
-| See what needs you | Status bar, `Ctrl+b a` (active now), `Ctrl+b D` (dashboard) |
+| See what needs you | Status bar, `Ctrl+b a` (finder: active now), `Ctrl+b D` (dashboard) |
 | Jump to the next tab that waits for you | `Ctrl+b m`, then `g` ("Go to the next one waiting for you or stalled for a while") |
-| Move between tabs | `Alt+1…9`, `Alt+←/→`, `Alt+0` (last), `Alt+s` (search); `Alt+↑/↓` changes group |
+| Move between tabs | `Alt+1…9`, `Alt+←/→`, `Alt+0` (last), `Alt+s` (finder: tabs, active, favorites, recent); `Alt+↑/↓` changes group |
 | Open the menu | `Ctrl+b m`; command palette with `Ctrl+b Space` |
 | Send a side pane to Claude | `Ctrl+b e` |
 | Ask a quick question | `Ctrl+b ?` |

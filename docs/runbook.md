@@ -84,7 +84,7 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
 - **Typical cause:** at startup, something saved the empty session as the "last save" before tmux restored (fixed in
   v1.6.0: `tmux-save-now` waits 3 min and `.tmux.conf` restores only if the session ends up empty). Earlier saves are
   **not deleted** (they are kept for 30 days).
-- **Steps (quick):** Menu → "Tabs and session" → "Recover tabs from an earlier save" (`tmux-recover`). Pick the most
+- **Steps (quick):** Menu → "Tabs and session" → "Restore tabs from a save…" (`tmux-recover`). Pick the most
   recent one that has your tabs from **before** the problem (the one marked `← at startup` is usually the right one).
 - **Steps (manual):**
 

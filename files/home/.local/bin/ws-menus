@@ -135,7 +135,7 @@ def what_it_does(cmd: str) -> str:
 
 
 DIRECT = [   # (command regex, description) for ~/.tmux.conf; the first match wins
-    (r"^display-menu", "Tab menu"), (r"menu\.tmux", "Main menu"), (r"tmux-pick", "Find a tab by name"), (r"tmux-open", "Open a repo or folder (→ enters subfolders, ← goes up)"),
+    (r"^display-menu", "Tab menu"), (r"menu\.tmux", "Main menu"), (r"tmux-find", "Find: tabs, active, favorites, recent"), (r"tmux-open", "Open a repo or folder (→ enters subfolders, ← goes up)"),
     (r"tmux-dash", "Tab dashboard (Enter goes to the tab)"), (r"tmux-agents", "Live subagents"), (r"tmux-help", "Keyboard shortcuts"),
     (r"tmux-summary", "Tab summary: what, where and where it left off"), (r"lazygit", "lazygit in the folder"),
     (r"tmux-pwsh", "Floating PowerShell"), (r"--persistent", "Persistent floating shell (Ctrl+b d hides it)"),

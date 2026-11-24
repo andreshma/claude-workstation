@@ -6,7 +6,6 @@ set -g status-interval 0
 display-menu -O -T "#[align=centre] ◫  Views and utilities " -x C -y C -- \
   "-#[nodim]── View ──" "" "" \
   "#{?#{==:#{status},2},Hide,Show} compute monitor (Ctrl+b v)" v "run-shell -b '~/.local/bin/tmux-hud --toggle'" \
-  "Live subagents (Ctrl+b A)" A "display-popup -E -w 90% -h 70% -T ' Live subagents ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-agents\"" \
   "Focus mode: 25/50/90 min, no notifications" f "run-shell -b '~/.local/bin/tmux-focus --menu'" \
   "Second monitor (same group, independent)" m "run-shell -b '~/.local/bin/tmux-monitor2'" \
   "Read-only mirror (screen sharing)" e "run-shell -b '~/.local/bin/tmux-monitor2 --mirror'" \

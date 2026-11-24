@@ -11,12 +11,27 @@ change name; see [Upgrading from 2.x names](docs/USAGE.md#18-upgrading-from-2x-n
 
 ### Added
 
+- The tmux save that is in force gets its date refreshed on every check, so `tmux-recover` shows when each save was
+  last confirmed and `ws-health` fails when no save was confirmed in the last 5 minutes.
 - Personal folder roots for `tmux-open` in `~/.config/ws-local/roots.txt`, which the installer never replaces.
 - **Favorite tabs** (`tmux-favorites`): `Ctrl+b *` adds or removes the current tab's folder, which shows a ★ in the
-  status bar, and `Ctrl+b F` (or Menu → `F`) lists the favorites, open or not; Enter goes to the tab or opens the folder
-  with Claude in its group, and `Ctrl+X` removes it from the list. The mark belongs to the folder, so it survives
-  closing the tab and restarting tmux; it is kept in `~/.config/tmux-claude/favorites`. `tmux-open --dir <folder>` opens
-  a folder without asking.
+  status bar, and `Ctrl+b F` lists the favorites, open or not (the favorites view of the finder, below); Enter goes to
+  the tab or opens the folder with Claude in its group, and `Ctrl+X` removes it from the list. The mark belongs to the
+  folder, so it survives closing the tab and restarting tmux; it is kept in `~/.config/tmux-claude/favorites`.
+  `tmux-open --dir <folder>` opens a folder without asking.
+- **Unified finder** (`tmux-find`): one list for open tabs, the tabs active now, favorite folders and recent Claude
+  conversations, as four views (`Tab` and `Shift+Tab` cycle, `Alt+1`…`Alt+4` jump). `Ctrl+b f` and `Alt+s` open the
+  view all, `Ctrl+b a` active, `Ctrl+b F` favorites and `Ctrl+b j` recent.
+  - **Conversation pane**: the right side is the same in every view. An open tab shows its live screen; a favorite
+    folder or a conversation without a tab shows your latest requests and Claude's last answer, redacted.
+  - **Quick reply** (`Ctrl+S`): one line typed in the finder is sent to that tab's Claude. The input box is cleared
+    first unless Claude is working; nothing is typed into a permission dialog or into a tab without Claude.
+  - **Approve and reject** (`Alt+Y`, `Alt+N`): answer the permission dialog of a tab from the list, only while the
+    tab is in the "approve" state.
+  - **Open here** (`Ctrl+O`): use the tab inside the finder window through a temporary linked session; your own view
+    does not move and `Ctrl+b d` comes back to the list.
+  - `tmux-recent --open <file.jsonl>` resumes a conversation in a new tab of its group and `tmux-recent --latest
+    <folder>` prints a folder's latest conversation.
 - **Language selector** (`ws-lang en|es`) and **language packs** (`~/.local/lib/ws-lang/en.conf`, `es.conf`, and
   `rules.es.conf` for the routing rules). `en` recognizes English in prompts and answers; `es` recognizes English and
   Spanish and asks Claude to write reports and handoffs in Spanish. The setting is `~/.config/tmux-claude/lang`
@@ -48,6 +63,19 @@ change name; see [Upgrading from 2.x names](docs/USAGE.md#18-upgrading-from-2x-n
   New `docs/DIAGRAMS.md` collects every diagram; `docs/adr/` gains an index, a template and the records 0008 to 0010,
   written retroactively.
 
+- **The four pickers became views of the finder.** `tmux-active`, `tmux-favorites` and `tmux-recent` keep their
+  non-interactive modes (`--list`, `--toggle`, `--mark`, `--bar`, `--remove`, `--show`) and, run without a mode, open
+  `tmux-find` on their view. `Ctrl+b j` is bound again (recent conversations). The popups of the finder are 92 % wide.
+- **Menu entries merged**, so each thing is in one place:
+  - Main menu, "Go to": "Active now", "Favorites ★" and "Find a tab by name" are one entry, "Find: tabs, active,
+    favorites, recent" (`f`).
+  - Solo mode: "Solo Claude in a new tab" and "Solo Claude in a new worktree" moved from "Claude in this tab" to its
+    "Protection" submenu (`t`, `w`), next to solo mode for this tab.
+  - "Claude in this tab" has a section "Tasks and subagents" with `/tasks` (`T`), the Claude task list (`d`), live
+    subagents (`A`) and stop background subagents (`K`); the last three left "More Claude commands" and "Views".
+  - "Tabs and session": "Restore saved session" and "Recover tabs from an earlier save" are one entry, "Restore tabs
+    from a save…" (`R`), which lists the saves with the latest first (`tmux-recover`).
+
 ### Deprecated
 
 - The wrappers under the old command and hook names (`tmux-nivel`, `ws-telemetria`, `ws-trazas.sh` and the rest of
@@ -61,6 +89,7 @@ change name; see [Upgrading from 2.x names](docs/USAGE.md#18-upgrading-from-2x-n
 ### Removed
 
 - `docs/README.es.md`.
+- `tmux-pick`: the finder replaces it. The installer leaves a wrapper under the old name that calls `tmux-find`.
 
 ### Fixed
 
@@ -69,6 +98,9 @@ change name; see [Upgrading from 2.x names](docs/USAGE.md#18-upgrading-from-2x-n
 - `tmux-level` no longer fails when the tmux server's `PATH` lacks `~/.local/bin`, or when error output was captured
   into the command it types.
 - The favorites test in `ws-test` no longer depends on the owner's own favorites.
+- The tmux session was saved only when the tabs changed: the per-minute save of continuum was not running (it
+  hooks into `status-right`, which the kit rewrites, and stays off while another tmux server exists, such as the
+  one of the popups). `tmux-background` now saves once a minute by itself.
 - `tmux-open` failed with "invalid session" for a folder outside every root (the group name came out empty); such
   folders now open in the group `other`.
 - After a tmux restart the tabs were not restored when the last save was more than 24 hours old, which is the normal

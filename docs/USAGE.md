@@ -133,7 +133,8 @@ when a tab or pane is created, closed or renamed, and each restored tab resumes 
 | Open a worktree | `twt <repo> <branch>`, or Menu → "New worktree of this repo" |
 | Add a folder as a pane of the current tab | `tp <folder>` |
 | Open with a pane layout (Claude + tests + git) | Menu → "Open a folder with a template (Claude + tests + git)". Templates: `node-api`, `dotnet`, `python`, `terraform`, `qa` |
-| Open a favorite folder | `Ctrl+b F`, or Menu → "Favorites ★". Enter goes to the tab or opens the folder with Claude in its group; `Ctrl+X` removes it from the list |
+| Open a favorite folder | `Ctrl+b F` (the finder on its favorites view). Enter goes to the tab or opens the folder with Claude in its group; `Ctrl+X` removes it from the list |
+| Resume a recent conversation of any project | `Ctrl+b j` (the finder on its recent view). Enter goes to its tab, or opens one in its group and resumes that conversation |
 | Bring recent conversations that have no tab | Menu → "Tabs and session" → "Bring recent conversations into tmux" (`tmux-bring`) |
 
 The picker lists the folders under the roots in `~/.config/tmux-claude/roots.txt`, one per line as
@@ -160,7 +161,7 @@ Favorites belong to the folder, not to the tab: `Ctrl+b *` adds or removes the c
 | `Alt+1` … `Alt+9` | Go to tab 1–9 |
 | `Alt+←` / `Alt+→` | Previous / next tab |
 | `Alt+0` | Last used tab |
-| `Alt+s` | Search tabs by name |
+| `Alt+s` | Finder: tabs, active, favorites, recent |
 | `Alt+Shift+←` / `Alt+Shift+→` | Move the tab left / right |
 | `Alt+↑` / `Alt+↓` | Previous / next group |
 | Click on `≡ menu` in the bar | Open the menu |
@@ -175,14 +176,15 @@ Favorites belong to the folder, not to the tab: `Ctrl+b *` adds or removes the c
 | `Space` | Command palette: search any menu option by typing |
 | `h` | Shortcut cheat sheet |
 | `o` | Open a folder or repository |
-| `f` | Search tabs by name |
-| `a` | "Active now": tabs that are active now, across groups |
+| `f` | Finder: every open tab, with the ones that wait for you first (see [8](#8-finding-the-tab-that-needs-you)) |
+| `a` | Finder on the active view: tabs that are active now, across groups |
+| `j` | Finder on the recent view: recent Claude conversations of all projects, open or not |
 | `D` | Tab dashboard |
 | `A` | Live subagents (`v` shows a subagent's transcript) |
 | `i` | Summary of the tab: where it is, what it is doing, where it stopped |
 | `S` | All groups with their tabs |
 | `*` | Add the tab's folder to the favorites, or remove it |
-| `F` | Favorites list |
+| `F` | Finder on the favorites view: favorite folders, open or not |
 | `e` | Paste the output of the side pane into Claude's prompt (redacted, without Enter) |
 | `?` | Quick question to Claude in a popup, outside the tab's context |
 | `N` | Notify me when the command in this pane finishes (again: cancel) |
@@ -234,10 +236,8 @@ it. The title shows the group, the tab, Claude's state and the context percentag
 
 | Section | Key | Label | Action |
 |---|---|---|---|
-| Go to | `a` | Active now, from all groups | Active tabs across groups |
-| | `g` | Go to the next one waiting for you or stalled for a while | Jump to the next tab that waits for you or is stalled |
-| | `F` | Favorites ★ | Favorite folders, open or not |
-| | `f` | Find a tab by name | Search tabs |
+| Go to | `g` | Go to the next one waiting for you or stalled for a while | Jump to the next tab that waits for you or is stalled |
+| | `f` | Find: tabs, active, favorites, recent | The finder (`tmux-find`); its views are also on `Ctrl+b a`, `F` and `j` |
 | | `D` | Tab dashboard | Dashboard |
 | | `o`, `O` | Open a folder or repo; Open a folder with Opus | Open a folder |
 | | `T` | Open a folder with a template (Claude + tests + git) | Open with a pane template |
@@ -258,20 +258,20 @@ it. The title shows the group, the tab, Claude's state and the context percentag
 
 | Section | Key | Label |
 |---|---|---|
-| Conversation | `c` `k` `b` `t` `T` `e` `B` | View context; Compact conversation; Go back to an earlier point; Transcript and reasoning; Tasks and subagents; Interrupt; Send to background |
+| Conversation | `c` `k` `b` `t` `e` `B` | View context; Compact conversation; Go back to an earlier point; Transcript and reasoning; Interrupt; Send to background |
+| Tasks and subagents | `T` `d` `A` `K` | Tasks and subagents (`/tasks`); Claude task list (`Ctrl+T`); Live subagents (`Ctrl+b A`); Stop background subagents |
 | Model and mode | `9` | Model › (Fable, Opus, Sonnet, Haiku, Claude's own picker, and the automatic-routing switch) |
 | | `p` | Permission mode / plan |
-| | `S` | Protection › (see [Protection levels](#11-protection-levels)) |
+| | `S` | Protection › (levels and solo mode: this tab, a new tab, a new worktree; see [Protection levels](#11-protection-levels)) |
 | With other tabs | `x` | Send the neighboring pane to Claude |
 | | `D` | Same text to several Claude tabs (broadcast) |
 | | `Z` | Swarm: several Claudes in parallel on one goal (one worktree and branch per subtask) |
 | | `E` | Export my work for another Claude (handoff package, `ws-handoff`) |
-| | `s`, `w` | Solo Claude in a new tab; Solo Claude in a new worktree |
 | Account | `a` | Switch this tab to the personal / work account (same conversation) |
 | | `n` | New tabs use: … (default account for new tabs) |
 | | `f` | Always use the account of this tab for this project (pin the project) |
 | | `L` | Log in to the personal account |
-| | `+` | More Claude commands › (task list, editor, draft, fast mode, stop background subagents, redraw, `/status`, `/usage`, `/mcp`, `/effort`) |
+| | `+` | More Claude commands › (editor, draft, fast mode, redraw, `/status`, `/usage`, `/mcp`, `/effort`) |
 
 ### "Tabs and session" (`s`)
 
@@ -283,8 +283,7 @@ it. The title shows the group, the tab, Claude's state and the context percentag
 | `*` | Add to favorites ★ / Remove from favorites ☆ |
 | `E` | Tab label |
 | `r`, `x` | Rename tab; Close tab |
-| `s`, `R` | Save session now; Restore saved session |
-| `u` | Recover tabs from an earlier save (`tmux-recover`) |
+| `s`, `R` | Save session now; Restore tabs from a save… (`tmux-recover`: lists the saves, the latest first) |
 | `t` | Bring recent conversations into tmux |
 | `G` | Save this tab as a template |
 
@@ -306,7 +305,6 @@ it. The title shows the group, the tab, Claude's state and the context percentag
 | Key | Label |
 |---|---|
 | `v` | Show / Hide compute monitor |
-| `A` | Live subagents |
 | `f` | Focus mode: 25/50/90 min, no notifications |
 | `m`, `e` | Second monitor (same group, independent); Read-only mirror (screen sharing) |
 | `g`, `P` | Persistent floating shell; Floating PowerShell |
@@ -421,10 +419,31 @@ working, waiting and finished Claude sessions.
 |---|---|
 | `⚠` in the bar | The tab numbers that wait for you |
 | `Ctrl+b m`, then `g` | Jumps to the **next** tab that waits or is stalled, changing group if needed. Repeating it cycles through them |
-| `Ctrl+b a` | "Active now": first what waits for you (✋ ❓ 👉 ✖), then what is working, then what finished in the last 15 minutes; all groups. Enter goes to the tab |
-| `Alt+s` or `Ctrl+b f` | Tab search, ordered with the waiting tabs first |
+| `Alt+s` or `Ctrl+b f` | The finder on its view **all**: every open tab of every group, ordered with the waiting tabs first |
+| `Ctrl+b a` | The finder on its view **active**: first what waits for you (✋ ❓ 👉 ✖), then what is working, then what finished in the last 15 minutes; it refreshes itself every 3 seconds |
+| `Ctrl+b F` | The finder on its view **favorites**: favorite folders, open or not |
+| `Ctrl+b j` | The finder on its view **recent**: Claude conversations of the last 7 days from all projects, open or not |
 | `Ctrl+b D` | Dashboard of every tab: state with its time, what it is doing, turn duration, model, context, cost, branch, uncommitted changes, label |
 | Windows notification | Sent when a tab you are not looking at needs you or finishes a turn of at least 20 seconds. A tab with an open dialog is reminded every `@cwatch_remind` minutes; a "waiting for you" tab gets a single reminder |
+
+The finder (`tmux-find`) is one list with four views and one pane on the right. For an open tab the pane shows its
+live screen; for a folder or a conversation without a tab it shows the conversation: your latest requests and Claude's
+last answer, redacted. You can answer a tab from the list without going to it.
+
+| Key in the finder | Action |
+|---|---|
+| `Tab` / `Shift+Tab` | Next / previous view |
+| `Alt+1` … `Alt+4` | View all, active, favorites, recent |
+| `Enter` | Open tab: go to it. Favorite folder without a tab: open it. Conversation without a tab: open a tab in its group and resume that conversation |
+| `Ctrl+S` | Quick reply: type one line and it is sent to that tab's Claude; an empty line cancels. What was typed in Claude's input box is cleared first, unless Claude is working (then the line stays queued) |
+| `Alt+Y` / `Alt+N` | Approve (option 1) / reject (Escape) the permission dialog of that tab. Only when the tab is in the "approve" state |
+| `Ctrl+O` | Open here: use the tab inside the finder window, without moving your own view. `Ctrl+b d` comes back to the list |
+| `Ctrl+R` | Refresh |
+| `Ctrl+X` | Favorites view: remove the folder from the favorites |
+| `Ctrl+Y` | Recent view: copy the command that resumes the conversation |
+
+"Open here" shows the tab through a temporary tmux session linked to the tab's group, removed when you leave. While
+it is open, the tab takes the size of the finder window.
 
 ## 9. Working with Claude in a tab
 
@@ -435,7 +454,7 @@ working, waiting and finished Claude sessions.
 | Choose the model for a task | `cr "task"` classifies it, says which tier and why, and sends it after you confirm. `cr -t sonnet "task"` forces a tier; `cr --dry-run` only classifies |
 | Change the tab's model | Menu → "Claude in this tab" → "Model". Only this tab changes |
 | Be asked before a mismatched model is used | Automatic routing: when a rule in `~/.config/ws-routing/rules.conf` says the task belongs to another tier, a popup offers `y` switch and send, `n` send as is, `x` return the text. No answer in 30 seconds sends with the current model. Toggle it in the "Model" submenu |
-| Leave Claude working alone | Menu → "Claude in this tab" → "Solo Claude in a new tab" or "Solo Claude in a new worktree" |
+| Leave Claude working alone | Menu → "Claude in this tab" → "Protection" → "Solo Claude in a new tab" or "Solo Claude in a new worktree" |
 | Run several Claudes on one goal | Menu → "Claude in this tab" → "Swarm: several Claudes in parallel on one goal". Claude proposes 2–6 independent subtasks, you edit and confirm, each gets its worktree, branch and tab. `tmux-swarm integrate <id>` merges them into an integration branch; it never pushes |
 | Send the same text to several tabs | Menu → "Claude in this tab" → "Same text to several Claude tabs" |
 | Hand the work to another Claude | `ws-handoff` (menu key `E`): a Markdown package with a summary, branch, changes, commits, diff, task list and touched files, saved and copied to the clipboard. `--conversation` adds the transcript |
@@ -508,7 +527,7 @@ in that turn is lost.
 | Full (`full`) 🔒 | `c` | Sandbox on with no way out: no unsandboxed commands and no excluded commands, so `az`, `gh`, `git push`, `kubectl` and similar run inside the sandbox, without network or credentials, and mostly fail. All kit rules stay |
 | Normal (`normal`) | `n` | Your `~/.claude/settings.json` as it is: sandbox on, with the excluded commands that need network and credentials |
 | Pure (`bare`) 🔓 | `p` | No sandbox and none of the kit's `allow`/`ask` rules: Claude asks as it would without the kit |
-| Solo mode 🤖 | `s` | Claude in `auto` permission mode without the sandbox, to work alone. The `ask` rules still ask you |
+| Solo mode 🤖 | `s` | Claude in `auto` permission mode without the sandbox, to work alone. The `ask` rules still ask you. `t` starts it in a new tab and `w` in a new worktree |
 
 In every level, including `bare` and solo mode, two things stay on: the `deny` rules (credential files, printing
 secrets, bypassing the git gate) and the `guard.sh` hook (forced pushes, pushes to `main`, `--no-verify`, production
@@ -896,6 +915,7 @@ moved: new reports go to `%UserProfile%\ws-telemetry`.
 | `tmux-pregunta` | `tmux-ask` | `windows\instalar.ps1` | `windows\install.ps1` |
 | `tmux-rama` | `tmux-branch` | `windows\ws-claude-foco.ps1` | `windows\ws-claude-focus.ps1` |
 | `tmux-recientes` | `tmux-recent` | Subagents `arquitecto`, `depurador`, `explorador`, `sql-rapido` | `architect`, `debugger`, `explorer`, `sql-quick` |
+| `tmux-pick` | `tmux-find` | | |
 
 Commands that are not in the table kept their name.
 
@@ -972,6 +992,7 @@ The other `WS_*` variables follow the same pattern: the Spanish word became its 
 | Task | Commands | Section |
 |---|---|---|
 | Open folders and tabs | `tw`, `two`, `twt`, `tp`, `tmux-open`, `tmux-bring`, `tmux-favorites` | [4](#4-opening-repositories) |
+| Find a tab, a favorite or a conversation | `tmux-find` (views: `tmux-active`, `tmux-favorites`, `tmux-recent`), `tmux-dash` | [8](#8-finding-the-tab-that-needs-you) |
 | Model per task | `cr` | [9](#9-working-with-claude-in-a-tab) |
 | Restart Claude | `tmux-claude-restart` | [9](#9-working-with-claude-in-a-tab) |
 | Swarm and handoff | `tmux-swarm`, `ws-handoff` | [9](#9-working-with-claude-in-a-tab) |
@@ -1022,7 +1043,7 @@ The other `WS_*` variables follow the same pattern: the Spanish word became its 
 
 | Symptom | Action |
 |---|---|
-| Tabs are missing after a restart | Menu → "Tabs and session" → "Recover tabs from an earlier save" (`tmux-recover`) |
+| Tabs are missing after a restart | Menu → "Tabs and session" → "Restore tabs from a save…" (`tmux-recover`) |
 | Claude does not resume the conversation | In the tab: `claude -c` or `claude -r` |
 | Something broke after `install.sh` | Restore the file's `*.bak.<date>` |
 | A command prints "was renamed to …" or is not found after upgrading to 3.0 | Use the new name and the new subcommand or option: [Upgrading from 2.x names](#18-upgrading-from-2x-names) |

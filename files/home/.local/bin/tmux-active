@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# tmux-active — at a glance, the tabs that are working NOW or had recent activity, across all groups, without
-# visiting them one by one. Ctrl+b a (or Menu → a).
+# tmux-active — the tabs that are working NOW or had recent activity, across all groups: the data behind the
+# «active» view of tmux-find (Ctrl+b a).
 #   First what is waiting for you (✋ approve, ❓ question, ✖ error), then what is working (🧠 🔧 🐝 📦) and last
 #   what finished recently (✔ done < 15 min ago, ⛔ interrupted). Grouped by group (tmux session).
-#   Enter goes to the tab · Ctrl+R refreshes (it refreshes itself every 3 s if your fzf supports it) · Esc closes
-# Usage: tmux-active [--minutes 15]   ·   tmux-active --list [--minutes N]   (rows only; tests)
+# Usage: tmux-active [--minutes 15]          opens the finder on the active view
+#        tmux-active --list [--minutes N]    the rows: session:window-id<TAB>visible text
 set -uo pipefail
 TAB=$'\t'
 MIN=15
@@ -29,19 +29,5 @@ list_rows() {
 }
 
 if [[ " $* " == *" --list "* ]]; then list_rows; exit 0; fi
-command -v fzf >/dev/null || { list_rows | cut -f2-; read -rsn1; exit 0; }
-header="$(printf '%-10s %-22s %-24s %-40s %s' GROUP TAB STATE 'DOING' LABEL)"
-extra=()
-# fzf ≥ 0.36: --listen lets the list be refreshed from outside every 3 s.
-if fzf --help 2>/dev/null | grep -q -- '--listen'; then
-  port=$(( 20000 + RANDOM % 20000 ))
-  extra=(--listen "127.0.0.1:$port")
-  ( sleep 3; while kill -0 $$ 2>/dev/null; do
-      curl -s -XPOST "127.0.0.1:$port" -d "reload($0 --list --minutes $MIN)" >/dev/null 2>&1 || break; sleep 3; done ) &
-fi
-sel="$(list_rows | fzf --ansi --delimiter="$TAB" --with-nth=2 --no-sort --reverse --cycle "${extra[@]}" \
-        --header="$header"$'\n'"Active now or with activity in the last $MIN min · Enter goes · Ctrl+R refreshes · Esc closes" \
-        --bind "ctrl-r:reload($0 --list --minutes $MIN)" --prompt 'active> ')" || exit 0
-target="${sel%%"$TAB"*}"
-tmux switch-client -t "=${target%%:*}" 2>/dev/null
-tmux select-window -t "${target#*:}" 2>/dev/null
+# No mode: the list itself lives in the finder (tmux-find), where «active» is one of its views.
+exec "$(dirname "$0")/tmux-find" --view active --minutes "$MIN"

@@ -4,12 +4,12 @@
 # open or not. The mark belongs to the folder, not the tab: it survives closing the tab and restarting tmux.
 # Ctrl+b * adds or removes the current tab · Ctrl+b F opens the list.
 #
-# Usage: tmux-favorites                     list (Enter: go or open · Ctrl+X: remove from favorites)
-#      tmux-favorites --toggle [window]   adds or removes that tab's folder (default: the current one)
-#      tmux-favorites --remove <folder>     removes a folder from favorites
-#      tmux-favorites --list               the list as text: folder<TAB>visible row
-#      tmux-favorites --mark              sets or clears the ★ on all open tabs (called by the hooks)
-#      tmux-favorites --bar               adds the ★ to the status bar formats (idempotent)
+# Usage: tmux-favorites                     opens the finder on the favorites view (Enter: go or open · Ctrl+X: remove)
+#        tmux-favorites --toggle [window]   adds or removes that tab's folder (default: the current one)
+#        tmux-favorites --remove <folder>   removes a folder from favorites
+#        tmux-favorites --list              the list as text: folder<TAB>visible row
+#        tmux-favorites --mark              sets or clears the ★ on all open tabs (called by the hooks)
+#        tmux-favorites --bar               adds the ★ to the status bar formats (idempotent)
 # File: ~/.config/tmux-claude/favorites, one folder per line. It can be edited by hand.
 set -uo pipefail
 FAV="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-claude/favorites"
@@ -73,16 +73,5 @@ case "${1:-}" in
     tmux display "$msg"; exit 0 ;;
 esac
 
-if [[ -z "$(favorites)" ]]; then
-  echo "No favorites yet. In a tab, Ctrl+b * marks it (or Menu → Tabs and session)."
-  read -rsn1; exit 0
-fi
-command -v fzf >/dev/null || { list_rows | cut -f2; read -rsn1; exit 0; }
-self="$(printf '%q' "$0")"
-sel="$(list_rows | fzf --ansi --reverse --delimiter="$TAB" --with-nth=2 --prompt='favorites> ' \
-  --header 'Enter: go or open · Ctrl+X: remove from favorites' \
-  --bind "ctrl-x:execute-silent($self --remove {1})+reload($self --list)" \
-  --preview 'git -C {1} log --oneline -8 2>/dev/null; echo; ls -p {1} 2>/dev/null | head -40')" || exit 0
-d="${sel%%"$TAB"*}"
-[[ -d "$d" ]] || { echo "That folder no longer exists: $d (Ctrl+X removes it from the list)"; read -rsn1; exit 1; }
-exec "$(dirname "$0")/tmux-open" --dir "$d"
+# No mode: the list itself lives in the finder (tmux-find), where «favorites» is one of its views.
+exec "$(dirname "$0")/tmux-find" --view favorites

@@ -2,6 +2,7 @@
 # Columns: kind<TAB>old path<TAB>new path (both relative to $HOME). Kinds:
 #   shim  kit command or hook: the old file is set aside and a small wrapper that calls the new name is left
 #   drop  kit file with no caller of its own (menus, themes, agents…): the old file is set aside
+#   retired  kit command replaced after 3.0: wrapper like shim, without the steps of a migration
 #   data  your data or settings: moved to the new name, never overwritten
 # Order matters: a directory is listed before the files inside it.
 data	.config/ws-telemetria	.config/ws-telemetry
@@ -86,6 +87,7 @@ shim	.local/bin/tmux-historial	.local/bin/tmux-history
 shim	.local/bin/tmux-nivel	.local/bin/tmux-level
 shim	.local/bin/tmux-paleta	.local/bin/tmux-palette
 shim	.local/bin/tmux-panel	.local/bin/tmux-pane
+retired	.local/bin/tmux-pick	.local/bin/tmux-find
 shim	.local/bin/tmux-plantilla	.local/bin/tmux-template
 shim	.local/bin/tmux-pregunta	.local/bin/tmux-ask
 shim	.local/bin/tmux-rama	.local/bin/tmux-branch

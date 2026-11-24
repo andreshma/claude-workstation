@@ -115,7 +115,7 @@ flowchart TB
     watch["tmux-watch"]
     bg["tmux-background"]
     status["tmux-status"]
-    views["tmux-dash, tmux-active<br/>tmux-pick, tmux-agents"]
+    views["tmux-dash, tmux-find<br/>tmux-active, tmux-agents"]
     levels["tmux-level, tmux-solo<br/>tmux-claude-restart"]
   end
 

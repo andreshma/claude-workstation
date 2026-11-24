@@ -9,6 +9,7 @@
 #         before the update keep working until they are restarted; the wrappers are removed with
 #         `bash install.sh --remove-shims` once nothing calls the old names.
 #   drop  an old kit file nobody calls any more is set aside.
+#   retired  a command replaced after 3.0: wrapper like shim, but it does not count as a migration.
 # "Set aside" means moved to ~/.local/share/ws-kit/pre-english.<date>/ with its path, never deleted.
 
 SHIM_MARK='# ws-kit shim: deprecated name, safe to delete'
@@ -87,17 +88,19 @@ migrate_names() {
     else mkdir -p "$(dirname "$HOME/$new")" && mv "$HOME/$old" "$HOME/$new"; fi
   done < <(rename_rows data)
 
-  while IFS=$'\t' read -r old new; do
+  # retired: a command replaced after 3.0. It gets the same wrapper, but it is not a sign of an installation that
+  # comes from the Spanish names (no language default, no «restart tmux» note).
+  while IFS=$'\t' read -r kind old new; do
     [[ -f "$(at "$old")" ]] || continue
     grep -qxF "$SHIM_MARK" "$(at "$old")" 2>/dev/null && continue    # already a wrapper
-    say "shim    $old → $new"; MIGRATED=1
+    say "shim    $old → $new"; [[ "$kind" == shim ]] && MIGRATED=1
     set_aside "$old"
     (( DRY )) && continue
     printf '%s\n' '#!/usr/bin/env bash' "$SHIM_MARK" \
       "echo \"$(basename "$old") was renamed to $(basename "$new"); its options were renamed too (see docs/USAGE.md).\" >&2" \
       "exec \"\$HOME/$new\" \"\$@\"" > "$HOME/$old"
     chmod 755 "$HOME/$old"
-  done < <(rename_rows shim)
+  done < <(awk -F'\t' '$1 == "shim" || $1 == "retired"' "$KIT/renames.tsv")
 
   while IFS=$'\t' read -r old new; do
     [[ -f "$(at "$old")" ]] || continue
@@ -156,6 +159,6 @@ remove_shims() {
     if [[ -f "$HOME/$old" ]] && grep -qxF "$SHIM_MARK" "$HOME/$old"; then
       printf '  removed %s\n' "$old"; n=$((n + 1)); (( DRY )) || rm -f "$HOME/$old"
     fi
-  done < <(rename_rows shim)
+  done < <(awk -F'\t' -v OFS='\t' '$1 == "shim" || $1 == "retired" { print $2, $3 }' "$KIT/renames.tsv")
   (( n )) || printf '  none left\n'
 }

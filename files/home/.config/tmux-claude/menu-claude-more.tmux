@@ -3,11 +3,9 @@
 if -F '#{!=:#{status-interval},0}' 'set -gF @si_prev "#{status-interval}"'
 set -g status-interval 0
 display-menu -O -T "#[align=centre] Claude · more commands " -x C -y C \
-  "Claude task list (Ctrl+T)"                 d "send-keys C-t" \
   "Edit the prompt in the editor (Ctrl+G)"    g "send-keys C-g" \
   "Stash or restore the draft (Ctrl+S)"       x "send-keys C-s" \
   "Fast mode on/off (Alt+O)"                  f "send-keys M-o" \
-  "Stop background subagents"                 K "send-keys C-x C-k" \
   "Redraw the screen (Ctrl+L)"                l "send-keys C-l" \
   '' \
   "Status and account (/status)"              i "send-keys /status Enter" \
