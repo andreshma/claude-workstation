@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#
+# ws-tomd <archivo> — convierte PDF, Office (.docx .pptx .xlsx .doc .ppt .xls), .csv, .rtf,
+# .odt y .epub a Markdown, extrae sus imágenes a assets/ y las enlaza al final del .md.
+# Usa MarkItDown y, si falla, pandoc. Corre aislado: sin red (bubblewrap), máximo 2 min y
+# 100 MB. Resultado en caché por hash: ~/.cache/ws-tomd/<hash>/<nombre>.md (imprime la ruta).
+set -uo pipefail
+src="$(realpath -e "${1:?archivo}")" || exit 1
+max=$(( 100 * 1024 * 1024 ))
+(( $(stat -c %s "$src") <= max )) || { echo "ws-tomd: $src pesa más de 100 MB" >&2; exit 1; }
+hash="$(sha256sum "$src" | cut -c1-16)"
+out="${XDG_CACHE_HOME:-$HOME/.cache}/ws-tomd/$hash"; name="${src##*/}"; md="$out/${name%.*}.md"
+[[ -s "$md" ]] && { echo "$md"; exit 0; }
+mkdir -p "$out/assets"
+
+# jail <comando…> — sin red, solo puede escribir en la carpeta de salida y en /tmp.
+jail() {
+  if command -v bwrap >/dev/null && bwrap --ro-bind / / --unshare-net true 2>/dev/null; then
+    timeout 120 bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp \
+      --ro-bind "${src%/*}" "${src%/*}" --bind "$out" "$out" \
+      --unshare-net --die-with-parent --new-session "$@"
+  else timeout 120 "$@"; fi
+}
+
+ok=0
+if command -v markitdown >/dev/null && jail markitdown "$src" -o "$md" 2>/dev/null && [[ -s "$md" ]]; then ok=1; fi
+if (( ! ok )) && command -v pandoc >/dev/null; then
+  case "${name,,}" in *.docx|*.odt|*.epub|*.rtf)
+    jail pandoc "$src" -t gfm --extract-media="$out/assets" -o "$md" 2>/dev/null && [[ -s "$md" ]] && ok=1 ;; esac
+fi
+(( ok )) || { echo "ws-tomd: no pude convertir $name (instala markitdown: ws-tools install markitdown)" >&2; rm -rf "$out"; exit 1; }
+
+case "${name,,}" in
+  *.docx|*.pptx|*.xlsx|*.odt|*.epub)
+    jail unzip -o -j -q "$src" 'word/media/*' 'ppt/media/*' 'xl/media/*' 'Pictures/*' 'OEBPS/images/*' 'OEBPS/Images/*' \
+      -d "$out/assets" 2>/dev/null ;;
+  *.pdf) command -v pdfimages >/dev/null && jail pdfimages -png "$src" "$out/assets/img" 2>/dev/null ;;
+esac
+mapfile -t imgs < <(find "$out/assets" -type f \( -iname '*.png' -o -iname '*.jp*g' -o -iname '*.gif' -o -iname '*.bmp' -o -iname '*.tif*' -o -iname '*.emf' -o -iname '*.wmf' \) -size +2k | sort)
+if (( ${#imgs[@]} )); then
+  { printf '\n\n---\n\n## Imágenes extraídas (%d)\n\n' "${#imgs[@]}"
+    for i in "${imgs[@]}"; do printf -- '- ![%s](%s)\n' "${i##*/}" "$i"; done; } >> "$md"
+fi
+printf '\n\n<!-- ws-tomd: origen %s · %s · %d imágenes en %s/assets -->\n' "$src" "$(date '+%F %H:%M')" "${#imgs[@]}" "$out" >> "$md"
+echo "$md"

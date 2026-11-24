@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+#
+# tmux-escena — elige la escena del protector de pantalla de una lista (en vez de ir pasando una por una).
+# Menú → Apariencia → s.
+#   Enter: la deja fija y la muestra ya (cualquier tecla vuelve) · Ctrl+F: solo la deja fija · «aleatoria»: cada
+#   vez una distinta. La lista sale de las escenas que tiene tmux-saver, así que incluye las nuevas.
+# Uso: tmux-escena   ·   tmux-escena --lista   (nombre<TAB>descripción; pruebas)
+set -uo pipefail
+TAB=$'\t'
+SAVER="$HOME/.local/bin/tmux-saver"
+declare -A DESC=(
+  [boreal]="Aurora boreal sobre montañas, reflejada en un lago (motor de sombreado; pide python3-numpy)"
+  [nubes]="Vuelo sobre un mar de nubes al atardecer (motor de sombreado; pide python3-numpy)"
+  [agujero]="Un agujero negro con su disco de gas incandescente (motor de sombreado; pide python3-numpy)"
+  [estanque]="Gotas de lluvia abren círculos en un estanque bajo la luna (motor de sombreado; pide python3-numpy)"
+  [fuego]="Llamas que suben por toda la pantalla (motor de sombreado; pide python3-numpy)"
+  [tunel]="Un túnel de luz sin fin (motor de sombreado; pide python3-numpy)"
+  [fractal]="Un fractal de Julia que cambia de forma (motor de sombreado; pide python3-numpy)"
+  [galeria]="Tus imágenes y GIF animados pasados a caracteres (chafa). Carpeta: ~/.config/tmux-claude/galeria"
+  [oceano]="Atardecer sobre el mar, con el brillo del sol sobre las olas (motor de sombreado; pide python3-numpy)"
+  [planeta]="Un gigante de gas con anillos gira frente a las estrellas (motor de sombreado; pide python3-numpy)"
+  [dona]="Una dona de colores que gira, con luz y brillo (motor de sombreado; pide python3-numpy)"
+  [lava]="Lámpara de lava: gotas que se unen y se separan (motor de sombreado; pide python3-numpy)"
+  [vuelo]="Vuelo bajo sobre montañas, valles y lagos (motor de sombreado; pide python3-numpy)"
+  [cumbres]="Cordillera de noche: luna, pinos, lago con reflejo y estrellas fugaces (arte ASCII)"
+  [aurora]="Aurora boreal sobre un bosque nevado (arte ASCII)"
+  [nevada]="Cabaña con las ventanas encendidas, humo y nieve cayendo (arte ASCII)"
+  [velero]="Un velero cruza el mar bajo la luna (arte ASCII)"
+  [peces]="Fondo marino: peces, medusas, algas y burbujas (arte ASCII)"
+  [tuberias]="Tuberías de colores que crecen y llenan la pantalla"
+  [batalla]="Batalla en el espacio: dos flotas, rayos y explosiones (arte ASCII)"
+  [fogata]="Fogata junto a la tienda, con chispas y el bosque alrededor (arte ASCII)"
+  [cerezo]="Cerezo en flor al atardecer; los pétalos caen con el viento (arte ASCII)"
+  [lluvia]="Lluvia sobre la ciudad de noche, con relámpagos y reflejos en la calle (arte ASCII)"
+  [galaxia]="Una galaxia espiral que gira (arte ASCII)"
+  [nebulosa]="Nubes de gas de colores que fluyen (arte ASCII)"
+  [hiperespacio]="Las estrellas pasan a toda velocidad (arte ASCII)"
+)
+
+escenas() { sed -n 's/^ESCENAS=(\(.*\))[[:space:]]*$/\1/p' "$SAVER" 2>/dev/null | tr ' ' '\n' | grep -vx -e '' -e aleatoria; }
+lista() {
+  local actual e; actual="$(tmux show -gqv @saver_scene 2>/dev/null)"
+  printf 'aleatoria\t%s Cada vez una distinta\n' "$([[ -z "$actual" ]] && echo '✓' || echo ' ')"
+  while read -r e; do printf '%s\t%s %s\n' "$e" "$([[ "$e" == "$actual" ]] && echo '✓' || echo ' ')" "${DESC[$e]:-$e}"; done < <(escenas)
+}
+[[ "${1:-}" == --lista ]] && { lista; exit 0; }
+command -v fzf >/dev/null || { lista; read -rsn1; exit 0; }
+salida="$(lista | fzf --delimiter="$TAB" --with-nth=1,2 --reverse --no-sort --expect=ctrl-f --prompt 'escena> ' \
+           --header 'Enter: dejarla y verla ya (una tecla vuelve) · Ctrl+F: solo dejarla fija · Esc cierra')" || exit 0
+tecla="$(head -1 <<<"$salida")"; e="$(sed -n 2p <<<"$salida" | cut -f1)"
+[[ -n "$e" ]] || exit 0
+# La elección se guarda en las preferencias (antes solo quedaba en tmux y el protector seguía con la escena anterior).
+"$SAVER" --fijar "$e" >/dev/null || exit 0
+if [[ "$e" == aleatoria ]]; then tmux display "Protector: escena aleatoria"; exit 0; fi
+if [[ "$tecla" == ctrl-f ]]; then tmux display "Protector: escena «$e»"
+else tmux run-shell -b -d 0.4 'tmux lock-client'; fi   # cuando la flotante ya cerró: el protector con esa escena

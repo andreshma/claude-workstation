@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+#
+# tmux-plantilla — abre una carpeta con un acomodo de paneles ya armado (Claude + pruebas en vivo + logs + git…),
+# o guarda la pestaña actual como plantilla. Menú → T (abrir) · Menú → Sesión → G (guardar).
+#
+# Plantillas: ~/.config/tmux-claude/plantillas/<nombre>.conf, una instrucción por línea:
+#   # descripción (la primera línea de comentario se muestra al elegir)
+#   claude                      el panel principal arranca Claude
+#   derecha 35% <comando>       panel a la derecha con ese % de ancho
+#   abajo 30% <comando>         panel abajo con ese % de alto
+#   ventana <nombre> <comando>  pestaña extra en la misma carpeta (p. ej. ventana git lazygit)
+#   acomodo <layout>            acomodo exacto de tmux (lo escribe «guardar»)
+# Los comandos se escriben en el panel y se ejecutan con Enter: si fallan, el panel queda en la terminal.
+# Uso: tmux-plantilla [nombre] [carpeta]   (sin nombre: selector con fzf; sin carpeta: la del panel actual)
+#      tmux-plantilla --guardar <nombre> <ventana>     guarda la pestaña como plantilla
+#      tmux-plantilla --lista                          nombres y descripciones
+set -uo pipefail
+D="$HOME/.config/tmux-claude/plantillas"; mkdir -p "$D"
+TAB=$'\t'
+
+lista() { local f; for f in "$D"/*.conf; do [[ -f "$f" ]] || continue
+  printf '%s\t%s\n' "$(basename "$f" .conf)" "$(grep -m1 '^#' "$f" | sed 's/^#[[:space:]]*//')"; done; }
+
+if [[ "${1:-}" == --lista ]]; then lista; exit 0; fi
+
+if [[ "${1:-}" == --guardar ]]; then
+  # El menú manda: --guardar <nombre tal como lo escribiste> <id de ventana>. Un nombre con espacios llega partido en
+  # varias palabras: la ventana es siempre el último argumento con forma de id (@N) y el resto es el nombre.
+  shift; w=""
+  if (( $# )) && [[ "${!#}" == @* ]]; then w="${!#}"; set -- "${@:1:$#-1}"; fi
+  nom="$*"; w="${w:-$(tmux display -p '#{window_id}')}"
+  [[ "$nom" =~ ^[A-Za-z0-9_-]+$ ]] || { tmux display -d 5000 "Plantilla: el nombre solo lleva letras, números, - y _ (sin espacios)"; exit 1; }
+  f="$D/$nom.conf"; [[ -f "$f" ]] && cp "$f" "$f.bak.$(date +%Y%m%d-%H%M%S)"
+  {
+    echo "# $nom (guardada de «$(tmux display -p -t "$w" '#{window_name}')» el $(date +%F))"
+    first=1
+    while IFS="$TAB" read -r pid pc; do
+      args="$(ps -o args= --ppid "$pid" 2>/dev/null | head -1)"; [[ -n "$args" ]] || args="$pc"
+      [[ "$pc" =~ ^(bash|zsh|fish|sh)$ ]] && args=""
+      if (( first )); then [[ "$args" == *claude* ]] && echo "claude" || { [[ -n "$args" ]] && echo "principal $args"; }; first=0
+      else echo "derecha 50% $args"; fi
+    done < <(tmux list-panes -t "$w" -F "#{pane_pid}${TAB}#{pane_current_command}")
+    echo "acomodo $(tmux display -p -t "$w" '#{window_layout}')"
+  } > "$f"
+  echo "Plantilla guardada: $f"; cat "$f"; exit 0
+fi
+
+nom="${1:-}"; dir="${2:-$(tmux display -p '#{pane_current_path}' 2>/dev/null || pwd)}"
+if [[ -z "$nom" ]]; then
+  sel="$(lista | fzf --delimiter="$TAB" --with-nth=1,2 --reverse --prompt 'plantilla> ' --header "Abrir $(basename "$dir") con…" \
+         --preview "cat '$D'/{1}.conf")" || exit 0
+  nom="${sel%%"$TAB"*}"
+fi
+f="$D/$nom.conf"; [[ -f "$f" ]] || { echo "No existe la plantilla $nom"; exit 1; }
+
+w="$(tmux new-window -P -F '#{window_id}' -c "$dir" -n "$(basename "$dir")")"
+principal="$(tmux display -p -t "$w" '#{pane_id}')"
+correr() { [[ -n "$2" ]] && tmux send-keys -t "$1" -l -- "$2" && tmux send-keys -t "$1" Enter; }
+acomodo=""
+while IFS= read -r l || [[ -n "$l" ]]; do
+  l="${l%%$'\r'}"; [[ -z "${l// /}" || "$l" == \#* ]] && continue
+  read -r inst resto <<<"$l"
+  case "$inst" in
+    claude) correr "$principal" "claude" ;;
+    principal) correr "$principal" "$resto" ;;
+    derecha|abajo)
+      read -r pct cmd <<<"$resto"; [[ "$pct" =~ ^[0-9]+%$ ]] || { cmd="$resto"; pct=50%; }
+      flag=-h; [[ "$inst" == abajo ]] && flag=-v
+      p="$(tmux split-window "$flag" -l "$pct" -t "$principal" -c "$dir" -d -P -F '#{pane_id}')"
+      correr "$p" "$cmd" ;;
+    ventana)
+      read -r vn cmd <<<"$resto"
+      v="$(tmux new-window -d -P -F '#{pane_id}' -c "$dir" -n "$vn")"; correr "$v" "$cmd" ;;
+    acomodo) acomodo="$resto" ;;
+    *) tmux display "Plantilla $nom: no entiendo «$inst»" ;;
+  esac
+done < "$f"
+[[ -n "$acomodo" ]] && tmux select-layout -t "$w" "$acomodo" 2>/dev/null
+tmux select-pane -t "$principal"; tmux select-window -t "$w"

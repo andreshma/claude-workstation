@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+#
+# ws-respaldo-nube — copia CIFRADA (age) del respaldo ligero a OneDrive, y su prueba de recuperación.
+#
+# Uso:
+#   ws-respaldo-nube configurar   instala age si falta, crea la llave, guarda la privada en el Administrador de
+#                                 credenciales de Windows y te la muestra UNA vez para tu gestor de contraseñas
+#   ws-respaldo-nube [--si-toca]  cifra el último respaldo ligero y lo copia a OneDrive (guarda 7; --si-toca: si la
+#                                 última copia tiene más de 20 h). Lo dispara ws-telegram cada hora.
+#   ws-respaldo-nube probar       descifra la última copia de OneDrive en un temporal y revisa que el tar esté sano
+#   ws-respaldo-nube bajar [archivo] [destino]   descifra una copia para restaurarla con ws-restore-lite
+#   ws-respaldo-nube estado
+#
+# Por qué así: el respaldo ligero trae conversaciones (pueden tener código o datos de clientes); a la nube solo
+# sale cifrado. La llave privada vive en el Administrador de credenciales (ws/age-respaldo) y en TU gestor de
+# contraseñas: si pierdes la laptop, sin esa copia externa las respaldos de la nube no se pueden abrir.
+# Destino: <OneDrive de la organización («OneDrive - Nombre») | OneDrive>\Respaldos\estacion-wsl (cámbialo en ~/.config/ws-backup/nube.conf: destino=…).
+set -uo pipefail
+export PATH="$HOME/.local/bin:$PATH"
+CONF="$HOME/.config/ws-backup"
+PUB="$CONF/nube-recipient"
+GUARDA=7
+die() { echo "✖ $*" >&2; exit 1; }
+
+win_home() {
+  local p=""; command -v wslvar >/dev/null && p="$(wslvar USERPROFILE 2>/dev/null || true)"
+  [[ -n "$p" ]] || p="$( (cd /mnt/c 2>/dev/null && cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null) | tr -d '\r')"
+  [[ -n "$p" ]] && wslpath -u "$p" 2>/dev/null
+}
+WH="$(win_home)"
+LOCAL="${WS_BACKUP_DEST:-$WH/WSL-Backups/lite}"
+destino() {
+  local d; d="$(sed -n 's/^destino=//p' "$CONF/nube.conf" 2>/dev/null | tail -1)"
+  if [[ -z "$d" ]]; then
+    local org; org="$(compgen -G "$WH/OneDrive - *" | head -1)"   # OneDrive de la organización, si hay
+    if [[ -n "$org" && -d "$org" ]]; then d="$org/Respaldos/estacion-wsl"
+    elif [[ -d "$WH/OneDrive" ]]; then d="$WH/OneDrive/Respaldos/estacion-wsl"; fi
+  fi
+  printf '%s' "$d"
+}
+ultimo() { find "$1" -maxdepth 1 -name "$2" ! -name '*.sha256' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-; }
+identidad() {   # archivo temporal 0600 con la llave privada; quien llama lo borra
+  local t; t="$(mktemp)"; chmod 600 "$t"
+  ws-secret get age-respaldo > "$t" 2>/dev/null; [[ -s "$t" ]] || { rm -f "$t"; return 1; }
+  printf '%s' "$t"
+}
+
+configurar() {
+  command -v age >/dev/null || { echo "Instalando age (paquete oficial de Ubuntu)…"; sudo apt-get install -y -qq age >/dev/null || die "no se pudo instalar age"; }
+  mkdir -p "$CONF" && chmod 700 "$CONF"
+  if [[ -s "$PUB" ]] && ws-secret has age-respaldo 2>/dev/null; then echo "✔ Ya está configurado (llave pública en $PUB)."; return; fi
+  local t clave; t="$(mktemp -d)"; chmod 700 "$t"
+  age-keygen -o "$t/llave" 2>/dev/null || die "age-keygen falló"
+  clave="$(grep '^AGE-SECRET-KEY-' "$t/llave")"; age-keygen -y "$t/llave" > "$PUB"
+  printf '%s\n' "$clave" | ws-secret set age-respaldo >/dev/null || { rm -rf "$t"; die "no se pudo guardar la llave en Windows"; }
+  rm -rf "$t"
+  echo
+  echo "⚠ Guarda AHORA esta llave privada en tu gestor de contraseñas (sin ella no se abren los respaldos de la nube"
+  echo "  si pierdes esta laptop). No se volverá a mostrar:"
+  echo; echo "  $clave"; echo
+  read -rp "¿Ya la guardaste? [s/N] " r; [[ "$r" =~ ^[sS]$ ]] || echo "  Puedes verla de nuevo con: ws-secret get age-respaldo"
+  clear 2>/dev/null || true
+  echo "✔ Configurado. Destino: $(destino)"; respaldar
+}
+
+respaldar() {
+  [[ -s "$PUB" ]] || die "primero: ws-respaldo-nube configurar"
+  command -v age >/dev/null || die "falta age (ws-respaldo-nube configurar)"
+  local d src nom out; d="$(destino)"; [[ -n "$d" ]] || die "no encuentro OneDrive; define destino= en $CONF/nube.conf"
+  mkdir -p "$d" || die "no puedo escribir en $d"
+  if [[ "${1:-}" == --si-toca ]]; then
+    local u; u="$(ultimo "$d" 'claude-lite-*.age')"
+    [[ -n "$u" ]] && (( $(date +%s) - $(stat -c %Y "$u") < 20 * 3600 )) && exit 0
+  fi
+  src="$(ultimo "$LOCAL" 'claude-lite-*.tar.*')"; [[ -n "$src" ]] || die "no hay respaldo ligero en $LOCAL (ws-backup-lite --ahora)"
+  nom="$(basename "$src")"; nom="${nom%.age}.age"; out="$d/$nom"
+  [[ -f "$out" ]] && { echo "✔ Ya está en la nube: $nom"; return; }
+  if [[ "$src" == *.age ]]; then cp "$src" "$out.tmp"; else age -R "$PUB" -o "$out.tmp" "$src" || { rm -f "$out.tmp"; die "age falló"; }; fi
+  mv "$out.tmp" "$out" && (cd "$d" && sha256sum "$nom" > "$nom.sha256")
+  # Rotación: solo las 7 más recientes
+  find "$d" -maxdepth 1 -name 'claude-lite-*.age' -printf '%T@ %p\n' | sort -rn | tail -n +$((GUARDA + 1)) | cut -d' ' -f2- \
+    | while IFS= read -r v; do rm -f "$v" "$v.sha256"; done
+  echo "✔ Copia cifrada en la nube: $nom ($(du -h "$out" | cut -f1))"
+}
+
+probar() {
+  local d f id n; d="$(destino)"; f="$(ultimo "$d" 'claude-lite-*.age')"
+  [[ -n "$f" ]] || { echo "✖ No hay copias en la nube ($d)"; return 1; }
+  (cd "$d" && sha256sum -c --quiet "$(basename "$f").sha256") || { echo "✖ La suma de verificación no coincide: $(basename "$f")"; return 1; }
+  id="$(identidad)" || { echo "✖ No encuentro la llave privada (ws/age-respaldo)"; return 1; }
+  n="$(age -d -i "$id" "$f" 2>/dev/null | zstd -dc 2>/dev/null | tar -t 2>/dev/null | wc -l)"; rm -f "$id"
+  (( n > 0 )) || { echo "✖ No se pudo descifrar o el tar está dañado: $(basename "$f")"; return 1; }
+  echo "✔ La copia de la nube se descifra y está sana: $(basename "$f") ($n archivos, $(( ($(date +%s) - $(stat -c %Y "$f")) / 3600 )) h)"
+}
+
+bajar() {
+  local d f id dest; d="$(destino)"; f="${1:-$(ultimo "$d" 'claude-lite-*.age')}"; dest="${2:-$LOCAL}"
+  [[ -f "$f" ]] || f="$d/$f"; [[ -f "$f" ]] || die "no encuentro $1"
+  id="$(identidad)" || die "no encuentro la llave privada: ws-secret set age-respaldo (pega la de tu gestor de contraseñas)"
+  mkdir -p "$dest"; age -d -i "$id" -o "$dest/$(basename "${f%.age}")" "$f"; local rc=$?; rm -f "$id"
+  (( rc == 0 )) || die "no se pudo descifrar"
+  (cd "$dest" && sha256sum "$(basename "${f%.age}")" > "$(basename "${f%.age}").sha256")
+  echo "✔ Descifrado en $dest/$(basename "${f%.age}"). Siguiente: ws-restore-lite (prueba) y ws-restore-lite --restaurar"
+}
+
+case "${1:-}" in
+  configurar) configurar ;;
+  probar) probar ;;
+  bajar) shift; bajar "$@" ;;
+  estado)
+    echo "Llave pública: $([[ -s "$PUB" ]] && echo sí || echo "no (ws-respaldo-nube configurar)") · privada en Windows: $(ws-secret has age-respaldo 2>/dev/null && echo sí || echo no)"
+    echo "Destino: $(destino)"
+    f="$(ultimo "$(destino)" 'claude-lite-*.age')"; [[ -n "$f" ]] && echo "Última copia: $(basename "$f") ($(( ($(date +%s) - $(stat -c %Y "$f")) / 3600 )) h)" || echo "Sin copias aún" ;;
+  ""|--si-toca|--ahora) respaldar "${1:-}" ;;
+  *) sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

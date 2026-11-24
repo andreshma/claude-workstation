@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#
+# tmux-pause '<comandos>' — corre comandos en un shell de login (PATH y $REPOS completos)
+# y espera una tecla antes de cerrar el popup. Lo usa el menú (revisión, auditoría).
+bash -lc "$1"
+printf '\n\033[2mCualquier tecla cierra\033[0m'; read -rsn1

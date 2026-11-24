@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+#
+# tmux-historial — «¿en qué pestaña vi ese error ayer?»: búsqueda en lo que pasó por todos tus paneles.
+# APAGADO por defecto (guarda texto de pantalla). Menú → Sesión → h.
+#   tmux-historial on|off       enciende/apaga (opción @historial)
+#   tmux-historial [texto]      busca con fzf (vista previa del contexto); Enter va a la pestaña si sigue abierta
+#   tmux-historial --muestrear  (lo corre tmux-fondo cada minuto) guarda las líneas NUEVAS de cada panel
+#   tmux-historial --estado     tamaño y días guardados
+# Cómo guarda: cada minuto toma la pantalla ya dibujada de cada panel (capture-pane: texto limpio, sin códigos de
+# la terminal), se queda solo con lo nuevo, lo redacta (ws-redactar) y lo agrega a
+# ~/.local/share/tmux-historial/AAAA-MM-DD/<grupo>_<pestaña>.log (0700). Se borra a los 30 días (WS_HISTORIAL_DIAS).
+# Los paneles con Claude también se guardan: la conversación completa ya está en sus transcripciones.
+set -uo pipefail
+D="${WS_HISTORIAL_DIR:-$HOME/.local/share/tmux-historial}"; DIAS="${WS_HISTORIAL_DIAS:-30}"
+ST="${XDG_RUNTIME_DIR:-/tmp}/tmux-historial-$(id -u)"
+mkdir -p "$D" "$ST" && chmod 700 "$D" "$ST"
+TAB=$'\t'
+
+case "${1:-}" in
+  on)  tmux set -g @historial on; echo "Historial buscable: encendido (se guarda cada minuto; $DIAS días)"; exit 0 ;;
+  off) tmux set -g @historial off; echo "Historial buscable: apagado (lo ya guardado sigue en $D)"; exit 0 ;;
+  --estado)
+    echo "Historial: $(tmux show -gqv @historial || true) · $(du -sh "$D" 2>/dev/null | cut -f1) en $(find "$D" -mindepth 1 -maxdepth 1 -type d | wc -l) días · $D"; exit 0 ;;
+  --muestrear)
+    hoy="$D/$(date +%F)"; mkdir -p "$hoy"
+    ST="$ST/$(tmux display -p '#{pid}')"; mkdir -p "$ST"   # los %N se reusan entre servidores de tmux
+    while IFS="$TAB" read -r pid s wi wn; do
+      seg="$ST/${pid#%}"
+      nuevo="$(tmux capture-pane -p -J -t "$pid" -S -300 2>/dev/null | sed -e 's/[[:space:]]*$//' | grep -v '^$')" || continue
+      [[ -n "$nuevo" ]] || continue
+      if [[ -f "$seg" ]]; then
+        # Solo lo que no estaba en la muestra anterior: las líneas después de la última coincidencia de la cola.
+        cola="$(tail -n 3 "$seg")"
+        resto="$(awk -v c="$cola" 'BEGIN{n=split(c,C,"\n")} {L[NR]=$0} END{s=0; for(i=NR;i>=n;i--){ok=1; for(j=1;j<=n;j++) if(L[i-n+j]!=C[j]){ok=0;break}; if(ok){s=i;break}} for(i=s+1;i<=NR;i++) print L[i]}' <<<"$nuevo")"
+      else resto="$nuevo"; fi
+      printf '%s\n' "$nuevo" | tail -n 3 > "$seg"
+      [[ -n "$resto" ]] || continue
+      nom="$(printf '%s_%s-%s' "$s" "$wi" "$wn" | tr -c 'A-Za-z0-9_.-' '_' | cut -c1-60)"
+      { printf '### %s %s\n' "$(date +%H:%M)" "$pid"; ws-redactar <<<"$resto"; } >> "$hoy/$nom.log"
+    done < <(tmux list-panes -a -F "#{pane_id}${TAB}#{session_name}${TAB}#{window_index}${TAB}#{window_name}")
+    find "$D" -mindepth 1 -maxdepth 1 -type d -mtime "+$DIAS" -exec rm -rf {} + 2>/dev/null
+    exit 0 ;;
+esac
+
+command -v rg >/dev/null && BUSCA=(rg --no-heading --line-number --color=never -i) || BUSCA=(grep -rni --color=never)
+q="${*:-}"
+sel="$(cd "$D" && "${BUSCA[@]}" -- "${q:-.}" . 2>/dev/null | sed 's#^\./##' | sort -r -t/ -k1,1 \
+       | fzf --delimiter=: --with-nth=1,3.. --reverse --query "$q" --prompt 'historial> ' \
+             --header 'Escribe para filtrar · Enter: ir a la pestaña (si sigue abierta) y copiar la línea' \
+             --preview "sed -n \"\$(( {2} > 6 ? {2} - 6 : 1 )),\$(( {2} + 6 ))p\" '$D'/{1}" --preview-window 'down,40%')" || exit 0
+archivo="${sel%%:*}"; linea="${sel#*:*:}"
+printf '%s' "$linea" | ws-copiar 2>/dev/null || printf '%s' "$linea" | tmux load-buffer -w -
+pane="$(awk -v n="$(cut -d: -f2 <<<"$sel")" 'NR<=n && /^### / {p=$3} END{print p}' "$D/$archivo")"
+if [[ -n "$pane" ]] && tmux display -p -t "$pane" '#{pane_id}' >/dev/null 2>&1; then
+  tmux switch-client -t "$(tmux display -p -t "$pane" '#{session_name}')" 2>/dev/null
+  tmux select-window -t "$pane"; tmux select-pane -t "$pane"
+else echo "La pestaña ya no existe; la línea quedó copiada."; sleep 1.5; fi

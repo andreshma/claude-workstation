@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""tmux-paleta — paleta de comandos: busca y ejecuta cualquier opción de los menús escribiendo, como Ctrl+Shift+P
+en VS Code. Ctrl+b Espacio.
+
+Lee los menús instalados (~/.config/tmux-claude/menu*.tmux, con el mismo intérprete que ws-menus), así que
+siempre está al día. Muestra la ruta de teclas para que la aprendas (Ctrl+b m → e → t). Enter ejecuta la opción
+sobre la pestaña desde la que abriste la paleta.
+Uso: tmux-paleta <panel>   ·   tmux-paleta --lista   (solo imprime «ruta<TAB>opción<TAB>comando»; para pruebas)
+"""
+import importlib.machinery
+import importlib.util
+import os
+import re
+import shutil
+import subprocess  # nosec B404 — fzf y tmux con argumentos fijos
+import sys
+import tempfile
+from pathlib import Path
+
+BIN = Path.home() / ".local/bin"
+
+
+def cargar_ws_menus():
+    cargador = importlib.machinery.SourceFileLoader("ws_menus", str(BIN / "ws-menus"))
+    spec = importlib.util.spec_from_loader("ws_menus", cargador)
+    mod = importlib.util.module_from_spec(spec)
+    cargador.exec_module(mod)
+    return mod
+
+
+def opciones() -> list[tuple[str, str, str]]:
+    """[(ruta de teclas, etiqueta legible, comando de tmux)] de todas las opciones finales (sin submenús)."""
+    wm = cargar_ws_menus()
+    pre = "Ctrl+b"
+    filas, vistos = [], set()
+
+    def visitar(f: Path, ruta: str):
+        if f in vistos or not f.exists():
+            return
+        vistos.add(f)
+        for _, et, tecla, cmd in wm.items(f):
+            if et.strip().startswith("‹"):
+                continue
+            paso = f"{ruta} → {wm.tecla_legible(tecla)}"
+            if cmd.strip().startswith("source-file") and "menu" in cmd:
+                m = re.search(r"(menu[\w-]*\.tmux)", cmd)
+                if m:
+                    visitar(wm.DIR / m.group(1), paso)
+                continue
+            filas.append((paso, wm.legible(et), cmd))
+
+    visitar(wm.DIR / "menu.tmux", f"{pre} m")
+    for f in sorted(wm.DIR.glob("menu*.tmux")):
+        visitar(f, f"({f.stem})")
+    return filas
+
+
+def main() -> int:
+    filas = opciones()
+    if "--lista" in sys.argv:
+        for r, e, c in filas:
+            print(f"{r}\t{e}\t{c}")
+        return 0
+    if not shutil.which("fzf"):
+        print("Falta fzf (ws-tools install fzf)."); return 1
+    entrada = "\n".join(f"{i}\t{e}\t\033[2m{r}\033[0m" for i, (r, e, _) in enumerate(filas))
+    sel = subprocess.run(["fzf", "--ansi", "--delimiter=\t", "--with-nth=2,3", "--reverse", "--tiebreak=begin,length",
+                          "--prompt", "› ", "--header", "Escribe lo que quieres hacer · Enter ejecuta · Esc cierra"],
+                         input=entrada, capture_output=True, text=True).stdout.strip()  # nosec B603 B607
+    if not sel:
+        return 0
+    cmd = filas[int(sel.split("\t", 1)[0])][2].replace('\\"', '"')
+    # Igual que display-menu: los #{formatos} del comando se expanden contra la pestaña desde la que abriste la
+    # paleta; se ejecuta cuando la flotante ya cerró (así «la pestaña actual» también es esa).
+    panel = next((a for a in sys.argv[1:] if a.startswith("%")), "")
+    if panel:
+        cmd = subprocess.run(["tmux", "display", "-p", "-t", panel, cmd], capture_output=True, text=True).stdout.rstrip("\n") or cmd  # nosec B603 B607
+    fd, tmp = tempfile.mkstemp(prefix="tmux-paleta-", suffix=".tmux")
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(cmd + "\n")
+    subprocess.run(["tmux", "run-shell", "-b", "-d", "0.3", f"tmux source-file '{tmp}'; rm -f '{tmp}'"])  # nosec B603 B607
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

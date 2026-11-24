@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: >-
+  If you use claude-workstation in your work, please cite it using the metadata below.
+type: software
+title: "claude-workstation: a tmux + Claude Code workstation for WSL2"
+abstract: >-
+  A reproducible developer workstation for WSL2 that runs many Claude Code sessions in tmux, with per-tab state and
+  timing, model routing, local telemetry and reports, remote control over Telegram, protection levels and parallel
+  agents in git worktrees.
+authors:
+  - alias: andreshma
+version: 2.6.0
+date-released: "2026-11-20"
+license: Apache-2.0
+repository-code: "https://github.com/andreshma/claude-workstation"
+url: "https://github.com/andreshma/claude-workstation"
+keywords: [claude-code, tmux, wsl2, developer-experience, telemetry, devops]

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+#
+# tmux-az-sub — cambia la suscripción activa de Azure (az nativo de WSL) eligiéndola con
+# fzf y refresca la barra de tmux. Avisa si la elegida parece de producción, porque el
+# guard de Claude bloquea mutaciones ahí. Lo usa el menú (z).
+set -uo pipefail
+TAB=$'\t'
+command -v az >/dev/null || { echo "Falta az en WSL."; read -rsn1; exit 1; }
+cur="$(az account show --query id -o tsv 2>/dev/null)"
+list="$(az account list --query "[?state=='Enabled'].[name, id, tenantId]" -o tsv 2>/dev/null)"
+if [[ -z "$list" ]]; then echo "Sin sesión de Azure en WSL: corre az login."; read -rsn1; exit 1; fi
+sel="$(awk -F "$TAB" -v OFS="$TAB" -v c="$cur" '{ print ($2 == c ? "* " : "  ") $1, $2, $3 }' <<<"$list" |
+  fzf --reverse --delimiter="$TAB" --with-nth=1 --prompt='suscripción> ' --header='* = activa')" || exit 0
+name="$(cut -f1 <<<"$sel")"; name="${name:2}"
+az account set --subscription "$(cut -f2 <<<"$sel")" || { read -rsn1; exit 1; }
+tmux refresh-client -S 2>/dev/null
+if grep -qiE 'prod|production|-pro$' <<<"$name"; then tmux display -d 5000 "Azure: $name  (PRODUCCIÓN: el guard bloquea cambios de Claude)"
+else tmux display -d 3000 "Azure: $name"; fi

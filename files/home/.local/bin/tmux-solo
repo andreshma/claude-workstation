@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+#
+# tmux-solo — "modo solo": Claude en modo auto SIN tu sandbox, para dejarlo trabajar solo.
+#   · los comandos corren sin sandbox y sin preguntarte uno por uno: el clasificador del
+#     modo auto revisa cada acción (perfil ~/.config/claude-solo/settings.json, solo esa sesión)
+#   · las reglas ask (terraform, kubectl, AWS, BD, git push…) TE SIGUEN PREGUNTANDO; deny,
+#     guard.sh y los rm peligrosos siguen bloqueados
+# Tus demás pestañas siguen con el sandbox. Tras reiniciar la estación, todo vuelve a normal.
+#
+# Uso:
+#   tmux-solo esta [PANE]        pasa la pestaña actual a modo solo (retoma la conversación)
+#   tmux-solo normal [PANE]      la regresa a modo normal (retoma la conversación)
+#   tmux-solo nueva [CARPETA]    pestaña nueva en modo solo
+#   tmux-solo worktree [CARPETA] pestaña nueva en un worktree <repo>.wt/solo-<fecha> (rama solo/<fecha>)
+set -euo pipefail
+perfil="$HOME/.config/claude-solo/settings.json"
+CMD_SOLO="claude --permission-mode auto --settings '$perfil'"
+msg() { tmux display "$1"; }
+[[ -f "$perfil" ]] || { msg "Falta $perfil"; exit 1; }
+
+# claude_corre <pane> — ¿hay un Claude corriendo en el panel? Dos señales, basta una:
+#   1) el comando en primer plano no es una shell (el binario nativo de Claude se llama por su
+#      versión, p. ej. "2.1.325", no "claude");
+#   2) entre los descendientes del panel hay un proceso claude (o node ejecutando Claude).
+claude_corre() {
+  local raiz cur
+  cur="$(tmux display -p -t "$1" '#{pane_current_command}')"
+  [[ "$cur" =~ ^(bash|zsh|sh|fish|dash)$ ]] || return 0
+  raiz="$(tmux display -p -t "$1" '#{pane_pid}')"
+  ps -e -o pid=,ppid=,comm=,args= | awk -v r="$raiz" '
+    { padre[$1] = $2
+      if ($3 ~ /^claude$/ || $4 ~ /(^|\/)claude$/ || $4 ~ /\/claude\/versions\// || ($3 == "node" && $0 ~ /claude/)) c[$1] = 1 }
+    END { for (p in c) for (q = padre[p]; q > 1; q = padre[q]) if (q == r) { hay = 1; break }
+          exit !hay }'
+}
+
+# reiniciar_claude <pane> <comando> — cierra el Claude del panel (si hay) y lanza el comando.
+reiniciar_claude() {
+  local pane="$1" cmd="$2" i=0
+  if claude_corre "$pane"; then
+    tmux send-keys -t "$pane" Escape; sleep 0.5
+    tmux send-keys -t "$pane" -l "/exit"; tmux send-keys -t "$pane" Enter
+    for (( i = 0; i < 40; i++ )); do
+      claude_corre "$pane" || break
+      sleep 0.5
+    done
+    (( i < 40 )) || { msg "Claude no cerró; ciérralo tú (/exit) y vuelve a intentar"; exit 1; }
+  fi
+  tmux send-keys -t "$pane" -l "$cmd"; tmux send-keys -t "$pane" Enter
+}
+
+accion="${1:-esta}"; shift || true
+case "$accion" in
+  esta|normal)
+    pane="${1:-$(tmux display -p '#{pane_id}')}"
+    win="$(tmux display -p -t "$pane" '#{window_id}')"
+    nombre="$(tmux display -p -t "$pane" '#W')"; nombre="${nombre#🤖}"
+    if [[ "$accion" == esta ]]; then
+      # -c retoma la conversación más reciente de esta carpeta.
+      reiniciar_claude "$pane" "${CMD_SOLO/claude /claude -c }"
+      tmux set -w -t "$win" @csolo 1; tmux rename-window -t "$win" "🤖$nombre"
+      msg "Modo solo en $nombre: auto, sin sandbox · lo crítico te lo pregunta"
+    else
+      reiniciar_claude "$pane" "claude -c"
+      tmux set -wu -t "$win" @csolo; tmux rename-window -t "$win" "$nombre"
+      msg "$nombre de vuelta en modo normal (con sandbox)"
+    fi
+    ;;
+  nueva|worktree)
+    dir="${1:-$(tmux display -p '#{pane_current_path}')}"
+    nombre="$(basename "$dir")"
+    if [[ "$accion" == worktree ]]; then
+      raiz="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || { msg "$dir no es un repo git"; exit 1; }
+      stamp="$(date +%Y%m%d-%H%M)"
+      dir="$raiz.wt/solo-$stamp"
+      git -C "$raiz" worktree add -q -b "solo/$stamp" "$dir" >/dev/null 2>&1 || { msg "No pude crear el worktree $dir"; exit 1; }
+      nombre="$(basename "$raiz")@solo"
+    fi
+    win="$(tmux new-window -P -F '#{window_id}' -c "$dir" -n "🤖$nombre" "$CMD_SOLO; exec bash -l")"
+    tmux set -w -t "$win" @csolo 1; tmux set -w -t "$win" automatic-rename off
+    msg "Claude solo en $nombre: escribe la tarea y déjalo trabajar"
+    ;;
+  *) echo "uso: tmux-solo esta|normal|nueva|worktree [PANE|CARPETA]" >&2; exit 2 ;;
+esac

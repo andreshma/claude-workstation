@@ -1,0 +1,33 @@
+name: Bug report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! For **security vulnerabilities**, do not use this form — report privately via the
+        Security tab (see SECURITY.md). Do not paste prompts, transcripts, tokens or your settings files.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options: [install/update, tmux menus & keys, tab state & dashboard, model routing, telemetry & reports, Telegram, backups, protection levels, screensaver, other]
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      placeholder: "kit 2.6.0, Windows 11, Ubuntu 24.04 (WSL2), tmux 3.4, Claude Code 2.1.x"
+  - type: textarea
+    id: verify
+    attributes:
+      label: Output of `ws-verify` or `ws-test`
+      render: shell

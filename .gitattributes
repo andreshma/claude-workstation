@@ -1,0 +1,13 @@
+# Normalize line endings: LF in the repo and in the working tree (scripts run under WSL).
+* text=auto eol=lf
+
+# Windows batch files stay CRLF for Windows tooling.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Captured as-is from Windows (CRLF): do not normalize.
+files/windows/.wslconfig -text
+
+# Binary assets (no diff/merge, no eol conversion).
+*.png binary
+*.jpg binary

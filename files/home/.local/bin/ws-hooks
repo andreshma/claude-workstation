@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""ws-hooks — cuánto tarda cada hook de Claude Code, uno por uno.
+
+Claude Code solo reporta el tiempo total de los hooks de un evento (el colector ws-otel lo guarda: «SessionStart
+9 s»). Para saber cuál es el lento, este comando corre cada hook de ~/.claude/settings.json por separado, con una
+entrada mínima como la que le daría Claude, y mide cuánto tarda.
+
+Uso:
+  ws-hooks                       resumen por evento, con lo que midió Claude Code de verdad (necesita ws-otel)
+  ws-hooks tiempo [Evento] [-n N]   corre N veces (1 por defecto) cada hook del evento (SessionStart por defecto)
+  ws-hooks lista [Evento]        solo lista los hooks configurados, sin correrlos
+
+Ojo con «tiempo»: los hooks se EJECUTAN de verdad (con una sesión de prueba llamada ws-hooks-medicion). Van sin
+TMUX_PANE, así que los que pintan el estado de la pestaña no la tocan, pero un hook que arranca un servicio o escribe
+un registro sí lo hará. Los eventos que bloquean o modifican herramientas (PreToolUse, PermissionRequest) no se corren.
+"""
+from __future__ import annotations
+
+import json
+import os
+import statistics
+import subprocess  # nosec B404 — corre los hooks que el propio usuario configuró
+import sys
+import time
+from collections import defaultdict
+from pathlib import Path
+
+SETTINGS = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
+OTEL = Path(os.environ.get("WS_OTEL_DIR") or Path(os.environ.get("WS_TELEMETRIA_DIR") or Path.home() / ".local/share/ws-telemetria") / "otel")
+NO_CORRER = {"PreToolUse", "PermissionRequest", "PermissionDenied"}
+ENTRADA = {"SessionStart": {"source": "startup"}, "SessionEnd": {"reason": "other"}, "UserPromptSubmit": {"prompt": "medición de ws-hooks"},
+           "Notification": {"notification_type": "idle_prompt", "message": "medición"}, "PreCompact": {"trigger": "manual"}}
+
+
+def hooks(evento: str | None = None) -> list[tuple[str, str, list[str], int | None]]:
+    """(evento, comando, argumentos, timeout) de cada hook de tipo comando."""
+    try:
+        cfg = json.loads(SETTINGS.read_text(encoding="utf-8")).get("hooks", {})
+    except (OSError, ValueError):
+        sys.exit(f"✖ No pude leer {SETTINGS}")
+    out = []
+    for ev, grupos in cfg.items():
+        if evento and ev != evento:
+            continue
+        for g in grupos:
+            for h in g.get("hooks", []):
+                if h.get("type", "command") == "command" and h.get("command"):
+                    out.append((ev, h["command"], [str(a) for a in h.get("args") or []], h.get("timeout")))
+    return out
+
+
+def nombre(cmd: str, args: list[str]) -> str:
+    """Nombre corto: el script y lo que lo distingue (el .ps1, el .py o el subcomando)."""
+    base = cmd.split()[0].replace("\\", "/").split("/")[-1]
+    resto = cmd.split()[1:] + args
+    clave = next((a.replace("\\", "/").split("/")[-1] for ext in ((".ps1", ".py", ".sh"), (".exe",)) for a in resto if a.lower().endswith(ext)), "")
+    extra = clave or " ".join(a for a in resto if not a.startswith("-"))[:30]
+    return f"{base} {extra}".strip()
+
+
+def correr(ev: str, cmd: str, args: list[str], tope: int | None) -> tuple[float, str]:
+    entrada = json.dumps({"hook_event_name": ev, "session_id": "ws-hooks-medicion", "cwd": os.getcwd(), **ENTRADA.get(ev, {})})
+    env = {k: v for k, v in os.environ.items() if k not in ("TMUX_PANE", "TMUX")}
+    linea = os.path.expanduser(os.path.expandvars(cmd))
+    t0 = time.perf_counter()
+    try:
+        if args:
+            r = subprocess.run([linea, *args], input=entrada, capture_output=True, text=True, env=env, timeout=(tope or 60) + 5)  # nosec B603
+        else:
+            r = subprocess.run(["bash", "-c", linea], input=entrada, capture_output=True, text=True, env=env, timeout=(tope or 60) + 5)  # nosec B603 B607
+        estado = "ok" if r.returncode == 0 else f"salió con {r.returncode}"
+    except subprocess.TimeoutExpired:
+        estado = "no terminó"
+    except OSError as e:
+        estado = f"no corrió ({e.__class__.__name__})"
+    return (time.perf_counter() - t0) * 1000, estado
+
+
+def medido_por_claude(dias: int = 14) -> dict[str, list[float]]:
+    """Duración total de los hooks de cada evento, según lo que Claude Code reportó al colector."""
+    out: dict[str, list[float]] = defaultdict(list)
+    for f in sorted(OTEL.glob("*.jsonl"))[-dias:]:
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            for linea in fh:
+                try:
+                    o = json.loads(linea)
+                except ValueError:
+                    continue
+                if o.get("senal") == "evento" and str(o.get("nombre", "")).endswith("hook_execution_complete"):
+                    try:
+                        out[o.get("hook_event") or "?"].append(float(o.get("total_duration_ms")))
+                    except (TypeError, ValueError):
+                        pass
+    return out
+
+
+def main() -> int:
+    a = sys.argv[1:]
+    accion = a[0] if a else "resumen"
+    if accion == "lista":
+        for ev, cmd, args, tope in hooks(a[1] if len(a) > 1 else None):
+            print(f"{ev:18} {nombre(cmd, args):46} tope {tope or '—'} s")
+        return 0
+    if accion == "tiempo":
+        n = int(a[a.index("-n") + 1]) if "-n" in a else 1
+        ev = next((x for x in a[1:] if not x.startswith("-") and not x.isdigit()), "SessionStart")
+        if ev in NO_CORRER:
+            sys.exit(f"✖ {ev} decide sobre herramientas: no se corre fuera de Claude")
+        hs = hooks(ev)
+        if not hs:
+            sys.exit(f"✖ No hay hooks para {ev}")
+        print(f"Midiendo {len(hs)} hooks de {ev} ({n} vez/veces cada uno)…\n")
+        filas = []
+        for _, cmd, args, tope in hs:
+            ms, est = zip(*(correr(ev, cmd, args, tope) for _ in range(n)))
+            filas.append((statistics.median(ms), max(ms), nombre(cmd, args), est[-1], tope))
+        print(f"{'Hook':46} {'Mediana':>9} {'Máximo':>9}  Resultado")
+        for med, mx, nom, est, tope in sorted(filas, reverse=True):
+            print(f"{nom:46} {med:7.0f} ms {mx:7.0f} ms  {est}{f' (tope {tope} s)' if tope else ''}")
+        print(f"\nSi corren en paralelo, el evento tarda lo del más lento: {max(f[0] for f in filas):,.0f} ms. En fila, {sum(f[0] for f in filas):,.0f} ms.")
+        return 0
+    m = medido_por_claude()
+    if not m:
+        print("Aún no hay mediciones de Claude Code. Revisa: ws-otel estado. Para medir a mano: ws-hooks tiempo SessionStart")
+        return 0
+    conf = defaultdict(int)
+    for ev, *_ in hooks():
+        conf[ev] += 1
+    print(f"{'Evento':20} {'Hooks':>5} {'Veces':>6} {'Mediana':>9} {'Máximo':>9} {'Total':>9}")
+    for ev, v in sorted(m.items(), key=lambda x: -sum(x[1])):
+        print(f"{ev:20} {conf.get(ev, 0):5} {len(v):6} {statistics.median(v):7.0f} ms {max(v):7.0f} ms {sum(v) / 1000:7.1f} s")
+    print("\nPara ver cuál hook de un evento es el lento: ws-hooks tiempo <Evento>")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

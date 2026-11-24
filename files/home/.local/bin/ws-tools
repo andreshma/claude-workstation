@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+#
+# ws-tools — inventario de herramientas de la estación en WSL (qué hay, qué versión, qué
+# falta) e instalación por herramienta o por grupo desde fuentes oficiales: apt (repos
+# firmados), pipx (PyPI) o binarios de GitHub verificados contra el checksum de su release.
+#
+# Uso:
+#   ws-tools                                 inventario
+#   ws-tools install <grupo|herramienta>...  grupos: base nube aws contenedores calidad
+#                                            python web rust sql dev
+#   ws-tools install --force ...             instala aunque C: tenga menos de 10 GB libres
+set -uo pipefail
+MIN_FREE_GB=10
+AGG_VER=v1.9.0
+AGG_SHA=ddcbf6ca044c8ac3a434dcb9ee89fb9e3be87209982b7c2adb55f782e8f0f390
+
+# nombre|grupo|comando de versión|cómo se instala (apt:paquete, pipx:paquete, fn:función, manual:texto)
+# El comando de versión no puede llevar "|" (es el separador de campos).
+TOOLS=(
+  "tmux|base|tmux -V|apt:tmux"
+  "git|base|git --version|apt:git"
+  "fzf|base|fzf --version|apt:fzf"
+  "jq|base|jq --version|apt:jq"
+  "curl|base|curl --version|apt:curl"
+  "unzip|base|unzip -v|apt:unzip"
+  "rsync|base|rsync --version|apt:rsync"
+  "bubblewrap|base|bwrap --version|apt:bubblewrap"
+  "socat|base|socat -V|apt:socat"
+  "gitleaks|base|gitleaks version|apt:gitleaks"
+  "shellcheck|base|shellcheck --version|apt:shellcheck"
+  "gh|base|gh --version|apt:gh"
+  "ripgrep|base|rg --version|apt:ripgrep"
+  "fd|base|fdfind --version|apt:fd-find"
+  "bat|base|batcat --version|apt:bat"
+  "pipx|base|pipx --version|apt:pipx"
+  "asciinema|base|asciinema --version|apt:asciinema"
+  "agg|base|agg --version|fn:agg"
+  "starship|base|starship --version|fn:starship"
+  "wslu|base|wslview --version|apt:wslu"
+  "az|nube|az version --query '\"azure-cli\"' -o tsv|fn:az"
+  "bicep|nube|$HOME/.azure/bin/bicep --version|fn:bicep"
+  "azd|nube|azd version|fn:azd"
+  "kubectl|nube|kubectl version --client|fn:aks"
+  "kubelogin|nube|kubelogin --version|fn:aks"
+  "kubectx|nube|command -v kubectx|apt:kubectx"
+  "helm|nube|helm version --short|fn:helm"
+  "k9s|nube|k9s version --short|fn:k9s"
+  "terraform|nube|terraform version|fn:terraform"
+  "tflint|nube|tflint --version|fn:tflint"
+  "aws|aws|aws --version|fn:awscli"
+  "docker|contenedores|docker --version|manual:Docker Desktop → Settings → Resources → WSL integration → Ubuntu"
+  "compose|contenedores|docker compose version|manual:viene con Docker Desktop"
+  "scout|contenedores|docker scout --help >/dev/null 2>&1 && echo disponible|manual:viene con Docker Desktop (docker scout cves <imagen>)"
+  "hadolint|contenedores|hadolint --version|fn:hadolint"
+  "checkov|calidad|checkov --version|pipx:checkov"
+  "pre-commit|calidad|pre-commit --version|pipx:pre-commit"
+  "k6|calidad|k6 version|fn:k6"
+  "osv-scanner|calidad|osv-scanner --version|fn:osv"
+  "markitdown|calidad|markitdown --version|pipx:markitdown[all]"
+  "pandoc|calidad|pandoc --version|apt:pandoc"
+  "pdfimages|calidad|pdfimages -v 2>&1|apt:poppler-utils"
+  "yamllint|calidad|yamllint --version|apt:yamllint"
+  "python3|python|python3 -m venv --help >/dev/null && python3 --version|apt:python3-venv"
+  "chafa|base|chafa --version | head -1|apt:chafa"
+  "numpy|python|python3 -c 'import numpy; print(numpy.__version__)'|apt:python3-numpy"
+  "uv|python|uv --version|pipx:uv"
+  "ruff|python|ruff --version|fn:ruff"
+  "node-lts|web|node -e 'process.exit(+process.versions.node.split(\".\")[0] % 2)' && node --version|fn:fnm"
+  "pnpm|web|pnpm --version|fn:pnpm"
+  "angular|web|command -v ng|manual:por proyecto con npx ng …, o npm i -g @angular/cli con el Node de fnm"
+  "rustup|rust|rustup --version|fn:rustup"
+  "cargo|rust|cargo --version|fn:rustup"
+  "psql|sql|psql --version|apt:postgresql-client"
+  "sqlite3|sql|sqlite3 --version|apt:sqlite3"
+  "mysql|sql|mysql --version|apt:mariadb-client"
+  "sqlcmd|sql|sqlcmd --version|fn:sqlcmd"
+  "dotnet|dev|dotnet --version|apt:dotnet-sdk-8.0"
+  "pwsh.exe|dev|pwsh.exe -NoLogo -NoProfile -Command \$PSVersionTable.PSVersion.ToString()|manual:PowerShell 7 en Windows (opcional; el popup usa 5.1)"
+)
+
+field() { cut -d'|' -f"$2" <<<"$1"; }
+# version_of <comando> — primera línea de su salida; falla si el comando falla. Lee toda la
+# salida antes de recortarla: con pipefail, cortar la tubería (grep -m1) daba falsos FALTA.
+version_of() {
+  local out; out="$(timeout 8 bash -c "$1" 2>/dev/null)" || return 1
+  out="$(grep -m1 . <<<"$out")"; [[ -n "$out" ]] || return 1
+  tr -s ' ' <<<"$out" | cut -c1-48
+}
+
+inventory() {
+  local t n g v how ok=0 miss=0
+  printf '%-12s %-13s %-6s %s\n' HERRAMIENTA GRUPO ESTADO "VERSIÓN / CÓMO INSTALAR"
+  for t in "${TOOLS[@]}"; do
+    n="$(field "$t" 1)"; g="$(field "$t" 2)"; how="$(field "$t" 4)"
+    if v="$(version_of "$(field "$t" 3)")" && [[ -n "$v" ]]; then
+      printf '%-12s %-13s \033[32m%-6s\033[0m %s\n' "$n" "$g" OK "$v"; ok=$((ok + 1))
+    else
+      printf '%-12s %-13s \033[31m%-6s\033[0m %s\n' "$n" "$g" FALTA "${how#*:}"; miss=$((miss + 1))
+    fi
+  done
+  printf '\n%d instaladas, %d faltan. Instala con: ws-tools install <grupo|herramienta>\n' "$ok" "$miss"
+}
+
+# --- instaladores (fn:) --------------------------------------------------------
+apt_repo() { # apt_repo <nombre> <url de la llave> <línea deb con KEYRING>
+  local kr="/usr/share/keyrings/$1.gpg"
+  [[ -f "/etc/apt/sources.list.d/$1.list" ]] && return 0
+  curl -fsSL "$2" | sudo gpg --dearmor --yes -o "$kr"
+  echo "${3//KEYRING/$kr}" | sudo tee "/etc/apt/sources.list.d/$1.list" >/dev/null
+  sudo apt-get update -qq
+}
+gh_latest() { # gh_latest <repo> <asset> <archivo de checksums> <destino>
+  local base="https://github.com/$1/releases/latest/download" d exp act; d="$(mktemp -d)"
+  if ! curl -fsSL -o "$d/$2" "$base/$2" || ! curl -fsSL -o "$d/sums" "$base/$3"; then echo "  no pude descargar $2"; rm -rf "$d"; return 1; fi
+  exp="$(awk -v f="$2" '$2 == f || $2 == "*" f { print $1; exit }' "$d/sums")"
+  [[ -n "$exp" ]] || exp="$(awk 'NF == 1 { print $1; exit }' "$d/sums")"
+  act="$(sha256sum "$d/$2" | cut -d' ' -f1)"
+  if [[ -z "$exp" || "$exp" != "$act" ]]; then echo "  checksum de $2 no coincide; no se instala"; rm -rf "$d"; return 1; fi
+  cp "$d/$2" "$4"; rm -rf "$d"
+}
+fn_agg() {
+  local f; f="$(mktemp)"
+  curl -fsSL -o "$f" "https://github.com/asciinema/agg/releases/download/$AGG_VER/agg-x86_64-unknown-linux-musl" &&
+    echo "$AGG_SHA  $f" | sha256sum -c --quiet && install -m 755 "$f" "$HOME/.local/bin/agg"; rm -f "$f"
+}
+fn_az()        { curl -fsSL https://aka.ms/InstallAzureCLIDeb -o /tmp/az-install.sh && sudo bash /tmp/az-install.sh; }
+fn_bicep()     { az bicep install; }
+fn_aks()       { sudo az aks install-cli; }
+fn_terraform() {
+  apt_repo hashicorp https://apt.releases.hashicorp.com/gpg \
+    "deb [signed-by=KEYRING] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
+  sudo apt-get install -y terraform
+}
+fn_helm() {
+  apt_repo helm https://packages.buildkite.com/helm-linux/helm-debian/gpgkey \
+    "deb [signed-by=KEYRING] https://packages.buildkite.com/helm-linux/helm-debian/any/ any main"
+  sudo apt-get install -y helm
+}
+fn_k6() {
+  if [[ ! -f /etc/apt/sources.list.d/k6.list ]]; then
+    sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+      --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+    echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" |
+      sudo tee /etc/apt/sources.list.d/k6.list >/dev/null
+    sudo apt-get update -qq
+  fi
+  sudo apt-get install -y k6
+}
+fn_tflint() {
+  local d; d="$(mktemp -d)"
+  gh_latest terraform-linters/tflint tflint_linux_amd64.zip checksums.txt "$d/t.zip" &&
+    unzip -o -q "$d/t.zip" -d "$d" && install -m 755 "$d/tflint" "$HOME/.local/bin/tflint"; rm -rf "$d"
+}
+fn_k9s() {
+  local d; d="$(mktemp -d)"
+  gh_latest derailed/k9s k9s_linux_amd64.deb checksums.sha256 "$d/k9s.deb" && sudo apt-get install -y "$d/k9s.deb"; rm -rf "$d"
+}
+fn_hadolint() { gh_latest hadolint/hadolint hadolint-Linux-x86_64 hadolint-Linux-x86_64.sha256 "$HOME/.local/bin/hadolint" && chmod 755 "$HOME/.local/bin/hadolint"; }
+fn_awscli() {
+  local d; d="$(mktemp -d)"
+  curl -fsSL -o "$d/aws.zip" https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip &&
+    unzip -q "$d/aws.zip" -d "$d" && sudo "$d/aws/install" --update; rm -rf "$d"
+}
+fn_osv() { gh_latest google/osv-scanner osv-scanner_linux_amd64 osv-scanner_SHA256SUMS "$HOME/.local/bin/osv-scanner" && chmod 755 "$HOME/.local/bin/osv-scanner"; }
+fn_starship() {
+  local d; d="$(mktemp -d)"
+  gh_latest starship/starship starship-x86_64-unknown-linux-musl.tar.gz starship-x86_64-unknown-linux-musl.tar.gz.sha256 "$d/s.tgz" &&
+    tar -xzf "$d/s.tgz" -C "$d" && install -m 755 "$d/starship" "$HOME/.local/bin/starship"; rm -rf "$d"
+}
+fn_ruff() { uv tool install ruff; }
+fn_rustup() {
+  curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh &&
+    sh /tmp/rustup-init.sh -y --profile default && echo "  Abre una terminal nueva para tener cargo en el PATH."
+}
+fn_fnm() {
+  local dir="$HOME/.local/share/fnm"
+  curl -fsSL https://fnm.vercel.app/install -o /tmp/fnm-install.sh && bash /tmp/fnm-install.sh --skip-shell --install-dir "$dir" || return 1
+  grep -q 'fnm env' "$HOME/.bashrc" ||
+    printf '\n# Node LTS con fnm (usa /tmp si /run/user/$UID aún no existe al arrancar WSL)\nexport PATH="%s:$PATH"\n_fnm_rt="${XDG_RUNTIME_DIR:-}"; [ -d "$_fnm_rt" ] || { _fnm_rt="/tmp/fnm-$UID"; mkdir -p "$_fnm_rt" && chmod 700 "$_fnm_rt"; }\neval "$(XDG_RUNTIME_DIR="$_fnm_rt" fnm env --use-on-cd --shell bash)"; unset _fnm_rt\n' "$dir" >> "$HOME/.bashrc"
+  "$dir/fnm" install --lts && "$dir/fnm" default lts-latest && echo "  Abre una terminal nueva para usar el Node LTS."
+}
+fn_pnpm() { npm install -g pnpm || echo "  Si falla por permisos, instala antes el Node de fnm (ws-tools install node-lts)."; }
+fn_sqlcmd() {
+  if [[ ! -f /etc/apt/sources.list.d/microsoft-prod.list ]]; then
+    curl -fsSL "https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb" -o /tmp/pmp.deb &&
+      sudo dpkg -i /tmp/pmp.deb && sudo apt-get update -qq
+  fi
+  sudo apt-get install -y sqlcmd
+}
+fn_azd() { curl -fsSL https://aka.ms/install-azd.sh -o /tmp/install-azd.sh && bash /tmp/install-azd.sh; }
+
+install_tools() {
+  local force=0 want=() t n g how apt=() pipx=() fns=() manual=()
+  for a in "$@"; do [[ "$a" == --force ]] && force=1 || want+=("$a"); done
+  (( ${#want[@]} )) || { echo "Indica grupos o herramientas: base nube calidad dev | terraform helm …"; return 2; }
+  local free; free="$(df -BG --output=avail /mnt/c 2>/dev/null | tail -1 | tr -dc 0-9)"
+  if (( force == 0 && ${free:-0} < MIN_FREE_GB )); then
+    echo "C: tiene ${free:-?} GB libres (mínimo $MIN_FREE_GB). El disco de Ubuntu crece en C:; libera espacio o usa --force."
+    return 1
+  fi
+  for t in "${TOOLS[@]}"; do
+    n="$(field "$t" 1)"; g="$(field "$t" 2)"; how="$(field "$t" 4)"
+    [[ " ${want[*]} " == *" $n "* || " ${want[*]} " == *" $g "* ]] || continue
+    version_of "$(field "$t" 3)" | grep -q . && continue        # ya está
+    case "$how" in
+      apt:*)    apt+=("${how#apt:}") ;;
+      pipx:*)   pipx+=("${how#pipx:}") ;;
+      fn:*)     [[ " ${fns[*]} " == *" ${how#fn:} "* ]] || fns+=("${how#fn:}") ;;
+      manual:*) manual+=("$n: ${how#manual:}") ;;
+    esac
+  done
+  (( ${#apt[@]} ))  && { echo "==> apt: ${apt[*]}"; sudo apt-get install -y "${apt[@]}"; }
+  (( ${#pipx[@]} )) && { echo "==> pipx: ${pipx[*]}"; for p in "${pipx[@]}"; do pipx install "$p"; done; pipx ensurepath >/dev/null; }
+  for f in "${fns[@]}"; do echo "==> $f"; "fn_$f" || echo "  falló $f"; done
+  (( ${#manual[@]} )) && { echo "==> A mano:"; printf '  %s\n' "${manual[@]}"; }
+  echo; inventory
+}
+
+case "${1:-}" in
+  ""|inventario|check) inventory ;;
+  install) shift; install_tools "$@" ;;
+  -h|--help) sed -n '3,11p' "$0" ;;
+  *) echo "uso: ws-tools [install <grupo|herramienta>...]" >&2; exit 2 ;;
+esac

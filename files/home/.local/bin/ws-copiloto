@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+#
+# ws-copiloto — motor API del copiloto de la terminal con el CLI oficial de Anthropic (`ant`).
+# Inicia sesión con OAuth de Claude Console: no hay API key que crear, guardar ni rotar. El login
+# vive en su propio directorio (ANTHROPIC_CONFIG_DIR=~/.config/anthropic-copiloto) para que Claude
+# Code no lo tome nunca como credencial alternativa de tus sesiones.
+#
+# Uso:
+#   ws-copiloto instalar [VERSION]   descarga ant (release oficial) y verifica su SHA-256
+#   ws-copiloto login                inicia sesión (elige organización y workspace de Console)
+#   ws-copiloto estado               muestra la credencial y el workspace activos
+#   ws-copiloto prueba               consulta mínima a Haiku y mide la latencia
+#   ws-copiloto logout               cierra la sesión del copiloto
+set -euo pipefail
+DIR="${AI_SHELL_ANT_DIR:-$HOME/.config/anthropic-copiloto}"
+VERSION_DEF="2.10.0"
+A() { env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_PROFILE ANTHROPIC_CONFIG_DIR="$DIR" ant "$@"; }
+
+instalar() {
+  local v="${1:-$VERSION_DEF}" arch t base
+  case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; *) echo "✖ arquitectura no soportada" >&2; exit 1 ;; esac
+  if command -v ant >/dev/null && [[ "$(ant --version 2>/dev/null)" == *"$v"* ]]; then echo "  igual   ant $v"; return; fi
+  t="$(mktemp -d)"; trap 'rm -rf "$t"' RETURN
+  base="https://github.com/anthropics/anthropic-cli/releases/download/v$v"
+  curl -fsSL -o "$t/ant.tgz" "$base/ant_${v}_linux_${arch}.tar.gz"
+  curl -fsSL -o "$t/sumas.txt" "$base/ant_${v}_checksums.txt"
+  # Integridad: el tarball debe coincidir con la suma publicada en el mismo release.
+  ( cd "$t" && grep " ant_${v}_linux_${arch}.tar.gz\$" sumas.txt | sed "s# ant_${v}_linux_${arch}.tar.gz\$# ant.tgz#" | sha256sum -c --quiet ) \
+    || { echo "✖ la suma SHA-256 de ant no coincide; no se instala" >&2; exit 1; }
+  tar -xzf "$t/ant.tgz" -C "$t" ant
+  install -D -m 755 "$t/ant" "$HOME/.local/bin/ant"
+  echo "  listo   ant $("$HOME/.local/bin/ant" --version 2>/dev/null) en ~/.local/bin (SHA-256 verificado)"
+}
+
+case "${1:-estado}" in
+  instalar) shift; instalar "$@" ;;
+  login)
+    mkdir -p "$DIR" && chmod 700 "$DIR"
+    if [[ -z "${BROWSER:-}" ]] && command -v wslview >/dev/null; then export BROWSER=wslview; fi
+    echo "Elige la organización y el workspace de Claude Console que pagarán el copiloto."
+    echo "Si el navegador no abre, corre: ws-copiloto login --no-browser (y pega el código aquí)."
+    shift; A auth login "$@" ;;
+  estado) A auth status ;;
+  prueba)
+    t0=$(date +%s%N)
+    r="$(printf '{"model":"claude-haiku-5-5","max_tokens":10,"messages":[{"role":"user","content":"Responde solo: ok"}]}' \
+         | A messages create --format json 2>&1)" || { echo "✖ $r" >&2; exit 1; }
+    echo "  respuesta: $(jq -r '.content[0].text' <<<"$r") · $(( ($(date +%s%N) - t0) / 1000000 )) ms · tokens: $(jq -c '.usage | {input_tokens, output_tokens}' <<<"$r")" ;;
+  logout) A auth logout ;;
+  *) sed -n '8,13p' "$0"; exit 2 ;;
+esac

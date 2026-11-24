@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+#
+# tmux-logs — logs en vivo con alarma: abre una pestaña «logs:<origen>» que sigue los logs, pinta errores en rojo
+# y advertencias en amarillo, y te avisa (Windows + Telegram, máximo uno cada 5 min) cuando aparece un error.
+# Menú → Paneles → L, o la paleta.
+# Orígenes: Kubernetes (pod del contexto actual) · Azure App Service · Docker · archivo .log · comando propio.
+# Uso: tmux-logs                     selector (flotante)
+#      tmux-logs --seguir <nombre> <comando…>   (interno: corre en la pestaña nueva)
+#      tmux-logs --filtro <nombre>   (interno / pruebas: stdin → pantalla, con alarma)
+# Patrón de error: WS_LOGS_PATRON (regex de Python, sin mayúsculas/minúsculas). Los textos del aviso van redactados.
+set -uo pipefail
+PATRON="${WS_LOGS_PATRON:-\\b(error|exception|fatal|panic|critical|unhandled|traceback)\\b|\\s5\\d\\d\\s}"
+
+if [[ "${1:-}" == --filtro ]]; then
+  exec python3 -u -c '
+import os, re, subprocess, sys, time
+nombre, pat = sys.argv[1], re.compile(sys.argv[2], re.I)
+warn = re.compile(r"\bwarn(ing)?\b", re.I)
+ultimo, pendientes = 0.0, 0
+for linea in sys.stdin:
+    l = linea.rstrip("\n")
+    if pat.search(l):
+        sys.stdout.write("\033[1;31m" + l + "\033[0m\n")
+        pendientes += 1
+        if time.time() - ultimo > float(os.environ.get("WS_LOGS_CADA", "300")):
+            ultimo = time.time()
+            subprocess.Popen(["ws-aviso", "--panel", os.environ.get("TMUX_PANE", ""), "--telegram",
+                              f"🚨 Error en logs:{nombre} ({pendientes})", l[:300]],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            pendientes = 0
+    elif warn.search(l):
+        sys.stdout.write("\033[33m" + l + "\033[0m\n")
+    else:
+        sys.stdout.write(l + "\n")
+    sys.stdout.flush()
+' "$2" "$PATRON"
+fi
+
+if [[ "${1:-}" == --seguir ]]; then
+  nombre="$2"; shift 2
+  printf '\e[1m📜 logs:%s\e[0m  ·  errores en rojo y aviso a Windows/Telegram (máx. 1 cada 5 min)  ·  Ctrl+C detiene\n\n' "$nombre"
+  "$@" 2>&1 | "$0" --filtro "$nombre"
+  read -rsn1 -p $'\n[terminó: una tecla cierra]'; exit 0
+fi
+
+elegir() { fzf --reverse --prompt "$1> " --header "${2:-}"; }
+origen="$(printf '%s\n' "Kubernetes: pod" "Azure App Service" "Docker: contenedor" "Archivo .log" "Comando propio" | elegir origen 'Logs en vivo con alarma')" || exit 0
+case "$origen" in
+  Kubernetes*)
+    command -v kubectl >/dev/null || { echo "kubectl no está instalado"; sleep 2; exit 1; }
+    pod="$(timeout 20 kubectl get pods -A --no-headers -o custom-columns=NS:.metadata.namespace,POD:.metadata.name 2>/dev/null \
+           | elegir pod "Contexto: $(kubectl config current-context 2>/dev/null)")" || exit 0
+    read -r ns nom <<<"$pod"; nombre="$nom"; cmd=(kubectl logs -f --tail=200 --all-containers -n "$ns" "$nom") ;;
+  Azure*)
+    command -v az >/dev/null || { echo "az no está instalado"; sleep 2; exit 1; }
+    app="$(timeout 60 az webapp list --query '[].[name,resourceGroup]' -o tsv 2>/dev/null | elegir app "Suscripción: $(az account show --query name -o tsv 2>/dev/null)")" || exit 0
+    read -r nom rg <<<"$app"; nombre="$nom"; cmd=(az webapp log tail -n "$nom" -g "$rg") ;;
+  Docker*)
+    c="$(docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}' 2>/dev/null | elegir contenedor)" || exit 0
+    nombre="${c%%$'\t'*}"; cmd=(docker logs -f --tail 200 "$nombre") ;;
+  Archivo*)
+    f="$(find . -maxdepth 4 -type f \( -name '*.log' -o -name '*.log.*' \) 2>/dev/null | elegir archivo "Carpeta: $PWD")" || exit 0
+    nombre="$(basename "$f")"; cmd=(tail -n 200 -F "$(realpath "$f")") ;;
+  Comando*)
+    read -e -r -p 'Comando (p. ej. journalctl -fu nginx): ' linea || exit 0
+    [[ -n "${linea// /}" ]] || exit 0
+    nombre="$(awk '{print $1}' <<<"$linea")"; cmd=(bash -c "$linea") ;;
+  *) exit 0 ;;
+esac
+q=(); for a in "${cmd[@]}"; do q+=("$(printf '%q' "$a")"); done
+tmux new-window -n "logs:${nombre:0:20}" -c "$PWD" "$0 --seguir $(printf '%q' "$nombre") ${q[*]}"

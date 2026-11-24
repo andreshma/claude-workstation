@@ -1,0 +1,877 @@
+#!/usr/bin/env python3
+"""ws-informe — informe completo de cómo trabajas con Claude, y qué hacer con eso. Menú → Consumo → i.
+
+Mide (todo local, sin texto de conversaciones salvo frases recurrentes normalizadas y redactadas):
+  · uso: costo equivalente, turnos, horas activas, sesiones, caché, por proyecto y modelo
+  · patrón: a qué horas y días trabajas, duración de turnos, turnos por sesión, tu espera para aprobar
+  · modelos y ruteo: mezcla por costo, decisiones del ruteo (aceptadas, rechazadas, silenciadas)
+  · agentes: qué subagentes usas, cuánto, en qué proyectos, con qué modelo, cuánto tardan
+  · herramientas: usos, tiempos, errores, MCP, skills (de las trazas)
+  · prompts: comandos «/» más usados y frases con que empiezas pedidos que se repiten (candidatas a comando o skill)
+  · MemPalace: guardados del diario (ok/fallidos), minados, reinicios y errores del Hub, tamaño del palacio
+  · recall: decisiones, umbral, latencia y qué inyectaría (tools/shadow_report.py del repo recall)
+Con --ia, Claude (Sonnet, sin herramientas) lee las MÉTRICAS agregadas y escribe hallazgos y sugerencias concretas;
+con --ia-memoria además consulta MemPalace por su MCP (estado, alas, grafo) y lo resume.
+Salida: %UserProfile%\\ws-telemetria\\informe-AAAA-MM-DD.html y .md (y ~/.local/share/ws-telemetria/informes/).
+Uso: ws-informe [--dias 30] [--ia] [--ia-memoria] [--json] [--abrir]
+Rutas (opcional) en ~/.config/ws-informe.conf: recall_repo=… · recall_log=… · mempalace_dir=…
+"""
+from __future__ import annotations
+
+import datetime as dt
+import glob
+import hashlib
+import html
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shutil
+import statistics
+import subprocess  # nosec B404 — claude, python del repo recall, wslpath, explorer con argumentos fijos
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+
+HOME = Path.home()
+BIN = HOME / ".local/bin"
+CLAUDE = Path(os.environ.get("WS_TELEMETRIA_CLAUDE", HOME / ".claude"))
+DATOS = Path(os.environ.get("WS_TELEMETRIA_DIR", HOME / ".local/share/ws-telemetria"))
+CACHE = DATOS / "cache-informe"
+TICKET = re.compile(r"[A-Z][A-Z0-9]+-\d+")
+STOP = set("a al con de del el en es la las lo los me mi no o para por que se si su te tu un una y ya the to of and in it is this".split())
+
+
+def conf() -> dict:
+    c = {"recall_repo": "@WINHOME@/source/repos/recall",
+         "recall_log": "@WINHOME@/AppData/Local/recall/shadow.log",
+         "mempalace_dir": "@WINHOME@/.mempalace"}
+    f = HOME / ".config/ws-informe.conf"
+    if f.exists():
+        for l in f.read_text(encoding="utf-8").splitlines():
+            if "=" in l and not l.strip().startswith("#"):
+                k, v = l.split("=", 1); c[k.strip()] = v.strip()
+    return c
+
+
+def telemetria():
+    """ws-telemetria como módulo (precios, turnos, trazas, estimación): una sola fuente de verdad."""
+    cargador = importlib.machinery.SourceFileLoader("wst", str(BIN / "ws-telemetria"))
+    spec = importlib.util.spec_from_loader("wst", cargador)
+    m = importlib.util.module_from_spec(spec); cargador.exec_module(m)
+    return m
+
+
+def redactar(t: str) -> str:
+    try:
+        return subprocess.run([str(BIN / "ws-redactar")], input=t, capture_output=True, text=True, timeout=10).stdout  # nosec B603
+    except (OSError, subprocess.SubprocessError):
+        return t
+
+
+def local(ts: str | None):
+    try:
+        return dt.datetime.fromisoformat((ts or "").replace("Z", "+00:00")).astimezone()
+    except ValueError:
+        return None
+
+
+# ---- transcripciones: prompts normalizados y subagentes (con caché por archivo) -------------------------
+def normalizar(t: str) -> str:
+    t = re.sub(r"```.*?```", " ", t, flags=re.S)
+    t = re.sub(r"https?://\S+|[\w.-]*[/\\][\w./\\-]+|\b\d[\d.,:]*\b|[`\"'«»()\[\]{}<>]", " ", t.lower())
+    palabras = [p for p in re.findall(r"[a-záéíóúñü]+", t) if p not in STOP]
+    return " ".join(palabras[:6])
+
+
+def extraer(f: Path) -> dict:
+    sub = "/subagents/" in str(f)
+    prompts, agentes, comandos = [], [], []
+    with open(f, encoding="utf-8", errors="replace") as fh:
+        for linea in fh:
+            try:
+                o = json.loads(linea)
+            except ValueError:
+                continue
+            ts = o.get("timestamp"); proy = re.split(r"[\\/]", (o.get("cwd") or "").rstrip("\\/"))[-1] or "?"
+            m = o.get("message") or {}
+            c = m.get("content")
+            if o.get("type") == "user" and not sub and not o.get("isMeta"):
+                texto = c if isinstance(c, str) else " ".join(b.get("text", "") for b in c or [] if isinstance(b, dict) and b.get("type") == "text")
+                if not texto or texto.startswith("<local-command") or "tool_result" in json.dumps(c)[:200]:
+                    continue
+                cm = re.search(r"<command-name>(/[\w:-]+)</command-name>", texto) or re.match(r"\s*(/[\w:-]+)", texto)
+                if cm:
+                    comandos.append([ts, cm.group(1)]); continue
+                if texto.lstrip().startswith("<"):
+                    continue
+                n = normalizar(texto)
+                if len(n.split()) >= 3:
+                    prompts.append([ts, proy, n])
+            elif o.get("type") == "assistant":
+                for b in c or []:
+                    if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") in ("Task", "Agent"):
+                        i = b.get("input") or {}
+                        agentes.append([ts, proy, i.get("subagent_type") or "general-purpose", i.get("model") or "", m.get("model") or ""])
+    return {"prompts": prompts, "agentes": agentes, "comandos": comandos}
+
+
+def transcripciones() -> dict:
+    CACHE.mkdir(parents=True, exist_ok=True)
+    total = {"prompts": [], "agentes": [], "comandos": []}
+    for f in glob.glob(str(CLAUDE / "projects/**/*.jsonl"), recursive=True):
+        p = Path(f)
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        clave = hashlib.sha1(f.encode(), usedforsecurity=False).hexdigest()
+        c = CACHE / f"{clave}.json"; firma = f"i1:{st.st_mtime_ns}:{st.st_size}"
+        d = None
+        if c.exists():
+            try:
+                d = json.loads(c.read_text())
+                d = d["datos"] if d.get("firma") == firma else None
+            except (ValueError, KeyError):
+                d = None
+        if d is None:
+            d = extraer(p); c.write_text(json.dumps({"firma": firma, "datos": d}))
+        for k in total:
+            total[k] += d[k]
+    return total
+
+
+# ---- MemPalace y recall ----------------------------------------------------------------------------
+def mempalace(c: dict, desde: dt.date) -> dict | None:
+    d = Path(c["mempalace_dir"])
+    if not d.exists():
+        return None
+    r = {"diario": Counter(), "por_dia": defaultdict(Counter), "hub": Counter(), "palacio_mb": None}
+    hook = d / "hook_state/hook.log"
+    if hook.exists():
+        # El log solo trae la hora ([HH:MM:SS]). El día se reconstruye contando los cambios de día (la hora retrocede)
+        # hacia atrás desde la fecha de modificación del archivo. Es aproximado: un día sin actividad no se nota.
+        lineas = open(hook, encoding="utf-8", errors="replace").read().splitlines()
+        saltos, previo, marca = 0, None, []
+        for l in lineas:
+            m = re.match(r"\[(\d{2}):(\d{2}):(\d{2})\]", l)
+            if m:
+                seg = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+                if previo is not None and seg < previo - 60:
+                    saltos += 1
+                previo = seg
+            marca.append(saltos)
+        ultimo = dt.date.fromtimestamp(hook.stat().st_mtime)
+        r["fechas_aprox"] = True
+        for l, s in zip(lineas, marca):
+            fecha = re.search(r"\d{4}-\d{2}-\d{2}", l)
+            dia = fecha.group(0) if fecha else (ultimo - dt.timedelta(days=saltos - s)).isoformat()
+            if dia < desde.isoformat():
+                continue
+            for patron, k in ((r"Diary checkpoint (saved|sent|forwarded)", "guardado"), (r"Diary checkpoint failed|did not report back", "fallido"),
+                              (r"Save marker advanced without diary", "sin_diario"), (r"\bmin(e|ing)\b", "minado")):
+                if re.search(patron, l, re.I):
+                    r["diario"][k] += 1; r["por_dia"][dia][k] += 1
+    for hl in d.glob("server/*/hub.log"):
+        for l in open(hl, encoding="utf-8", errors="replace"):
+            if "listening on" in l:
+                r["hub"]["arranques"] += 1
+            if re.search(r"CUBLAS failure|ONNXRuntimeError|Filtered search failed", l):
+                r["hub"]["errores_embedding"] += 1
+    sq = d / "palace/chroma.sqlite3"
+    if sq.exists():
+        r["palacio_mb"] = round(sq.stat().st_size / 1048576)
+    r["por_dia"] = {k: dict(v) for k, v in sorted(r["por_dia"].items())[-14:]}
+    r["diario"] = dict(r["diario"]); r["hub"] = dict(r["hub"])
+    return r
+
+
+def recall(c: dict, desde: dt.date) -> dict | None:
+    rep = Path(c["recall_repo"]) / "tools/shadow_report.py"
+    if not rep.exists() or not Path(c["recall_log"]).exists():
+        return None
+    try:
+        out = subprocess.run([sys.executable, "-I", str(rep), "--log", c["recall_log"], "--since", desde.isoformat()],  # nosec B603
+                             capture_output=True, text=True, timeout=120).stdout
+        return json.loads(out)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+RUIDO = ("session being continued", "request interrupted", "caveat messages below")
+
+# ---- recursos de la máquina, tokens, aprendizaje e ideas ------------------------------------------------
+def recursos(wst, desde: dt.date) -> dict | None:
+    """CPU, RAM, operaciones de disco y MB leídos/escritos de los procesos de Claude, por día y por proyecto.
+    Sale de las muestras por minuto de ws-telemetria (raw/recursos-AAAA-MM-DD.jsonl); los contadores son acumulados
+    por proceso, así que se suma la diferencia entre la primera y la última muestra de cada proceso en el día."""
+    raw = getattr(wst, "RAW", None)
+    if not raw or not Path(raw).is_dir():
+        return None
+    dias, proy, muestras = [], defaultdict(lambda: {"cpu_s": 0.0, "seg": 0.0, "ram": 0, "ops": 0, "leidos": 0, "escritos": 0}), 0
+    for f in sorted(Path(raw).glob("recursos-*.jsonl")):
+        dia = f.stem.replace("recursos-", "")
+        if dia < desde.isoformat():
+            continue
+        por_pid = defaultdict(list)
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            for linea in fh:
+                try:
+                    r = json.loads(linea)
+                    por_pid[r["pid"]].append(r)
+                except (ValueError, KeyError, TypeError):
+                    continue
+        t = {"cpu_s": 0.0, "ops": 0, "leidos": 0, "escritos": 0}
+        ram_min = defaultdict(int); ts = []
+        for rs in por_pid.values():
+            rs.sort(key=lambda r: r["ts"]); muestras += len(rs)
+            a = proy[rs[-1].get("proyecto") or "?"]
+            a["ram"] = max(a["ram"], max(r.get("rss_kb", 0) for r in rs))
+            for r in rs:
+                ram_min[int(r["ts"] // 60)] += r.get("rss_kb", 0); ts.append(r["ts"])
+            if len(rs) > 1:
+                cpu = max(0.0, rs[-1]["cpu_s"] - rs[0]["cpu_s"]); t["cpu_s"] += cpu; a["cpu_s"] += cpu; a["seg"] += rs[-1]["ts"] - rs[0]["ts"]
+                for k in ("ops", "leidos", "escritos"):
+                    v = max(0, rs[-1].get(k, 0) - rs[0].get(k, 0)); t[k] += v; a[k] += v
+        seg = (max(ts) - min(ts)) if len(ts) > 1 else 0
+        dias.append({"dia": dia, "procesos": len(por_pid), "cpu_min": round(t["cpu_s"] / 60, 1),
+                     "cpu_pct": round(100 * t["cpu_s"] / seg, 1) if seg else 0,
+                     "ram_pico_mb": round(max(ram_min.values(), default=0) / 1024),
+                     "iops": round(t["ops"] / seg, 1) if seg else 0,
+                     "leidos_mb": round(t["leidos"] / 1e6, 1), "escritos_mb": round(t["escritos"] / 1e6, 1)})
+    if not dias:
+        return None
+    return {"dias": dias, "muestras": muestras,
+            "proyectos": sorted(({"proyecto": k, "cpu_min": round(v["cpu_s"] / 60, 1), "cpu_pct": round(100 * v["cpu_s"] / v["seg"], 1) if v["seg"] else 0,
+                                  "ram_mb": round(v["ram"] / 1024), "iops": round(v["ops"] / v["seg"], 1) if v["seg"] else 0,
+                                  "leidos_mb": round(v["leidos"] / 1e6, 1), "escritos_mb": round(v["escritos"] / 1e6, 1)}
+                                 for k, v in proy.items()), key=lambda x: -x["cpu_min"])[:10]}
+
+
+def tokens(turnos: list[dict]) -> dict:
+    """Tokens por tipo y palabras tuyas y de Claude en el periodo (solo conteos, nunca el texto)."""
+    t = Counter(); pp, rp = [], []
+    for x in turnos:
+        for m in x["modelos"].values():
+            for k in ("in", "out", "cw", "cr", "think"):
+                t[k] += m.get(k, 0)
+        if not x.get("subagente") and not x.get("auto"):
+            pp.append(x.get("prompt_palabras") or 0)
+            if x.get("resp_palabras"):
+                rp.append(x["resp_palabras"])
+    n = len(pp) or 1; ent = t["in"] + t["cw"] + t["cr"]
+    return {"entrada_nueva": t["in"], "cache_escrita": t["cw"], "cache_leida": t["cr"], "salida": t["out"], "razonamiento": t["think"],
+            "total": ent + t["out"], "cache_pct": round(100 * t["cr"] / ent, 1) if ent else 0,
+            "razonamiento_pct": round(100 * t["think"] / t["out"], 1) if t["out"] else 0, "por_turno": round((ent + t["out"]) / n),
+            "palabras_tuyas": sum(pp), "palabras_claude": sum(rp),
+            "prompt_mediano": round(statistics.median(pp)) if pp else 0, "respuesta_mediana": round(statistics.median(rp)) if rp else 0,
+            "palabras_claude_por_tuya": round(sum(rp) / sum(pp), 1) if sum(pp) else 0}
+
+
+def base_estimacion(turnos: list[dict], proyectos: list[dict], rec: dict | None) -> list[dict]:
+    """Datos reales por proyecto para estimar trabajo futuro: horas activas, turnos, tokens, palabras, costo, líneas,
+    commits y CPU, más las razones que sirven de unidad (por hora activa y por cada 100 líneas agregadas)."""
+    ag = defaultdict(lambda: {"tokens": 0, "salida": 0, "tuyas": 0, "claude": 0})
+    for t in turnos:
+        a = ag[t.get("proyecto") or "?"]
+        for m in t["modelos"].values():
+            a["tokens"] += m.get("in", 0) + m.get("cw", 0) + m.get("cr", 0) + m.get("out", 0); a["salida"] += m.get("out", 0)
+        if not t.get("subagente") and not t.get("auto"):
+            a["tuyas"] += t.get("prompt_palabras") or 0; a["claude"] += t.get("resp_palabras") or 0
+    cpu = {x["proyecto"]: x for x in (rec or {}).get("proyectos", [])}
+    out = []
+    for p in proyectos:
+        a, h, lin = ag[p["clave"]], p.get("horas_activas") or 0, p.get("lineas_mas") or 0
+        out.append({"proyecto": p["clave"], "horas_activas": h, "turnos": p["turnos"], "costo": p["costo"], "tokens": a["tokens"], "tokens_salida": a["salida"],
+                    "palabras_tuyas": a["tuyas"], "palabras_claude": a["claude"], "lineas_mas": lin, "commits": p.get("commits") or 0,
+                    "cpu_min": (cpu.get(p["clave"]) or {}).get("cpu_min"), "ram_mb": (cpu.get(p["clave"]) or {}).get("ram_mb"),
+                    "costo_por_hora": round(p["costo"] / h, 2) if h else None, "turnos_por_hora": round(p["turnos"] / h, 1) if h else None,
+                    "tokens_salida_por_hora": round(a["salida"] / h) if h else None, "palabras_tuyas_por_hora": round(a["tuyas"] / h) if h else None,
+                    "costo_por_100_lineas": round(100 * p["costo"] / lin, 2) if lin else None})
+    return out
+
+
+def aprendizaje(desde: dt.date) -> dict:
+    """Lo que Claude ya guarda de ti y lo que tienes hecho a tu medida: memorias por tipo (y las nuevas del periodo),
+    comandos «/», skills, agentes y reglas. Solo nombres, tipo y fecha: el contenido de las memorias no se copia."""
+    base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude")
+    mem, tipos = [], Counter()
+    for f in base.glob("projects/*/memory/*.md"):
+        if f.name == "MEMORY.md":
+            continue
+        try:
+            cab = f.read_text(encoding="utf-8", errors="replace")[:1500]
+            fecha = dt.date.fromtimestamp(f.stat().st_mtime)
+        except OSError:
+            continue
+        tipo = (re.search(r"^\s*type:\s*(\w+)", cab, re.M) or [None, "sin tipo"])[1]
+        nombre = (re.search(r"^name:\s*(.+)$", cab, re.M) or [None, f.stem])[1].strip()
+        tipos[tipo] += 1
+        mem.append({"nombre": nombre[:60], "tipo": tipo, "fecha": fecha.isoformat(), "nueva": fecha >= desde})
+
+    def nombres(patron: str) -> list[str]:
+        return sorted({(f.parent.name if f.name == "SKILL.md" else f.stem) for f in base.glob(patron)})
+
+    reglas = base / "CLAUDE.md"
+    cmds, skills, agentes = nombres("commands/**/*.md"), nombres("skills/*/SKILL.md"), nombres("agents/*.md")
+    return {"memorias": len(mem), "memorias_nuevas": sum(m["nueva"] for m in mem), "por_tipo": dict(tipos.most_common()),
+            "recientes": sorted(mem, key=lambda m: m["fecha"], reverse=True)[:12],
+            "comandos_propios": cmds, "skills_propias": skills, "agentes_propios": agentes,
+            "reglas_lineas": len(reglas.read_text(encoding="utf-8", errors="replace").splitlines()) if reglas.is_file() else 0}
+
+
+def ideas(d: dict) -> list[dict]:
+    """Qué mejorar, qué crear y qué vigilar, deducido de las métricas con reglas fijas (sin IA): cada idea lleva su evidencia."""
+    out = []
+
+    def idea(tipo: str, titulo: str, evidencia: str) -> None:
+        out.append({"tipo": tipo, "titulo": titulo, "evidencia": evidencia})
+
+    u, tk, te, ap = d["uso"], d.get("tokens") or {}, d.get("tendencia") or {}, d.get("aprendizaje") or {}
+    a, b = te.get("actual") or {}, te.get("anterior") or {}
+    for r in d["recurrentes"][:5]:
+        idea("crear", f"Comando «/» o skill para «{r['frase']}»", f"lo pediste {r['veces']} veces en {r['proyectos']} proyecto(s); ws-aprender comandos lo arma")
+    if b.get("costo") and a.get("costo", 0) > 1.3 * b["costo"]:
+        idea("vigilar", "El costo de la semana subió", f"${a['costo']:,.2f} en 7 días contra ${b['costo']:,.2f} los 7 anteriores (+{100 * (a['costo'] - b['costo']) / b['costo']:.0f} %)")
+    if a.get("sub_pct", 0) >= 40:
+        idea("mejorar", "Los subagentes pesan mucho en el costo", f"{a['sub_pct']} % del costo de los últimos 7 días; revisa cuáles pueden ir con un modelo más chico")
+    caros = [m for m in d["modelos"] if m["pct"] >= 85]
+    if caros:
+        idea("mejorar", f"Casi todo corre en {caros[0]['modelo']}", f"{caros[0]['pct']} % del costo; el ruteo puede mandar lo mecánico a un modelo menor")
+    if tk and tk["cache_pct"] < 90:
+        idea("mejorar", "Poca entrada desde caché", f"{tk['cache_pct']} % (lo normal es más de 95 %); sesiones cortas o contexto que cambia mucho")
+    if u["turno_p90_min"] >= 10:
+        idea("mejorar", "Uno de cada diez turnos es muy largo", f"p90 de {u['turno_p90_min']} min; parte esas tareas o mándalas a segundo plano")
+    for h in d["herramientas"]:
+        if h.get("usos", 0) >= 20 and h.get("errores", 0) / h["usos"] >= 0.15:
+            idea("mejorar", f"{h.get('nombre')} falla seguido", f"{h['errores']} de {h['usos']} llamadas con error ({100 * h['errores'] / h['usos']:.0f} %)")
+    ag = d["agentes"]
+    if ag and ag[0]["tipo"] == "general-purpose" and ag[0]["usos"] >= 20:
+        idea("crear", "Un agente a la medida para lo que hoy hace general-purpose", f"{ag[0]['usos']} usos del agente genérico")
+    usados = {x.get("nombre") for x in d.get("skills") or []}
+    sin_uso = [x for x in ap.get("skills_propias", []) if x not in usados]
+    if ap.get("skills_propias") and len(sin_uso) >= 3 and d.get("skills"):
+        idea("vigilar", "Skills instaladas que no usaste", f"{len(sin_uso)} de {len(ap['skills_propias'])} sin uso en el periodo: " + ", ".join(sin_uso[:6]))
+    if ap and not ap.get("memorias_nuevas"):
+        idea("mejorar", "Claude no guardó nada nuevo de ti en el periodo", f"{ap.get('memorias', 0)} memorias en total; corre ws-aprender hechos")
+    rt = d.get("ruteo") or {}
+    resp = rt.get("aceptado", 0) + rt.get("rechazado", 0)
+    if resp >= 10 and rt.get("aceptado", 0) / resp < 0.5:
+        idea("mejorar", "Rechazas la mayoría de las sugerencias de ruteo", f"{rt.get('aceptado', 0)} aceptadas de {resp}; ajusta las reglas que más rechazas")
+    rc = d.get("recursos")
+    if rc and max(x["ram_pico_mb"] for x in rc["dias"]) >= 8000:
+        idea("vigilar", "Pico alto de memoria de Claude", f"{max(x['ram_pico_mb'] for x in rc['dias']):,} MB sumando todos los procesos; cierra pestañas inactivas")
+    if u["espera_min"] >= 30:
+        idea("mejorar", "Pasas tiempo aprobando permisos", f"{u['espera_min']} min de espera; agrega a allow lo de solo lectura que más apruebas")
+    return out
+
+
+# ---- cálculo ----------------------------------------------------------------------------------------
+def calcular(dias: int) -> dict:
+    wst = telemetria(); tabla = wst.precios()
+    hoy = dt.date.today(); desde = hoy - dt.timedelta(days=dias)
+    turnos = [t for t in wst.turnos_todos() if t.get("inicio") and wst.dia_local(t["inicio"]) >= desde.isoformat()] \
+        if hasattr(wst, "dia_local") else [t for t in wst.turnos_todos() if (t.get("inicio") or "")[:10] >= desde.isoformat()]
+    tr = wst.trazas(desde)
+    principales = [t for t in turnos if not t.get("subagente") and not t.get("auto")]
+    costo = lambda t: sum(wst.costo(m, k, tabla) for k, m in t["modelos"].items())  # noqa: E731
+    # Patrón: hora × día de la semana (turnos), duración de turnos, turnos por sesión
+    mapa = [[0] * 24 for _ in range(7)]
+    durs, por_sesion = [], Counter()
+    for t in principales:
+        a, b = local(t["inicio"]), local(t.get("fin"))
+        if a:
+            mapa[a.weekday()][a.hour] += 1
+        if a and b:
+            durs.append(max(0, (b - a).total_seconds()))
+        por_sesion[t["sesion"]] += 1
+    proyectos = wst.estimacion(turnos, tr, "proyecto", desde)[:12]
+    mezcla = Counter()
+    for t in turnos:
+        for k, m in t["modelos"].items():
+            mezcla[k] += wst.costo(m, k, tabla)
+    total = sum(costo(t) for t in turnos)
+    ruteo = Counter(r.get("decision") for r in wst._eventos("ruteo", dias)) if hasattr(wst, "_eventos") else Counter()
+    det = wst.detalle_herramientas(tr, turnos) if tr else None
+    # Transcripciones: agentes, prompts recurrentes, comandos
+    tx = transcripciones()
+    en = lambda ts: (local(ts) or dt.datetime.min.replace(tzinfo=dt.timezone.utc)).date() >= desde  # noqa: E731
+    ag = [a for a in tx["agentes"] if en(a[0])]
+    ag_tipo = Counter(a[2] for a in ag)
+    ag_proy = defaultdict(Counter)
+    for a in ag:
+        ag_proy[a[2]][a[1]] += 1
+    ag_modelo = Counter((a[2], a[3] or "heredado") for a in ag)
+    ag_dur = defaultdict(list)
+    for t in tr:
+        if t.get("tipo") == "subagente" and t.get("fase") == "fin" and t.get("dur_ms"):
+            ag_dur[t.get("agente") or "?"].append(t["dur_ms"] / 60000)
+    # Fuera lo que no escribiste tú: el resumen automático al continuar una sesión y el aviso de interrupción.
+    pr = [p for p in tx["prompts"] if en(p[0]) and not p[2].startswith(RUIDO)]
+    frases = Counter(p[2] for p in pr)
+    recurrentes = [{"frase": redactar(f).strip(), "veces": n, "proyectos": len({p[1] for p in pr if p[2] == f})}
+                   for f, n in frases.most_common(40) if n >= 3][:20]
+    cmds = Counter(c[1] for c in tx["comandos"] if en(c[0]))
+    c = conf()
+    d = {
+        "generado": dt.datetime.now().strftime("%Y-%m-%d %H:%M"), "dias": dias, "desde": desde.isoformat(),
+        "uso": {"costo": round(total, 2), "turnos": len(principales), "sesiones": len(por_sesion),
+                "horas_activas": wst._horas([(wst._ts(t["inicio"]), wst._ts(t.get("fin") or t["inicio"])) for t in principales]),
+                "turno_med_min": round(statistics.median(durs) / 60, 1) if durs else 0,
+                "turno_p90_min": round(sorted(durs)[int(len(durs) * 0.9)] / 60, 1) if durs else 0,
+                "turnos_por_sesion": round(statistics.median(por_sesion.values()), 1) if por_sesion else 0,
+                "espera_min": det["espera"]["total_min"] if det else 0},
+        "mapa": mapa,
+        "proyectos": [{k: p[k] for k in ("clave", "costo", "horas_activas", "turnos", "modelo", "lineas_mas", "commits")} for p in proyectos],
+        "modelos": [{"modelo": k, "costo": round(v, 2), "pct": round(100 * v / total) if total else 0} for k, v in mezcla.most_common()],
+        "ruteo": dict(ruteo),
+        "agentes": [{"tipo": k, "usos": n, "proyectos": ", ".join(p for p, _ in ag_proy[k].most_common(3)),
+                     "modelo": ", ".join(sorted({m for (t, m) in ag_modelo if t == k})),
+                     "min_mediana": round(statistics.median(ag_dur[k]), 1) if ag_dur.get(k) else None} for k, n in ag_tipo.most_common(15)],
+        "herramientas": (det or {}).get("herramientas", [])[:12], "bash": (det or {}).get("bash_categorias", []),
+        "mcp": (det or {}).get("mcp", []), "skills": (det or {}).get("skills", []), "errores": (det or {}).get("errores_tipo", []),
+        "comandos": [{"comando": k, "veces": n} for k, n in cmds.most_common(15)],
+        "recurrentes": recurrentes,
+        "mempalace": mempalace(c, desde), "recall": recall(c, desde),
+    }
+    d["tokens"] = tokens(turnos)
+    d["recursos"] = recursos(wst, desde)
+    d["estimacion_base"] = base_estimacion(turnos, proyectos, d["recursos"])
+    d["tendencia"] = wst.tendencias(wst.turnos_todos()) if hasattr(wst, "tendencias") else None
+    d["razones"] = wst.razones(wst.turnos_todos(), dias) if hasattr(wst, "razones") else None
+    d["otel"] = wst.otel_resumen(dias) if hasattr(wst, "otel_resumen") else None
+    d["aprendizaje"] = aprendizaje(desde)
+    d["ideas"] = ideas(d)
+    return d
+
+
+# ---- Claude: hallazgos y sugerencias -------------------------------------------------------------------
+def claude_texto(prompt: str, entrada: str, herramientas: str = "", modelo: str = "sonnet") -> str:
+    if not shutil.which("claude"):
+        return "(Claude no está en PATH)"
+    # Sin TMUX_PANE: los hooks de la pestaña (ruteo de modelos, estado) no deben tratar esta llamada como un mensaje tuyo.
+    args = ["env", "-u", "TMUX_PANE", "-u", "TMUX", "claude", "-p", "--model", modelo, "--no-session-persistence",
+            *(["--allowedTools", herramientas] if herramientas else ["--tools", ""]),
+            "--append-system-prompt", "Responde en español, directo, con viñetas cortas. No inventes números: usa solo los del JSON.",
+            prompt]
+    try:
+        r = subprocess.run(args, input=entrada, capture_output=True, text=True, timeout=300)  # nosec B603
+        out = r.stdout.strip()
+        if "operation blocked by hook" in out[:300] or out.startswith("UserPromptSubmit"):
+            return "(Claude no respondió: un hook bloqueó la consulta. Corre de nuevo ws-informe --ia.)"
+        return out or f"(sin respuesta: {r.stderr.strip()[:200]})"
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"(no se pudo consultar a Claude: {e})"
+
+
+def ia(d: dict, memoria: bool) -> dict:
+    out = {}
+    out["hallazgos"] = claude_texto(
+        "Eres el analista de productividad de un arquitecto/líder técnico que usa Claude Code a diario. Con el JSON de "
+        "métricas (stdin) escribe: 1) 5 hallazgos con números; 2) prompts recurrentes que convendría volver comandos "
+        "«/», skills o plantillas (propón nombre y qué harían); 3) agentes: cuáles aportan, cuáles sobran y cuáles "
+        "faltan; 4) modelos y ruteo: dónde ahorrar sin perder calidad; 5) MemPalace y recall: qué ajustar (umbral, "
+        "limpieza, qué guardar); 6) las 5 acciones concretas de mayor valor para la próxima semana.",
+        json.dumps({k: v for k, v in d.items() if k not in ("mapa", "tendencia", "aprendizaje")} | {"aprendizaje": {k: v for k, v in (d.get("aprendizaje") or {}).items() if k != "recientes"},
+                    "semana_actual": (d.get("tendencia") or {}).get("actual"), "semana_anterior": (d.get("tendencia") or {}).get("anterior")}, ensure_ascii=False))
+    if memoria:
+        out["memoria"] = claude_texto(
+            "Usa mempalace_status, mempalace_kg_stats y mempalace_graph_stats. Resume: tamaño del palacio, alas más grandes, "
+            "alas DUPLICADAS por nombre (p. ej. «x» y «wing_x») con sus cajones, salas, hechos del grafo y relaciones, y "
+            "recomienda cómo limpiar y qué hechos estructurados conviene registrar (preferencias, decisiones, proyectos).",
+            "", "mcp__mempalace__mempalace_status,mcp__mempalace__mempalace_kg_stats,mcp__mempalace__mempalace_graph_stats", "sonnet")
+    return out
+
+
+# ---- salida -----------------------------------------------------------------------------------------
+def markdown(d: dict, x: dict) -> str:
+    u = d["uso"]
+    md = [f"# Informe de trabajo con Claude — últimos {d['dias']} días (desde {d['desde']})", "",
+          f"_Generado {d['generado']} por `ws-informe`. Costo = equivalente API._", "",
+          "| Costo | Turnos | Sesiones | Horas activas | Turno mediano | Turno p90 | Turnos/sesión | Tu espera para aprobar |",
+          "|---:|---:|---:|---:|---:|---:|---:|---:|",
+          f"| ${u['costo']:,.2f} | {u['turnos']} | {u['sesiones']} | {u['horas_activas']} | {u['turno_med_min']} min | {u['turno_p90_min']} min | {u['turnos_por_sesion']} | {u['espera_min']} min |", ""]
+    if x.get("hallazgos"):
+        # Los títulos de Claude bajan dos niveles: «## 1) …» partía el informe en secciones sueltas.
+        md += ["## Hallazgos y sugerencias (Claude)", "", re.sub(r"(?m)^(#{1,3})\s", lambda m: "#" * min(4, len(m.group(1)) + 2) + " ", x["hallazgos"]), ""]
+    if d.get("ideas"):
+        et = {"crear": "Crear", "mejorar": "Mejorar", "vigilar": "Vigilar"}
+        md += ["## Qué mejorar y qué crear", "", "| Tipo | Qué | Evidencia |", "|---|---|---|"]
+        md += [f"| {et.get(i['tipo'], i['tipo'])} | {i['titulo']} | {i['evidencia']} |" for i in d["ideas"]] + [""]
+    te = d.get("tendencia")
+    if te and te.get("actual"):
+        a, b = te["actual"], te["anterior"]
+
+        def cambio(x, y):
+            return "—" if not y else f"{'▲' if x > y else '▼' if x < y else '＝'} {abs(100 * (x - y) / y):.0f} %"
+        filas = [("Costo", f"${a['costo']:,.2f}", f"${b['costo']:,.2f}", cambio(a["costo"], b["costo"])),
+                 ("Turnos tuyos", a["turnos"], b["turnos"], cambio(a["turnos"], b["turnos"])),
+                 ("Sesiones", a["sesiones"], b["sesiones"], cambio(a["sesiones"], b["sesiones"])),
+                 ("Entrada desde caché", f"{a['cache_pct']} %", f"{b['cache_pct']} %", cambio(a["cache_pct"], b["cache_pct"])),
+                 ("Turno mediano", f"{a['dur_p50']} s", f"{b['dur_p50']} s", cambio(a["dur_p50"], b["dur_p50"])),
+                 ("Turno p90", f"{a['dur_p90']} s", f"{b['dur_p90']} s", cambio(a["dur_p90"], b["dur_p90"])),
+                 ("Costo en subagentes", f"{a['sub_pct']} %", f"{b['sub_pct']} %", cambio(a["sub_pct"], b["sub_pct"])),
+                 ("Costo en trabajo automático (sin mensaje tuyo)", f"{a.get('auto_pct', 0)} %", f"{b.get('auto_pct', 0)} %", cambio(a.get("auto_pct", 0), b.get("auto_pct", 0)))]
+        md += ["## Últimos 7 días frente a los 7 anteriores", "", "| Métrica | Ahora | Antes | Cambio |", "|---|---:|---:|---:|"]
+        md += [f"| {m} | {x} | {y} | {c} |" for m, x, y, c in filas]
+        md += ["", "## Tendencia por semana", "", "| Semana (lunes) | Costo | Turnos | Sesiones | Caché | Razonamiento | Turno mediano | Turno p90 |", "|---|---:|---:|---:|---:|---:|---:|---:|"]
+        md += [f"| {f['inicio']}{' (en curso)' if f.get('parcial') else ''} | ${f['costo']:,.2f} | {f['turnos']} | {f['sesiones']} | {f['cache_pct']} % | {f['razon_pct']} % | {f['dur_p50']} s | {f['dur_p90']} s |"
+               for f in te["semanas"] if f["turnos"]] + [""]
+    tk = d.get("tokens")
+    if tk:
+        md += ["## Tokens y palabras", "", "| Entrada nueva | Caché escrita | Caché leída | Salida | Razonamiento | Total | Por turno |", "|---:|---:|---:|---:|---:|---:|---:|",
+               f"| {tk['entrada_nueva']:,} | {tk['cache_escrita']:,} | {tk['cache_leida']:,} | {tk['salida']:,} | {tk['razonamiento']:,} ({tk['razonamiento_pct']} % de la salida) | {tk['total']:,} | {tk['por_turno']:,} |",
+               "", "| Palabras tuyas | Palabras de Claude | Prompt mediano | Respuesta mediana | Palabras de Claude por cada tuya |", "|---:|---:|---:|---:|---:|",
+               f"| {tk['palabras_tuyas']:,} | {tk['palabras_claude']:,} | {tk['prompt_mediano']} | {tk['respuesta_mediana']} | {tk['palabras_claude_por_tuya']} |", ""]
+    rc = d.get("recursos")
+    if rc:
+        md += ["## Recursos de la máquina (procesos de Claude)", "", "| Día | Procesos | CPU (min) | CPU media | RAM pico | Operaciones de disco/s | Leído | Escrito |", "|---|---:|---:|---:|---:|---:|---:|---:|"]
+        md += [f"| {x['dia']} | {x['procesos']} | {x['cpu_min']} | {x['cpu_pct']} % | {x['ram_pico_mb']:,} MB | {x['iops']} | {x['leidos_mb']:,} MB | {x['escritos_mb']:,} MB |" for x in rc["dias"][-14:]]
+        md += ["", "| Proyecto | CPU (min) | CPU media | RAM máx. de un proceso | Operaciones de disco/s | Leído | Escrito |", "|---|---:|---:|---:|---:|---:|---:|"]
+        md += [f"| {x['proyecto']} | {x['cpu_min']} | {x['cpu_pct']} % | {x['ram_mb']:,} MB | {x['iops']} | {x['leidos_mb']:,} MB | {x['escritos_mb']:,} MB |" for x in rc["proyectos"]] + [""]
+    md += ["## Proyectos", "", "| Proyecto | Costo | Horas | Turnos | Modelo | +líneas | Commits |", "|---|---:|---:|---:|---|---:|---:|"]
+    md += [f"| {p['clave']} | ${p['costo']:,.2f} | {p['horas_activas']} | {p['turnos']} | {p['modelo']} | {p['lineas_mas']} | {p['commits']} |" for p in d["proyectos"]]
+    md += ["", "## Modelos", "", *[f"- {m['modelo']}: ${m['costo']:,.2f} ({m['pct']} %)" for m in d["modelos"]]]
+    if d["ruteo"]:
+        md += ["", "## Ruteo", "", ", ".join(f"{k}: {v}" for k, v in d["ruteo"].items())]
+    md += ["", "## Agentes", "", "| Agente | Usos | Proyectos | Modelo pedido | Min (mediana) |", "|---|---:|---|---|---:|"]
+    md += [f"| {a['tipo']} | {a['usos']} | {a['proyectos']} | {a['modelo']} | {a['min_mediana'] if a['min_mediana'] is not None else '—'} |" for a in d["agentes"]] or ["| (sin subagentes) | | | | |"]
+    md += ["", "## Prompts que se repiten (candidatos a comando o skill)", "", "| Empieza con | Veces | Proyectos |", "|---|---:|---:|"]
+    md += [f"| {r['frase']} | {r['veces']} | {r['proyectos']} |" for r in d["recurrentes"]] or ["| (ninguno con 3 o más) | | |"]
+    md += ["", "## Comandos «/» más usados", "", ", ".join(f"`{c['comando']}` {c['veces']}" for c in d["comandos"]) or "—"]
+    rz = d.get("razones")
+    if rz and rz.get("razones"):
+        md += ["", "## Razones para estimar (unidad de trabajo → texto, modelo, costo y máquina)", "", "| Grupo | Razón | Valor | Unidad | Calculado sobre |", "|---|---|---:|---|---|"]
+        md += [f"| {x['grupo']} | {x['nombre']} | {x['valor']:,} | {x['unidad']} | {x['base']} |" for x in rz["razones"]]
+    ot = d.get("otel")
+    if ot and ot.get("api"):
+        a, c = ot["api"], ot.get("codigo") or {}
+        s = lambda x: "—" if x is None else (f"{x / 1000:.1f} s" if x >= 1000 else f"{x:.0f} ms")  # noqa: E731
+        md += ["", "## API, permisos y tiempo activo (OpenTelemetry, colector local)", "",
+               "| Llamadas | Duración típica | p95 | Primer token | Errores | Sin más reintentos | Costo |", "|---:|---:|---:|---:|---:|---:|---:|",
+               f"| {a['llamadas']:,} | {s(a['med_ms'])} | {s(a['p95_ms'])} | {s(a.get('ttft_med_ms'))} | {a['errores']} ({a['error_pct']} %) | {a['agotados']} | ${a['costo']:,.2f} |",
+               "", f"Código según Claude Code: +{c.get('lineas_mas', 0):,} / −{c.get('lineas_menos', 0):,} líneas · {c.get('commits', 0)} commits · {c.get('prs', 0)} PR. "
+               f"Tiempo activo: tuyo {sum(x['tuyo_min'] for x in ot.get('activo', [])) / 60:.1f} h, de Claude {sum(x['claude_min'] for x in ot.get('activo', [])) / 60:.1f} h."]
+        if ot.get("errores"):
+            md += ["", "Errores de API por código: " + ", ".join(f"{e['codigo']}: {e['n']}" for e in ot["errores"])]
+        if ot.get("permisos"):
+            md += ["", "| Quién decide el permiso | Acepta | Rechaza |", "|---|---:|---:|"] + [f"| {p['fuente']} | {p['acepta']} | {p['rechaza']} |" for p in ot["permisos"]]
+        if ot.get("hooks"):
+            md += ["", "| Hook | Veces | Mediana | p95 | Total |", "|---|---:|---:|---:|---:|"] + [f"| {h['evento']} | {h['n']} | {s(h['med_ms'])} | {s(h['p95_ms'])} | {h['total_s']} s |" for h in ot["hooks"]]
+        if ot.get("subagentes"):
+            md += ["", "| Subagente | Veces | Duración típica | Tokens | Herramientas |", "|---|---:|---:|---:|---:|"] + [f"| {x['tipo']} | {x['n']} | {s(x['med_ms'])} | {x['tokens']:,} | {x['herramientas']} |" for x in ot["subagentes"]]
+    eb = d.get("estimacion_base")
+    if eb:
+        v = lambda x, f="{:,}": "—" if x is None else f.format(x)  # noqa: E731
+        md += ["", "## Base para estimar (datos reales por proyecto)", "",
+               "| Proyecto | Horas activas | Turnos | Tokens | Palabras tuyas | Palabras de Claude | +líneas | Commits | CPU (min) | Costo | Costo/hora | Turnos/hora | Tokens de salida/hora | Costo por 100 líneas |",
+               "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+        md += [f"| {e['proyecto']} | {e['horas_activas']} | {e['turnos']} | {e['tokens']:,} | {e['palabras_tuyas']:,} | {e['palabras_claude']:,} | {e['lineas_mas']:,} | {e['commits']} | {v(e['cpu_min'])} | "
+               f"${e['costo']:,.2f} | {v(e['costo_por_hora'], '${:,.2f}')} | {v(e['turnos_por_hora'])} | {v(e['tokens_salida_por_hora'])} | {v(e['costo_por_100_lineas'], '${:,.2f}')} |" for e in eb]
+    hs = d.get("herramientas") or []
+    if hs:
+        md += ["", "## Operaciones: herramientas", "", "| Herramienta | Usos | Con error | Mediana | p95 | Minutos | Costo aprox. |", "|---|---:|---:|---:|---:|---:|---:|"]
+        md += [f"| {h.get('nombre')} | {h.get('usos', 0)} | {h.get('errores', 0)} | {(h.get('med_ms') or 0) / 1000:.1f} s | {(h.get('p95_ms') or 0) / 1000:.1f} s | {h.get('total_min', 0)} | ${h.get('costo', 0):,.2f} |" for h in hs]
+    for titulo, clave, nombre in (("Operaciones de terminal por tipo", "bash", "categoria"), ("Servidores MCP", "mcp", "servidor"), ("Skills usadas", "skills", "nombre"), ("Errores por tipo", "errores", "tipo")):
+        filas = d.get(clave) or []
+        if filas:
+            md += ["", f"## {titulo}", "", ", ".join(f"{f.get(nombre) or f.get('nombre') or f.get('categoria') or '?'}: {f.get('usos', f.get('n', f.get('min', '')))}" for f in filas[:15])]
+    ap = d.get("aprendizaje")
+    if ap:
+        md += ["", "## Lo que Claude ha aprendido de ti y lo que tienes a tu medida", "",
+               "| Memorias | Nuevas en el periodo | Por tipo | Comandos «/» propios | Skills propias | Agentes propios | Reglas (líneas de CLAUDE.md) |", "|---:|---:|---|---:|---:|---:|---:|",
+               f"| {ap['memorias']} | {ap['memorias_nuevas']} | {', '.join(f'{k}: {v}' for k, v in ap['por_tipo'].items()) or '—'} | {len(ap['comandos_propios'])} | {len(ap['skills_propias'])} | {len(ap['agentes_propios'])} | {ap['reglas_lineas']} |"]
+        if ap["recientes"]:
+            md += ["", "| Memoria reciente | Tipo | Fecha |", "|---|---|---|"] + [f"| {m['nombre']} | {m['tipo']} | {m['fecha']} |" for m in ap["recientes"]]
+        for t, k in (("Comandos propios", "comandos_propios"), ("Agentes propios", "agentes_propios")):
+            if ap[k]:
+                md += ["", f"{t}: " + ", ".join(f"`{x}`" for x in ap[k][:30])]
+    mp = d.get("mempalace")
+    if mp:
+        di, hu = mp["diario"], mp["hub"]
+        tot = di.get("guardado", 0) + di.get("fallido", 0)
+        md += ["", "## MemPalace", "", "| Diario guardado | Diario fallido | Fallo | Minados | Arranques del Hub | Errores de embedding | Tamaño |", "|---:|---:|---:|---:|---:|---:|---:|",
+               f"| {di.get('guardado', 0):,} | {di.get('fallido', 0):,} | {100 * di.get('fallido', 0) / tot if tot else 0:.0f} % | {di.get('minado', 0):,} | {hu.get('arranques', 0)} | {hu.get('errores_embedding', 0)} | {mp['palacio_mb']:,} MB |"]
+        if mp.get("por_dia"):
+            md += ["", "| Día" + (" (aproximado)" if mp.get("fechas_aprox") else "") + " | Guardado | Fallido | Minado |", "|---|---:|---:|---:|"]
+            md += [f"| {k} | {v.get('guardado', 0)} | {v.get('fallido', 0)} | {v.get('minado', 0)} |" for k, v in mp["por_dia"].items()]
+    if x.get("memoria"):
+        md += ["", x["memoria"]]
+    rc = d.get("recall")
+    if rc:
+        de, la, wi = rc.get("decisions") or {}, rc.get("latency_ms") or {}, rc.get("would_inject_at") or {}
+        md += ["", "## recall", "", "| Decisión | Veces |", "|---|---:|"] + [f"| {k} | {v:,} |" for k, v in de.items()]
+        md += ["", f"Latencia del hook: mediana {la.get('p50', '—')} ms, p95 {la.get('p95', '—')} ms. Búsquedas: {rc.get('searched', 0):,}."]
+        if wi:
+            md += ["", "| Umbral | Inyectaría |", "|---:|---:|"] + [f"| {k} | {v:,} |" for k, v in wi.items() if 0.69 < float(k) < 0.81]
+    return "\n".join(md) + "\n"
+
+
+def _barras_svg(titulo: str, puntos: list[tuple[str, float]], fmt) -> str:
+    """Barras SVG sin librerías: una por periodo, con el valor impreso arriba y en el título."""
+    if not puntos or not any(v for _, v in puntos):
+        return ""
+    W, H, mi, mb, mt = 720, 170, 8, 20, 16
+    bw = (W - mi) / len(puntos); mx = max(v for _, v in puntos) or 1
+    g = ""
+    for i, (e, v) in enumerate(puntos):
+        h = (H - mb - mt) * v / mx; x = mi + i * bw; y = H - mb - h
+        g += (f'<rect x="{x + 2:.1f}" y="{y:.1f}" width="{max(1, bw - 4):.1f}" height="{h:.1f}" rx="2" fill="var(--acc)"><title>{html.escape(e)}: {html.escape(fmt(v))}</title></rect>'
+              + (f'<text x="{x + bw / 2:.1f}" y="{y - 3:.1f}" text-anchor="middle">{html.escape(fmt(v))}</text>' if bw > 40 else "")
+              + (f'<text x="{x + bw / 2:.1f}" y="{H - 5}" text-anchor="middle">{html.escape(e)}</text>' if len(puntos) <= 16 or i % 3 == 0 else ""))
+    return f'<figure><figcaption>{html.escape(titulo)}</figcaption><svg viewBox="0 0 {W} {H}" width="100%" role="img" aria-label="{html.escape(titulo)}">{g}</svg></figure>'
+
+
+def graficas(d: dict) -> str:
+    te, rc, out = d.get("tendencia") or {}, d.get("recursos") or {}, []
+    sem = [f for f in te.get("semanas", [])]
+    corto = lambda s: s[8:10] + "/" + s[5:7]  # noqa: E731
+    out.append(_barras_svg("Costo por semana (lunes a domingo, hora local)", [(corto(f["inicio"]), f["costo"]) for f in sem], lambda v: f"${v:,.0f}"))
+    out.append(_barras_svg("Turnos por semana", [(corto(f["inicio"]), f["turnos"]) for f in sem], lambda v: f"{v:,.0f}"))
+    out.append(_barras_svg("Turno p90 por semana (segundos)", [(corto(f["inicio"]), f["dur_p90"]) for f in sem], lambda v: f"{v:,.0f} s"))
+    dias = rc.get("dias", [])[-30:]
+    out.append(_barras_svg("RAM pico por día (MB, todos los procesos de Claude)", [(corto(x["dia"]), x["ram_pico_mb"]) for x in dias], lambda v: f"{v:,.0f}"))
+    out.append(_barras_svg("CPU por día (minutos de procesador)", [(corto(x["dia"]), x["cpu_min"]) for x in dias], lambda v: f"{v:,.0f}"))
+    out.append(_barras_svg("Operaciones de disco por segundo, por día", [(corto(x["dia"]), x["iops"]) for x in dias], lambda v: f"{v:,.0f}"))
+    out = [o for o in out if o]
+    return ("<h2>Gráficas</h2><div class='graf'>" + "".join(out) + "</div>") if out else ""
+
+
+def _md_linea(t: str) -> str:
+    """Markdown en línea mínimo y seguro: escapa todo y luego aplica negritas, cursivas y código."""
+    t = html.escape(t)
+    t = re.sub(r"`([^`]+)`", r"<code>\1</code>", t)
+    t = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", t)
+    return re.sub(r"(?<![\w*])_([^_]+)_(?![\w*])", r"<i>\1</i>", t)
+
+
+def _es_num(c: str) -> bool:
+    return bool(re.fullmatch(r"[−+\-]?\$?[\d.,]+\s?(%|s|ms|min|h|MB|GB|×|k|M)?|—|[▲▼＝] ?[\d.,]+ ?%", c.strip()))
+
+
+def _md_html(texto: str) -> str:
+    """Markdown → HTML para el cuerpo del informe: títulos, tablas (números a la derecha), listas y párrafos."""
+    out, lista = [], []
+
+    def cerrar_lista():
+        if lista:
+            out.append("<ul>" + "".join(f"<li>{x}</li>" for x in lista) + "</ul>")
+            lista.clear()
+
+    for bloque in re.split(r"\n\s*\n", texto.strip()):
+        lineas = [x for x in bloque.splitlines() if x.strip()]
+        if not lineas:
+            continue
+        if lineas[0].lstrip().startswith("|") and len(lineas) > 1:
+            cerrar_lista()
+            filas = [[c.strip() for c in x.strip().strip("|").split("|")] for x in lineas if not re.match(r"^\s*\|[-:| ]+\|\s*$", x)]
+            cab, cuerpo = filas[0], filas[1:]
+            num = [bool(cuerpo) and all(_es_num(f[i]) for f in cuerpo if i < len(f) and f[i]) for i in range(len(cab))]
+            td = lambda f: "".join(f'<td class="{"n" if i < len(num) and num[i] else ""}">{_md_linea(c)}</td>' for i, c in enumerate(f))  # noqa: E731
+            out.append('<div class="tabla"><table><thead><tr>' + "".join(f'<th class="{"n" if num[i] else ""}">{_md_linea(c)}</th>' for i, c in enumerate(cab))
+                       + "</tr></thead><tbody>" + "".join(f"<tr>{td(f)}</tr>" for f in cuerpo) + "</tbody></table></div>")
+            continue
+        for x in lineas:
+            s = x.strip()
+            m = re.match(r"^(#{1,4})\s+(.*)$", s)
+            if m:
+                cerrar_lista()
+                n = min(4, len(m.group(1)) + 1)
+                out.append(f"<h{n}>{_md_linea(m.group(2))}</h{n}>")
+            elif re.match(r"^([-*•]|\d+[.)])\s+", s):
+                lista.append(_md_linea(re.sub(r"^([-*•]|\d+[.)])\s+", "", s)))
+            else:
+                cerrar_lista()
+                out.append(f"<p>{_md_linea(s)}</p>")
+        cerrar_lista()
+    return "".join(out)
+
+
+def _barras_h(titulo: str, filas: list[tuple[str, float]], fmt, nota: str = "") -> str:
+    """Barras horizontales (HTML y CSS): una por categoría, ordenadas, con el valor impreso."""
+    filas = [(e, v) for e, v in filas if v]
+    if not filas:
+        return ""
+    mx = max(v for _, v in filas) or 1
+    cuerpo = "".join(f'<div class="bh"><span class="bh-e" title="{html.escape(str(e))}">{html.escape(str(e))}</span>'
+                     f'<span class="bh-t"><i style="width:{max(1.5, 100 * v / mx):.1f}%"></i></span><span class="bh-v">{html.escape(fmt(v))}</span></div>'
+                     for e, v in filas[:10])
+    return f'<figure><figcaption>{html.escape(titulo)}</figcaption>{cuerpo}{f"<small>{html.escape(nota)}</small>" if nota else ""}</figure>'
+
+
+def distribucion(d: dict) -> str:
+    """Dónde se va el costo, el tiempo y los errores: por proyecto, modelo, agente, herramienta y tipo de comando."""
+    usd = lambda v: f"${v:,.0f}"  # noqa: E731
+    n = lambda v: f"{v:,.0f}"     # noqa: E731
+    out = [
+        _barras_h("Costo por proyecto", [(p["clave"], p["costo"]) for p in d.get("proyectos") or []], usd),
+        _barras_h("Costo por modelo", [(m["modelo"].replace("claude-", ""), m["costo"]) for m in d.get("modelos") or []], usd),
+        _barras_h("Subagentes más usados (veces)", [(a["tipo"], a["usos"]) for a in d.get("agentes") or []], n),
+        _barras_h("Herramientas más usadas (veces)", [(h.get("nombre"), h.get("usos", 0)) for h in d.get("herramientas") or []], n),
+        _barras_h("Tiempo en la terminal por tipo de comando (minutos)", [(b.get("nombre"), b.get("total_min", 0)) for b in d.get("bash") or []], n),
+        _barras_h("Errores de herramientas por tipo", [(e.get("tipo"), e.get("n", 0)) for e in d.get("errores") or []], n),
+        _barras_h("Horas activas por proyecto", [(p["clave"], p["horas_activas"]) for p in d.get("proyectos") or []], lambda v: f"{v:,.1f} h"),
+        _barras_h("Decisiones del ruteo de modelos", sorted((d.get("ruteo") or {}).items(), key=lambda x: -x[1]), n,
+                  "igual = ya estabas en el modelo sugerido · silenciado = pediste no preguntar"),
+    ]
+    out = [o for o in out if o]
+    return ('<h2 class="sep" id="distribucion">Dónde se va el costo y el tiempo</h2><div class="graf">' + "".join(out) + "</div>") if out else ""
+
+
+# Grupo de cada sección del detalle (por cómo empieza su título) y orden de los grupos en la página.
+GRUPOS = (("claude", "Lo que dice Claude", ("Hallazgos y sugerencias",)),
+          ("semana", "Esta semana y tendencia", ("Últimos 7 días", "Tendencia por semana")),
+          ("costo", "Proyectos, modelos y agentes", ("Proyectos", "Modelos", "Ruteo", "Agentes")),
+          ("estimar", "Para estimar", ("Razones para estimar", "Base para estimar", "Tokens y palabras")),
+          ("operacion", "Operación", ("API, permisos", "Operaciones", "Servidores MCP", "Skills usadas", "Errores por tipo", "Comandos", "Prompts que se repiten")),
+          ("maquina", "Máquina", ("Recursos de la máquina",)),
+          ("memoria", "Memoria y aprendizaje", ("Lo que Claude ha aprendido", "MemPalace", "recall")))
+
+
+def html_doc(md_texto: str, d: dict) -> str:
+    """HTML autocontenido del informe: cifras clave, ideas, mapa de horas, gráficas y el detalle por secciones."""
+    u = d["uso"]
+    te = d.get("tendencia") or {}
+    a, b = te.get("actual") or {}, te.get("anterior") or {}
+
+    def cambio(x, y, malo_si_sube=True):
+        if not y:
+            return ""
+        p = 100 * (x - y) / y
+        cls = "neutro" if abs(p) < 0.5 else ("mal" if (p > 0) == malo_si_sube else "bien")
+        return f'<span class="delta {cls}">{"▲" if p > 0 else "▼"} {abs(p):.0f} % frente a los 7 días anteriores</span>'
+
+    tiles = [("Costo equivalente", f"${u['costo']:,.0f}", f"{d['dias']} días · " + (f"${a['costo']:,.0f} esta semana" if a else "")),
+             ("Turnos tuyos", f"{u['turnos']:,}", f"{u['sesiones']} sesiones · {u['turnos_por_sesion']} por sesión"),
+             ("Horas activas", f"{u['horas_activas']:,.0f}", "con algún turno corriendo"),
+             ("Turno típico", f"{u['turno_med_min']} min", f"uno de cada diez pasa de {u['turno_p90_min']} min"),
+             ("Esperando tu aprobación", f"{u['espera_min']:,.0f} min", "en diálogos de permiso")]
+    if a:
+        tiles.append(("Costo fuera de tus turnos", f"{a.get('sub_pct', 0) + a.get('auto_pct', 0):.0f} %",
+                      f"subagentes {a.get('sub_pct', 0)} % · trabajo automático {a.get('auto_pct', 0)} % (7 días)"))
+    if a and b:
+        tiles[0] = (tiles[0][0], tiles[0][1], cambio(a.get("costo", 0), b.get("costo", 0)) or tiles[0][2])
+    kpis = "".join(f'<div class="kpi"><span>{html.escape(t)}</span><b>{html.escape(v)}</b><small>{s}</small></div>' for t, v, s in tiles)
+
+    et = {"crear": "Crear", "mejorar": "Mejorar", "vigilar": "Vigilar"}
+    ideas = "".join(f'<div class="idea {html.escape(i["tipo"])}"><span class="chip">{et.get(i["tipo"], i["tipo"])}</span><b>{_md_linea(i["titulo"])}</b>'
+                    f'<small>{_md_linea(i["evidencia"])}</small></div>' for i in d.get("ideas") or [])
+
+    dias = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
+    mx = max([max(f) for f in d["mapa"]] + [1])
+    celdas = "".join(f"<tr><th>{dias[i]}</th>" + "".join(
+        f'<td style="background:rgba(196,100,58,{(0.12 + 0.88 * v / mx) if v else 0:.2f})" title="{dias[i]} {h}:00 · {v} turnos"></td>' for h, v in enumerate(f)) + "</tr>"
+        for i, f in enumerate(d["mapa"]))
+
+    # El detalle: el Markdown por secciones, sin la cabecera (va en las tarjetas) ni la tabla de ideas (va arriba).
+    partes = re.split(r"(?m)^## ", md_texto)
+    por_grupo: dict[str, list[str]] = {g[0]: [] for g in GRUPOS}
+    por_grupo["otros"] = []
+    for sec in partes[1:]:
+        titulo, _, cuerpo = sec.partition("\n")
+        titulo = titulo.strip()
+        if titulo.startswith("Qué mejorar y qué crear"):
+            continue
+        grupo = next((g[0] for g in GRUPOS if titulo.startswith(g[2])), "otros")
+        cuerpo_html = _md_html(cuerpo)
+        ancho = max((fila.count("<th") for fila in re.findall(r"<thead>.*?</thead>", cuerpo_html, re.S)), default=0)
+        clase = " ".join(c for c in ("ia" if grupo == "claude" else "", "ancho" if ancho > 5 or grupo == "claude" else "") if c)
+        por_grupo[grupo].append(f'<section class="{clase}"><h2>{_md_linea(titulo)}</h2>{cuerpo_html}</section>')
+    nombres = {g[0]: g[1] for g in GRUPOS} | {"otros": "Otros"}
+    orden = [g for g in [*nombres] if por_grupo.get(g)]
+    detalle = "".join(f'<h2 class="sep" id="{g}">{html.escape(nombres[g])}</h2><div class="rejilla">{"".join(por_grupo[g])}</div>' for g in orden)
+    nav = [("resumen", "Resumen"), ("ideas", "Qué mejorar"), ("horas", "Cuándo trabajas"), ("tendencias", "Tendencias"), ("distribucion", "Dónde se va"),
+           *[(g, nombres[g]) for g in orden]]
+    nav_html = "".join(f'<a href="#{i}">{html.escape(t)}</a>' for i, t in nav)
+
+    return f"""<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Informe de trabajo con Claude</title><style>
+:root{{--bg:#f6f5f1;--fg:#1f1e1b;--mut:#6b675f;--line:#e3e0d8;--acc:#c4643a;--panel:#fff;--ok:#3f7d4e;--warn:#b07b1f;--bad:#b3402e}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#161513;--fg:#ece9e2;--mut:#a39e93;--line:#34322d;--acc:#e08a5c;--panel:#1f1e1b;--ok:#7cbf8b;--warn:#e0b45c;--bad:#e58a78}}}}
+*{{box-sizing:border-box}} body{{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 "Segoe UI",system-ui,sans-serif}}
+main{{max-width:1180px;margin:0 auto;padding:28px 20px 48px;display:flex;flex-direction:column;gap:22px}}
+header h1{{font-size:24px;margin:0 0 2px;font-weight:600}} header p{{margin:0;color:var(--mut);font-size:13px}}
+h2{{font-size:16px;margin:0 0 10px;font-weight:600}} h3{{font-size:14px;margin:14px 0 6px}} h4{{font-size:13px;margin:10px 0 4px;color:var(--mut)}}
+section,.bloque{{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;min-width:0}}
+section.ia{{border-left:4px solid var(--acc)}} section p{{margin:6px 0;max-width:80ch}} section ul{{margin:6px 0;padding-left:20px;max-width:80ch}} li{{margin:3px 0}}
+.kpis{{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}}
+.kpi{{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;min-width:0}}
+.kpi span{{color:var(--mut);font-size:12.5px;display:block}} .kpi b{{font-size:28px;font-weight:600;font-variant-numeric:tabular-nums;display:block;line-height:1.2}}
+.kpi small{{color:var(--mut);font-size:12px}}
+.delta.mal{{color:var(--warn)}} .delta.bien{{color:var(--ok)}} .delta.neutro{{color:var(--mut)}}
+.ideas{{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:12px}}
+.idea{{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--mut);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:4px;min-width:0}}
+.idea.crear{{border-left-color:var(--ok)}} .idea.mejorar{{border-left-color:var(--warn)}} .idea.vigilar{{border-left-color:var(--bad)}}
+.idea small{{color:var(--mut);font-size:12.5px;overflow-wrap:anywhere}} .chip{{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}}
+.tabla{{overflow-x:auto;margin:8px 0}} table{{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}}
+th,td{{border-bottom:1px solid var(--line);padding:6px 10px 6px 0;text-align:left;vertical-align:top}} th{{color:var(--mut);font-weight:500;font-size:12px;white-space:nowrap}}
+td.n,th.n{{text-align:right;white-space:nowrap}} tr:last-child td{{border-bottom:0}} code{{background:var(--line);border-radius:4px;padding:0 4px;font-size:12.5px}}
+.mapa{{table-layout:fixed}} .mapa th{{font-size:11px;padding:2px;text-align:center}} .mapa td{{height:18px;border:2px solid var(--panel);border-radius:4px;padding:0}}
+.graf{{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:12px}} figure{{margin:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}}
+figcaption{{color:var(--mut);font-size:12.5px;margin-bottom:4px}} svg text{{fill:var(--mut);font-size:10px}}
+h2.sep{{margin:10px 0 -8px;font-size:15px;scroll-margin-top:56px}}
+nav{{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:8px 0;display:flex;gap:6px;flex-wrap:wrap;margin:-6px 0}}
+nav a{{color:var(--fg);text-decoration:none;font-size:12.5px;border:1px solid var(--line);border-radius:999px;padding:3px 11px;background:var(--panel)}} nav a:hover{{border-color:var(--acc)}}
+.rejilla{{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,470px),1fr));gap:14px;align-items:start}} .rejilla .ancho{{grid-column:1/-1}}
+.bh{{display:grid;grid-template-columns:minmax(90px,34%) 1fr auto;gap:8px;align-items:center;font-size:12.5px;margin:5px 0}}
+.bh-e{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}} .bh-t{{height:10px;background:var(--line);border-radius:5px;overflow:hidden}}
+.bh-t i{{display:block;height:100%;background:var(--acc);border-radius:5px}} .bh-v{{font-variant-numeric:tabular-nums;color:var(--mut);white-space:nowrap}}
+figure small{{color:var(--mut);font-size:11.5px;display:block;margin-top:6px}}
+</style></head><body><main>
+<header><h1>Informe de trabajo con Claude</h1><p>Últimos {d['dias']} días (desde {html.escape(d['desde'])}) · generado {html.escape(d['generado'])} · costo = equivalente a precios de la API</p></header>
+<nav>{nav_html}</nav>
+<div class="kpis" id="resumen">{kpis}</div>
+{'<h2 class="sep" id="ideas">Qué mejorar y qué crear</h2><div class="ideas">' + ideas + '</div>' if ideas else ''}
+<div class="bloque" id="horas"><h2>Cuándo trabajas (turnos por hora y día)</h2><table class="mapa"><tr><th></th>{''.join(f'<th>{h}</th>' for h in range(24))}</tr>{celdas}</table></div>
+{graficas(d).replace('<h2>Gráficas</h2>', '<h2 class="sep" id="tendencias">Tendencias</h2>')}
+{distribucion(d)}
+{detalle}
+</main></body></html>"""
+
+
+def destino() -> Path:
+    out = DATOS / "informes"; out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def ventana_windows() -> Path | None:
+    try:
+        u = subprocess.run(["wslvar", "USERPROFILE"], capture_output=True, text=True, timeout=10).stdout.strip()  # nosec B603 B607
+        return Path(subprocess.run(["wslpath", "-u", u], capture_output=True, text=True, timeout=10).stdout.strip()) / "ws-telemetria" if u else None  # nosec B603 B607
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def main() -> int:
+    a = sys.argv[1:]
+    dias = int(a[a.index("--dias") + 1]) if "--dias" in a else 30
+    d = calcular(dias)
+    if "--json" in a:
+        print(json.dumps(d, ensure_ascii=False, indent=1)); return 0
+    x = ia(d, "--ia-memoria" in a) if ("--ia" in a or "--ia-memoria" in a) else {}
+    md = markdown(d, x)
+    nombre = f"informe-{dt.date.today().isoformat()}"
+    out = destino(); (out / f"{nombre}.md").write_text(md, encoding="utf-8"); (out / f"{nombre}.html").write_text(html_doc(md, d), encoding="utf-8")
+    final = out / f"{nombre}.html"
+    w = None if os.environ.get("WS_INFORME_SIN_WINDOWS") else ventana_windows()
+    if w:
+        try:
+            w.mkdir(parents=True, exist_ok=True)
+            for ext in ("md", "html"):
+                shutil.copyfile(out / f"{nombre}.{ext}", w / f"{nombre}.{ext}")
+            final = w / f"{nombre}.html"
+        except OSError:
+            pass
+    print(md if "--abrir" not in a else "")
+    print(f"Informe: {final}")
+    if "--abrir" in a:
+        try:
+            subprocess.run(["explorer.exe", subprocess.run(["wslpath", "-w", str(final)], capture_output=True, text=True).stdout.strip()], timeout=15)  # nosec B603 B607
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

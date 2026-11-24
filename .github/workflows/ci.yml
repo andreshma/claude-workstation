@@ -1,0 +1,129 @@
+# CI del kit claude-workstation: Lint → SAST/secretos → Test en cada push y PR.
+# Build/DAST/Deploy no aplican: el kit son scripts y configuración que install.sh copia al HOME.
+# Acciones de terceros: ninguna. Las herramientas se instalan con versión fija y checksum.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read            # mínimo privilegio: solo leer el repo
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (shellcheck, Python, JSON, tmux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Dependencias
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq tmux >/dev/null
+      # Todos los scripts con shebang de bash/sh, del kit y de files/.
+      - name: shellcheck
+        run: |
+          mapfile -t f < <(git ls-files | while read -r p; do
+            [[ -f "$p" ]] && head -c 64 "$p" | head -1 | grep -qE '^#!.*\b(bash|sh)\b' && echo "$p"; done)
+          echo "Scripts: ${#f[@]}"
+          shellcheck -S warning -x "${f[@]}"
+      # mapfile + una sola llamada: un `while … && …` deja el estado del último archivo (no Python = falla falsa).
+      - name: Python compila
+        run: |
+          mapfile -t f < <(git ls-files | while read -r p; do [[ -f "$p" ]] && head -1 "$p" | grep -q '^#!.*python' && echo "$p"; done)
+          echo "Python: ${#f[@]} archivos"
+          (( ${#f[@]} == 0 )) || python3 -m py_compile "${f[@]}"
+      - name: JSON válido
+        run: git ls-files '*.json' | xargs -r -n1 jq empty
+      # Solo sintaxis (source-file -n): no ejecuta hooks ni if-shell de la configuración, que dependen de tu máquina.
+      - name: tmux valida la configuración y los menús
+        run: |
+          export HOME="$PWD/files/home" TERM=xterm-256color
+          conf="$HOME/.tmux.conf"
+          [[ -f "$conf" ]] || { echo "sin .tmux.conf en el kit"; exit 0; }
+          grep -vE '^[[:space:]]*run(-shell)?\b' "$conf" > /tmp/tmux.conf
+          # Un solo servidor, arrancado con reintentos (en el runner a veces muere al arrancar sin terminal);
+          # luego cada archivo se valida por separado con source-file -n (solo sintaxis).
+          for i in 1 2 3; do
+            tmux -L ci -f /dev/null new-session -d -s ci "sleep 300" 2>/dev/null && tmux -L ci has-session -t ci 2>/dev/null && break
+            sleep 1
+          done
+          tmux -L ci has-session -t ci
+          tmux -L ci source-file -n /tmp/tmux.conf
+          n=0
+          for m in "$HOME"/.config/tmux-claude/menu*.tmux; do
+            [[ -f "$m" ]] || continue
+            tmux -L ci source-file -n "$m"; n=$((n + 1))
+          done
+          tmux -L ci kill-server
+          echo "tmux: configuración y $n menús ok"
+
+  sast:
+    name: SAST y secretos (bandit, gitleaks)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.21.2
+      BANDIT_VERSION: 1.7.10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: bandit (severidad media o más)
+        run: |
+          python3 -m pip install --quiet "bandit==${BANDIT_VERSION}"
+          mapfile -t f < <(git ls-files | while read -r p; do [[ -f "$p" ]] && head -1 "$p" | grep -q '^#!.*python' && echo "$p"; done)
+          (( ${#f[@]} == 0 )) || python3 -m bandit -ll "${f[@]}"
+      - name: gitleaks (binario oficial verificado con checksum)
+        run: |
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          tgz="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSLO "$base/$tgz" && curl -fsSLO "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          grep " ${tgz}\$" "gitleaks_${GITLEAKS_VERSION}_checksums.txt" | sha256sum -c -
+          tar -xzf "$tgz" gitleaks
+          ./gitleaks dir --config .gitleaks.toml --redact --no-banner .
+
+  test:
+    name: Pruebas del kit
+    runs-on: ubuntu-24.04
+    needs: [lint, sast]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Dependencias
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq tmux >/dev/null
+      - name: tests/run.sh
+        run: bash tests/run.sh
+
+  instalacion:
+    name: Instalación limpia (Ubuntu 24.04)
+    runs-on: ubuntu-24.04
+    needs: [lint]
+    timeout-minutes: 20
+    # Primera versión: informa sin bloquear el merge; pasa a obligatoria cuando corra estable.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Dependencias
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq tmux zstd >/dev/null
+      - name: install.sh en un HOME vacío
+        run: |
+          export HOME="$RUNNER_TEMP/home"; mkdir -p "$HOME"
+          git config --global user.email ci@example.invalid; git config --global user.name ci
+          bash install.sh --dry-run | tail -5
+          bash install.sh
+          echo "Instalados en ~/.local/bin: $(ls "$HOME/.local/bin" | wc -l)"
+      - name: ws-test sobre lo instalado
+        run: |
+          export HOME="$RUNNER_TEMP/home" PATH="$RUNNER_TEMP/home/.local/bin:$PATH" TERM=xterm-256color
+          ws-test

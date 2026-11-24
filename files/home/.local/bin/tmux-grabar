@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+#
+# tmux-grabar — graba un panel YA abierto (no hay que empezar de nuevo) como evidencia o demo. Menú → g → r
+# (otra vez: detiene). Mientras graba, la pestaña muestra ⏺ en la barra.
+# Deja en %UserProfile%\Videos\Claude:
+#   AAAA-MM-DD_HHMM_<pestaña>.cast  grabación reproducible (asciinema play, o el reproductor web de asciinema)
+#   AAAA-MM-DD_HHMM_<pestaña>.txt   el texto final de la pantalla, limpio y redactado (para adjuntar a un bug)
+#   AAAA-MM-DD_HHMM_<pestaña>.gif   si tienes agg instalado (ws-tools install agg)
+# Usa pipe-pane: mientras graba, ese panel no puede usar otra captura (Ctrl+b H o el historial buscable).
+# El .cast guarda lo que se vio en pantalla tal cual: no grabes paneles con secretos a la vista.
+# Destino: WS_GRABAR_DIR si está definida (pruebas).
+# Uso: tmux-grabar <panel>   ·   tmux-grabar --escribir <archivo.cast> <ancho> <alto>  (interno: lo usa pipe-pane)
+set -uo pipefail
+
+if [[ "${1:-}" == --escribir ]]; then   # stdin crudo del panel → asciicast v2 con tiempos
+  exec python3 -u -c '
+import json, sys, time
+f, w, h = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+t0 = time.time()
+with open(f, "w", encoding="utf-8") as out:
+    out.write(json.dumps({"version": 2, "width": w, "height": h, "timestamp": int(t0), "env": {"TERM": "xterm-256color"}}) + "\n")
+    leer = sys.stdin.buffer.raw.read if hasattr(sys.stdin.buffer, "raw") else sys.stdin.buffer.read1
+    while True:
+        b = leer(65536)
+        if not b:
+            break
+        out.write(json.dumps([round(time.time() - t0, 4), "o", b.decode("utf-8", "replace")]) + "\n"); out.flush()
+' "$2" "$3" "$4"
+fi
+
+p="${1:?panel}"
+destino_win() { local u; u="$(wslvar USERPROFILE 2>/dev/null)"; [[ -n "$u" ]] && wslpath -u "$u" 2>/dev/null; }
+base="$(destino_win)"; dir="${base:+$base/Videos/Claude}"; dir="${WS_GRABAR_DIR:-${dir:-$HOME/grabaciones}}"; mkdir -p "$dir"
+
+actual="$(tmux show -pqv -t "$p" @grabando)"
+if [[ -n "$actual" ]]; then
+  tmux pipe-pane -t "$p"; tmux set -pu -t "$p" @grabando; tmux set -wu -t "$p" @cgrab 2>/dev/null
+  sleep 0.5
+  txt="${actual%.cast}.txt"
+  tmux capture-pane -p -J -t "$p" -S -2000 | sed -e 's/[[:space:]]*$//' | ws-redactar > "$txt"
+  if command -v agg >/dev/null; then ( agg --quiet "$actual" "${actual%.cast}.gif" >/dev/null 2>&1 & ); fi
+  n=$(( $(wc -l < "$actual") - 1 ))
+  tmux display -d 4000 "⏹ Grabación guardada en Videos\\Claude: $(basename "$actual") ($n eventos) + .txt"
+  exit 0
+fi
+[[ -n "$(tmux display -p -t "$p" '#{pane_pipe}')" && "$(tmux display -p -t "$p" '#{pane_pipe}')" != 0 ]] && {
+  tmux display -d 4000 "Este panel ya tiene una captura activa (Ctrl+b H o historial): apágala primero"; exit 1; }
+nom="$(tmux display -p -t "$p" '#{window_name}' | tr -c 'A-Za-z0-9_.-' '_' | cut -c1-30)"
+f="$dir/$(date +%F_%H%M)_${nom}.cast"
+w="$(tmux display -p -t "$p" '#{pane_width}')"; h="$(tmux display -p -t "$p" '#{pane_height}')"
+tmux set -p -t "$p" @grabando "$f"; tmux set -w -t "$p" @cgrab "⏺"
+tmux pipe-pane -o -t "$p" "exec '$0' --escribir '$f' $w $h"
+# Primera imagen: lo que ya hay en pantalla, para que la grabación no empiece en negro.
+tmux send-keys -t "$p" -X cancel 2>/dev/null; tmux refresh-client 2>/dev/null
+tmux display -d 3000 "⏺ Grabando este panel (${w}x${h}). Menú → g → r para detener"

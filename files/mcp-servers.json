@@ -1,0 +1,45 @@
+{
+  "mempalace": {
+    "type": "stdio",
+    "command": "@WINHOME@/.local/bin/mempalace-mcp.exe",
+    "args": [],
+    "env": {
+      "HF_HUB_OFFLINE": "1",
+      "WSLENV": "HF_HUB_OFFLINE"
+    }
+  },
+  "recall": {
+    "type": "stdio",
+    "command": "@WINHOME@/source/repos/recall/.venv/Scripts/python.exe",
+    "args": [
+      "-I",
+      "-m",
+      "recall",
+      "mcp"
+    ],
+    "env": {
+      "HF_HUB_OFFLINE": "1",
+      "WSLENV": "HF_HUB_OFFLINE"
+    },
+    "alwaysLoad": true
+  },
+  "microsoft-learn": {
+    "type": "http",
+    "url": "https://learn.microsoft.com/api/mcp"
+  },
+  "azure": {
+    "type": "stdio",
+    "command": "npx",
+    "args": [
+      "-y",
+      "@azure/mcp@4.0.0-beta.7",
+      "server",
+      "start"
+    ],
+    "env": {}
+  },
+  "ms-release-comms": {
+    "type": "http",
+    "url": "https://www.microsoft.com/releasecommunications/mcp"
+  }
+}

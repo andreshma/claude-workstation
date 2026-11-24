@@ -1,0 +1,422 @@
+# Changelog
+
+All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+- Screensaver: seven more scenes built on the shading engine: `boreal` (aurora over mountains, reflected in a lake), `nubes` (flight over a sea of clouds), `agujero` (black hole with its gas disc), `estanque` (raindrops under the moon), `fuego`, `tunel` and `fractal`.
+- Screensaver: **`galeria`** scene, which shows your images and animated GIFs converted to characters with `chafa` (true color). Put the files in `~/.config/tmux-claude/galeria`; if there are images and `chafa` is installed, it also joins the random rotation. `ws-tools` now offers to install `chafa` and `numpy`.
+- **Shading engine for the screensaver** (`tmux-arte`, needs `python3-numpy`): it computes each scene as a color image at a higher resolution than the terminal and converts it to characters; the light picks the character (with dithering) and edges are traced with `| / - \`. Five scenes: `oceano` (sunset with the sun's glitter on the waves), `planeta` (ringed gas giant), `dona`, `lava` and `vuelo` (over mountains and lakes). Without numpy the other thirteen keep working and these stay out of the random rotation.
+- **Animated ASCII art screensaver** (`tmux-arte`): thirteen original scenes that adapt to the terminal size and use true color: `cumbres` (mountain range, moon, lake with reflection, shooting stars), `aurora` (northern lights over a snowy forest), `nevada` (cabin with lit windows, smoke and snow), `velero` (a sailboat under the moon), `peces` (seabed with fish, jellyfish and seaweed), `fogata`, `cerezo` (in bloom, with petals in the wind), `lluvia` (city at night with lightning), `tuberias`, `batalla` (two fleets in space), `galaxia`, `nebulosa` and `hiperespacio`. «Aleatoria» ("Random") now picks among these; the pixel art ones remain available by name in Menú → Apariencia → «Elegir escena» ("Choose scene").
+- **Exit and re-enter Claude in every tab**: `tmux-claude-restart --todas` (Menú → Estación → «Reiniciar Claude en todas las pestañas libres», "Restart Claude in all idle tabs"). Each tab resumes its conversation and picks up the new configuration. It does not touch tabs that are working or have a dialog open, respects each tab's protection level and leaves solo-mode tabs as they are; `--lista` shows what it would do and `--tambien-ocupadas` includes the busy ones.
+- `ws-hooks`: how long Claude Code hooks take. With no arguments it summarizes, per event, what Claude measured (via `ws-otel`); `ws-hooks tiempo SessionStart` runs each hook separately to see which one is slow.
+- **Claude account per project**: `claude-cuenta proyecto trabajo|personal [carpeta]` (or Menú → Claude → «Este proyecto siempre con la cuenta de esta pestaña», "This project always with this tab's account") pins the account for a repo and its worktrees. Every new tab opened there uses that account, regardless of the default account; `claude-cuenta proyectos` lists them and `proyecto quitar` releases it. The tab records which account it started with.
+- **Local OpenTelemetry collector** (`ws-otel`, ADR-014): receives on `127.0.0.1` the metrics, events and traces Claude Code emits and stores them in `~/.local/share/ws-telemetria/otel/` (0600). Everything Claude sends is stored, including the text of prompts, responses and tools, with secrets masked; `WS_OTEL_CONTENIDO=0` leaves it without content. Nothing leaves the machine. The tmux watcher keeps it running. Commands: `ws-otel estado`, `resumen`, `iniciar`, `detener`.
+- Dashboard and report: **API, permissions and active time** section with what arrives over OpenTelemetry: API calls with typical duration, p95 and first token; errors by code and exhausted retries; cost by call origin; who decides each permission and which tools get rejected; your active time and Claude's; lines, commits and PRs; how long hooks take; compactions; subagents; MCP connections and skills.
+- Dashboard and report: **ratios for estimating** (30 days): your words and Claude's per turn, tokens per word, model calls and tools per turn, output speed, cost per turn, per thousand words, per million tokens and per active hour, and CPU, disk and RAM per token and per turn. Each ratio states how much data it was computed from.
+- **👉 te toca** ("your turn") status: when Claude ends its turn leaving you a question or something to do (run a command, decide, confirm, give it a piece of data), the tab no longer stays at «✔ listo» ("done"): it is marked in red, the bar counts it under ⚠, it comes first in Activas and in the finder, and you get a single reminder. Previously only permission dialogs and formal questions were marked. It is decided from the last message, without storing it; `WS_TETOCA=0` turns it off.
+- `ws-informe` uses everything that is already recorded: **what to improve and what to create** (ideas with their evidence, by fixed rules and without AI), last 7 days versus the previous 7, weekly trend, **tokens and words** (input, cache, output, reasoning; your words and Claude's), **machine resources** (CPU, peak RAM, disk operations and MB read/written per day and per project), **basis for estimating** (active hours, turns, tokens, words, lines, CPU and cost per project, with cost per hour and per 100 lines), operations (tools with errors, median and p95; terminal by type; MCP; skills; errors) and **what Claude has learned about you** (memories by type and new ones, your own commands, skills and agents). The HTML adds charts for cost, turns, p90, RAM, CPU and disk.
+- Usage dashboard: **Trends** section with the full turn history (not just 30 days): last 7 days versus the previous 7 (cost, turns, sessions, cost per turn, cache, median and p90 duration, subagent share), cost per week and project (12 weeks), projects that changed the most, models per week (% of cost, by family), hour map, turn duration per week, turns and sessions per week, cache and reasoning per day and output per turn. SVG charts with no libraries.
+
+### Changed
+- **The kit no longer names any company.** The Claude work account is called `trabajo` (`claude-cuenta usar trabajo|personal`, alias `claude-trabajo`); anything saved under the previous name keeps working. The standards the kit installs are generic (`~/.claude/estandares.md`); your organization's go in your personal configuration. The cloud backup finds the organization's OneDrive by its shape («OneDrive - …»), with no fixed name. `ws-auditoria` checks that telemetry only goes to the local collector.
+- **Faster session startup**: the MemPalace health check (5.5 s measured) and the recall startup (1.3 s) no longer make every session wait. They run through `ws-cache`: the session gets the last result instantly and the full check runs behind it. If the last result is more than 30 minutes old, it runs and waits as before, so the «búsqueda caída» ("search down") warning is never older than that. The `mempalace-ops` and `recall` scripts do not change. `ws-cache` gains `--max` (maximum age of what is stored) and `--tope` (limit for each run).
+- `ws-informe`: fixed navigation by section, the detail grouped (Claude, week, projects and models, estimation, operation, machine, memory) in two columns, and bars per project, model, agent, tool, command type, errors and routing instead of text lists. The headings Claude writes no longer split the report into loose sections.
+- «Trabajos recientes» ("Recent jobs") leaves the main menu and `Ctrl+b j` (the `tmux-recientes` command is still installed).
+- `ws-informe`: the HTML is no longer a flat dump. Key figures in cards with the change versus the previous week, «qué mejorar y qué crear» ("what to improve and what to create") as cards by type, visible hour map, charts in a grid, tables with aligned numbers and Claude's text with headings, lists and bold.
+- Repo aligned with the other public repos (such as `recall`): `LICENSE` Apache-2.0, `NOTICE`, `CITATION.cff`, `CODE_OF_CONDUCT`, `CONTRIBUTING`, `GOVERNANCE`, `SECURITY`, `SUPPORT`, `CODEOWNERS`, issue and PR templates, `.editorconfig`, `.gitattributes` and CodeQL analysis. New `README.md` in English with badges, table of contents and four Mermaid diagrams (context, per-tab states, gates, telemetry); the Spanish README lives in `docs/README.es.md`.
+- Menus without duplicates: each action lives in a single place. `/permissions` and `/sandbox` stay only in Claude → Protección (no longer in «Más comandos», "More commands"); «Reiniciar» ("Restart") moves to Protección, next to the other restarts; Anterior, Siguiente, Última, Mover and Recargar configuración leave Pestañas y sesión (they remain on Alt+arrows, Alt+0, right click and Ctrl+b r); «Salir» ("Exit") leaves the main menu (Ctrl+b d). From 146 to 137 options.
+- Generic example tickets (`ABC-123`) in the tests, instead of a client's prefix.
+
+### Fixed
+- Menus that flickered now and then: while a menu is open the status bar stops refreshing (it was its refresh, every 15 s, that redrew over the menu) and goes back to its rhythm when the menu closes. If it were ever left paused, switching tabs restores it.
+- «Elegir escena de una lista» ("Choose scene from a list", Menú → Apariencia) did not save the choice: the screensaver kept showing the previous scene. It is now saved; also from the terminal with `tmux-saver --fijar <escena>` (`aleatoria` to have it change every time).
+- `ws-test`: the two tests for «Reiniciar Claude en todas las pestañas» failed because of the test itself (the simulated Claude looked like a terminal without Claude). `ws-hooks` names each hook by its script, not by `pwsh.exe`.
+- The screensaver had stopped appearing: it was cancelled if any tab was in «👉 te toca», which, since that status exists, is almost always. Now only an open permission dialog holds it back.
+- Dashboard: the OpenTelemetry section now reads what the real Claude Code sends: events arrive without the `claude_code.` prefix, several numbers arrive as text and the first token comes inside each call. It adds the time spent waiting for your approval as measured by the traces.
+- Menus, after reviewing the 137 options one by one: «Abrir carpeta con Opus» ("Open folder with Opus") did nothing (the function it calls did not exist); «Guardar esta pestaña como plantilla» ("Save this tab as a template") saved an empty template if the name had spaces and gave no warning; the tab log (`Ctrl+b H`) failed silently if `~/logs` did not exist; the help advertised retired shortcuts; «Ir a la siguiente que te espera» ("Go to the next one waiting for you") now switches group and tab explicitly and its label says what it does; automatic routing warns that it applies to all tabs. `ws-test` adds a menu consistency check.
+- Active hours: a turn left open no longer counts as days of work. Each turn contributes at most one hour, and a Claude response that arrives more than 30 minutes after the last activity goes into a separate turn. Previously 28 turns added up to 562 hours and a project with 63 turns showed 292.
+- `ws-informe`: the MemPalace diary is now split by day and respects the period (the log only carries the time; the day is reconstructed approximately). MemPalace and recall appear in tables, not as dictionaries.
+- «Ir directo a la que te espera» ("Go straight to the one waiting for you") now jumps to the next tab waiting for you (it used to pick the first one, which was often the one already in front of you, and did not switch group).
+- `ws-informe --ia`: Claude's findings no longer come out as a dump of the prompt and the JSON. Model routing blocked the query with no screen to ask on, and the report pasted that block as if it were the answer. Now the kit's `claude -p` calls (report, learn, handoff, quick question and swarm) run outside the tab's hooks, and a block is reported as a failure.
+- Menus and floating windows no longer flicker while Claude works in the tab: the status is only written to tmux when it changes (previously every tool event rewrote eight options and each one redrew the bar).
+- Traces: **commits per session** are now recorded. Previously they were almost always empty (git takes more than 1 s on `/mnt/c` and many sessions close without their start event). Now the start waits 3 s for git, the close uses the time of the conversation's first message when there is no starting commit, and each command records the `git commit`s it ran; the estimate takes the larger of the two counts.
+- Telemetry: **only your messages open a turn**. Previously local command output, system inputs, background task notices and compaction summaries counted as your turns (the count came out almost double and «palabras tuyas» ("your words") more than four times too high). That work now goes into **automatic turns**: it adds cost and tokens, is reported separately and does not count as your turn; two consecutive messages of yours with no response are a single turn. Total cost does not change. The history is recalculated on its own at the next `ws-telemetria build`.
+- Usage dashboard: embedded data escapes `</`, so a branch or file name containing `</script>` no longer injects code into the page.
+- `ws-informe`: the «prompts que se repiten» ("recurring prompts") no longer count the automatic continued-session summary or the interruption notice.
+- Usage dashboard: «Hoy» ("Today") and the per-day bars group by **local** date (previously UTC: after 18:00 today's activity fell under "tomorrow").
+- `ws-verify`: the visibility check accepts the public kit when `git config ws.kit.publico` is `true` (and warns if the flag and GitHub disagree); without the flag it still expects a private repo.
+
+### Removed
+- Screensaver: the earlier scenes are retired: the pixel art ones (`invasion`, `criaturas`, `coloso`, `synthwave`, `ciudad`, `fuegos`, `acuario`, `serpiente`), the epic ones (`fortaleza`, `expedicion`, `gigantes`, script `tmux-escenas`), `arrecife` (script `tmux-arrecife`) and the shortcuts to `cmatrix` and `cbonsai`. All scenes are now drawn by `tmux-arte`. If you had a retired scene saved, the screensaver falls back to random. The installer does not delete files: `tmux-escenas` and `tmux-arrecife` stay in `~/.local/bin` until you delete them.
+
+### Security
+- **Telegram: «▶ Ejecutar» now asks for your PIN** (ADR-013, phase 2). The button no longer runs anything: the bot asks you to reply with the PIN (5 minutes, the reply is deleted from the chat) and only then runs the command. Three wrong PINs in an hour cancel the pending commands and alert you. It is on by default and uses the same PIN as text replies (`ws-telegram texto pin`); `ws-telegram ejecutar sin-pin` goes back to the direct button.
+- **`install.sh` turns on the git gate**: it points git's global hooks path at the kit hooks when none is configured, so a fresh install has the secret scan, the message check and the push gate from the first commit. It does not replace a hooks path you already use; `--no-git-hooks` skips it.
+- **Full (`completo`) level: sandboxed commands only read the tab's project.** The profile is now built per project: it denies reads of the folders where your other repositories and documents live (the roots in `roots.txt` and the Windows `Documents`, `Desktop`, `Downloads` and OneDrive folders) and re-allows the project and its worktrees. A prompt injection in one repository can no longer read another client's code. If Claude needs to look at another repository, use the normal level; `WS_COMPLETO_LECTURA=0` turns it off.
+- **MCP tools that send, delete, change or can read secrets always ask**, whatever was allowed before: Azure tools that mutate or reach Key Vault, App Configuration, storage and databases; every Microsoft 365 tool that sends, replies, deletes, moves or edits; and MemPalace deletions. MCP tools do not run inside the sandbox, so permission rules are the only control there. Windows shells (`pwsh.exe`, `powershell.exe`, `cmd.exe`, `wsl.exe`) also always ask.
+- **Guard hook:** blocks PowerShell with an encoded command or a download-and-run pattern, and any write to `.git/hooks` or `.git/config` (Claude Code already makes them read-only for sandboxed commands; the guard also covers the file tools).
+- **Sandbox blocks are now visible** (`ws-sandbox-aviso.sh`): when the sandbox stops a network connection, a read of a credential path or a write outside the project, the tab shows a notice and the event is recorded (type, target, program and project; never the full command). `ws-sandbox-aviso.sh --resumen` lists them. Claude Code has no documented sandbox-violation event, so detection is based on the command result and is approximate.
+- **The sandbox now also hides the Windows-side credentials.** It already blocked reads of `~/.ssh`, `~/.aws`, `~/.azure`, `~/.kube` and the like in the Linux home, but the same folders in the Windows profile are visible from WSL under `/mnt/c/Users/<user>` and were readable by sandboxed commands (git credentials, kubeconfig, SSH keys, the GitHub CLI token, browser profiles). They are now in `sandbox.filesystem.denyRead` and in the `Read(...)` deny rules, together with `~/.gnupg`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.git-credentials`, `~/.terraform.d`, the Telegram configuration, the shell history and the local OpenTelemetry store (which holds prompt text).
+- «Completo» ("Full") now really keeps every command inside the sandbox. It used to pass an empty list of excluded commands, but Claude Code merges the lists from all sources, so `az`, `gh`, `git push`, `kubectl` and the rest still left the sandbox just as in «normal». It now starts without loading user settings (`--setting-sources project,local`) and with a profile that carries everything except that list.
+- **Protection floor (ADR-013, phase 1)**, which no level turns off:
+  - `guard.sh` rewritten: fails closed if it cannot read the action; detects force push in its variants (`-fu`, `+refspec`), push to `main` with `refs/heads/…`, `git -C` or while on that branch, `--no-verify`, changes to `core.hooksPath` and `ws.gate.*`, `sh <(curl …)`, `ws-secret get` and `az`, `kubectl` and `helm` mutations against production named in the command; it no longer blocks text inside quotes. Tests in `tests/guard.sh` (44 cases), within `tests/run.sh` and CI.
+  - New `deny` rules: SSH keys, Azure and GnuPG profile, `ws-secret get`, Azure connection strings and keys, and bypassing the git gate. Wildcard `allow` rules are out (`az * show*`, `az * list*`): enumerated reads remain.
+  - «Puro» ("Pure") no longer keeps the kit's `allow`/`ask` permissions but does keep the floor (`deny` and `guard.sh`): previously it ended up more open than Claude without the kit.
+  - Telegram: does not offer or run commands in tabs without a sandbox (solo or pure mode); second blocklist (credentials, `kubectl -n … delete`, `git -C … push`, uploading data with curl, local scripts, deleting on GitHub); output also goes through `ws-redactar`.
+  - The lint-on-edit hook no longer runs the repository's `eslint` or `prettier` (they run outside the sandbox); they remain in the pre-commit.
+  - tmux bar: the tab's path is escaped in the branch command (a folder with `$(…)` in its name no longer executes anything).
+- ADR-013 (accepted): minimum protection floor that no mode turns off, following the adversarial review of the completo, normal, puro and solo levels.
+
+## [2.6.0] - 2026-11-20
+
+### Added
+- `ws-traspaso` (Menú → Claude → E): package for another Claude to continue a tab's work: Claude's summary (goal, status, decisions, pending items, files, how to continue, risks) built from the redacted conversation, plus branch, changes, commits, diff against the base, task list and touched files; with `--conversacion`, the transcript for `claude --resume`. It is left in %UserProfile%\ws-telemetria\traspasos and on the clipboard.
+- `ws-aprender hechos` (Menú → Consumo → a): Claude reviews MemPalace (read-only) and proposes stable facts about you; only the ones you choose are saved to the graph.
+- `ws-aprender comandos` (Menú → Consumo → k): from the requests you repeat, Claude proposes your own «/» commands; only the ones you choose are created in ~/.claude/commands (it never overwrites).
+
+## [2.5.0] - 2026-11-20
+
+### Added
+- `ws-informe` (Menú → Consumo → i/j): report on the last 30 days in HTML and Markdown. Usage and work pattern (hour and day map, turn duration, turns per session, your wait), projects, models and routing, **agents** (which, how much, in which projects, with which model, how long they take), tools and MCP, **recurring prompts** (candidates for a command or skill) and «/» commands, **MemPalace** (diary saved/failed, mined, Hub restarts and errors, size) and **recall** (decisions, threshold, latency).
+- `--ia`: Claude reads only the aggregated metrics and writes findings, suggestions and the 5 highest-value actions; `--ia-memoria`: it also queries MemPalace through its MCP (duplicate wings, graph) and recommends cleanup.
+
+## [2.4.0] - 2026-11-20
+
+### Added
+- Claude protection in three levels per tab (`tmux-nivel`, Menú → Claude → Protección, ADR-012): **completo** (sandbox with no escape hatches + the kit's rules), **normal** (your configuration) and **puro** (no sandbox and none of the kit's ask/deny/guard; only what comes from your organization and the repo). The bar shows 🔒/🔓.
+
+## [2.3.0] - 2026-11-20
+
+### Added
+- **Activas** ("Active") window (`Ctrl+b a`): what is waiting for you, what is working and what finished recently, across all groups; Enter goes to the tab; it refreshes on its own (`tmux-activas`).
+- Compute monitor on the second line of the bar (`Ctrl+b v`): CPU, RAM and network with sparklines, C: disk, $/h and Claudes working/waiting/done (`tmux-hud`).
+- Screensaver scene picker as a list, with the current one marked and an immediate preview (`tmux-escena`).
+
+### Changed
+- Menus reorganized with sections and titles: Ir a · Esta pestaña · Herramientas · Ayuda (Go to · This tab · Tools · Help). «Navegar» and «Sesión» merge into «Pestañas y sesión» ("Tabs and session"); «Vistas y utilidades» ("Views and utilities") and «Consumo e informes» ("Usage and reports") are new submenus; floating windows have a title. Menus and floating windows with rounded borders and colors (tmux ≥ 3.3/3.4).
+- This tab's model: the menu marks the current one (✓) and also opens Claude's picker.
+
+### Fixed
+- Changing the model from the menu no longer interrupts Claude if it is working.
+
+### Removed
+- `menu-nav.tmux` and `menu-demos.tmux` (their content moved to «Pestañas y sesión» and «Vistas»).
+
+## [2.2.0] - 2026-11-19
+
+### Added
+- Screensaver: «arrecife» scene (Arrecife de Coralia, "Coralia Reef"), a showy, original aquarium. Gradient water
+  with moving light rays, waves, seaweed with swaying leaves, corals, silver shoals, 12 species
+  of tropical fish drawn with half cells and wagging their tails (clownfish, surgeonfish, angelfish, mandarinfish, neon,
+  parrotfish, betta, lemon, butterflyfish, barracuda, lionfish, Napoleon wrasse), manta ray, pulsing jellyfish, turtle, crab,
+  starfish, chest with bubbles and sparkles in the sand. True color (24-bit) if the terminal supports it; otherwise 256 colors
+  (`tmux-arrecife`; `WS_ARRECIFE_COLOR=24|256` forces it). It only redraws what changes.
+
+## [2.1.0] - 2026-11-19
+
+### Added
+- Detailed Claude status with its elapsed time in the bar, the dashboard, the summary, the menus and Telegram:
+  🧠 pensando 42s · 🔧 Bash 2m · ✋ aprobar Bash 5m · ❓ te pregunta · 📦 compactando · 🐝 3 agentes ·
+  ✔ listo hace 12m · ⏳ sin avance 11m · ⛔ interrumpido · ✖ error API (`tmux-estado`; thinking, tool running, approve, asking you, compacting, agents, done, no progress, interrupted, API error).
+- Dashboard (`Ctrl+b D`): columns ESTADO, QUÉ HACE (Bash: npm test) and TURNO (status, what it is doing, turn).
+- PreCompact hook → `tmux-state.sh compact`.
+
+### Changed
+- `tmux-state.sh`: phase, start and detail per tab (@cfase, @cdesde, @cdet, @cturno); @cmain does not change (the watcher and the alerts work as before).
+
+## [2.0.0] - 2026-11-19
+
+Major version because of the size of the change (1.25 → 1.32.2): the workstation goes from "tmux with Claude" to an environment with
+telemetry, model routing, remote control and parallel work. It does not break compatibility: `ws-actualizar`
+upgrades from any 1.x.
+
+### Added
+- Personal configuration versioned in a private repo: `ws-personal` (init, daily sync, restore) — ADR-011.
+- Summary of 1.25–1.32: traces of everything Claude does, estimation per ticket, weekly report and budgets;
+  command palette, adjacent pane → Claude, notify me when done, extract from the screen, quick question,
+  labels, focus mode, logs with alarm, second monitor and mirror; CI/PR/ticket in the bar, tab
+  templates, pane recording, searchable history and a swarm of Claudes; personal bar segments;
+  tab groups and import of Windows conversations; encrypted backup to OneDrive; Telegram with
+  buttons, commands, PIN-protected replies and alerts.
+
+### Changed
+- `tmux-fondo` syncs your personal configuration once a day.
+
+## [1.32.2] - 2026-11-19
+
+### Fixed
+- Routing: when accepting the model change, `/model` was typed on top of the prompt Claude Code leaves in the input box and "<text>/model …" was sent as a message, without changing the model; the hook asked again and the text was repeated. Now the box is cleared (Ctrl+C) before `/model`, and the hook does not ask in the 2 min after the change or if the text carries a pasted `/model`.
+
+## [1.32.1] - 2026-11-19
+
+### Added
+- Personal segments in the bar: `~/.config/ws-local/barra-extra.conf` (not part of the kit). `tmux-fondo` keeps them present exactly once even if the theme changes or you reload the configuration.
+- `ws-cache <seg> <comando>`: cached output for slow bar segments; refreshes in the background.
+
+### Changed
+- `tmux-fondo`: repairs the bar on every refresh (cheap) and leaves the network work for once a minute; `--barra` when loading the configuration.
+
+## [1.32.0] - 2026-11-19
+
+### Added
+- Bar: CI (✔ ✖ ●), PR (#12 ✓ ✎ 📝) and ticket for each tab, from GitHub (`gh`) or Azure DevOps (`az`), with a 3 min cache (`tmux-rama`, `tmux-fondo`; `@rama_barra off` turns it off).
+- `tmux-plantilla`: open a folder with panes already laid out (Claude + live tests + git); 5 templates (node-api, dotnet, python, terraform, qa) and "save this tab as a template". Menú → T · Sesión → G.
+- `tmux-grabar`: records an already open pane to `.cast` (asciinema) + redacted `.txt` (+ `.gif` with agg) in Videos\Claude. Menú → g → r.
+- `tmux-historial` (off by default): search over what went through all panes, redacted, 30 days. Sesión → y / h.
+- `tmux-enjambre`: several Claudes in parallel, one subtask per worktree and branch, progress dashboard and integration with merge --no-ff that you approve; never push. Menú → Claude → Z.
+
+## [1.31.0] - 2026-11-19
+
+### Added
+- `Ctrl+b e`: sends Claude the output of the adjacent pane (redacted, pasted without Enter).
+- `Ctrl+b Espacio`: command palette with every menu option and its key path.
+- `Ctrl+b N`: notify me when this pane's command finishes (Windows + Telegram, ✅/❌ and last lines).
+- `Ctrl+b u`: extract URLs, paths, hashes, IPs, GUIDs, Azure IDs, tickets and images from the screen.
+- `Ctrl+b ?`: quick question to Claude (Haiku, no tools or session); «+p» includes the screen.
+- `Ctrl+b E`: tab labels (bloqueada, revisión, esperando, pruebas, lista: blocked, review, waiting, tests, ready) in the bar and the dashboard.
+- Menu: broadcast the same text to several tabs with Claude, live logs with alarm (k8s, App Service, Docker, file), focus mode, second monitor and read-only mirror for screen sharing.
+- `ws-aviso` (Windows toast + Telegram, with click to the tab) and `ws-redactar` (secret filter) for all scripts.
+
+### Changed
+- `tmux-dash`: label column; linked sessions from the second monitor are not repeated.
+
+## [1.30.0] - 2026-11-19
+
+### Added
+- Traces of everything Claude does (`~/.claude/hooks/ws-trazas.sh`, 13 events): per tool (summarized action, duration without your wait, your wait to approve, error by type, bytes, lines +/−, extension, MCP and method, skill, subagent and requested model), prompts (size, command, question, code), turns, notices, denied permissions, subagents, compactions and sessions (commits and diff since the start). Never content. `~/.local/share/ws-telemetria/trazas/`, gzip after 35 days, 13 months.
+- `ws-telemetria trazas | estimar | semana | presupuestos | exportar`; `trazas` view in `ws-telemetria sql`.
+- Dashboard: tools (time, errors, approx. cost), Bash by type of work, code by language and file, MCP/subagents/skills, estimation per ticket and budgets.
+- Telegram: weekly summary (Mondays from 9) and budget notices at 80 and 100 % (`~/.config/ws-telemetria/presupuestos.conf`).
+
+## [1.23.0] - 2026-11-18
+
+### Fixed
+- Telegram: the service uses a PID file instead of a lock; child processes inherited the lock and, if they stayed alive, the service would not start again (text replies were lost without a trace).
+- Telegram: every message you write to the bot is logged, with the reason if it was not sent.
+- Telegram: the service started by tmux failed with "sin token" ("no token"; PATH without ~/.local/bin or Windows); ws-telegram sets its PATH and ws-secret finds PowerShell at its standard path.
+
+## [1.22.0] - 2026-11-18
+
+### Fixed
+- Telegram: Reply with text works on any notice from a Claude tab in the last hour (finished, question, command, alert), not only on questions marked ↩; without Reply, it goes to the only open question if there is exactly one. If that tab has a dialog with options, it does not type (use the buttons). The confirmation says which tab it reached.
+
+## [1.21.0] - 2026-11-18
+
+### Added
+- Telegram alerts, checked every minute and rate-limited (`~/.config/ws-telegram/ajustes`):
+  - Claude stopped because of an error or a usage limit, with a button to switch the tab to the other account (same conversation).
+  - Reminder every 3 min while a permission is still waiting for your decision.
+  - Stuck tab: working without writing to its transcript (or its subagents') for more than 10 min.
+  - High usage: more than $15/h equivalent over the last 10 min (`ws-telemetria ritmo`).
+  - Context ≥ 80 %, with a /compact button.
+  - Security: someone other than you used the bot; wrong PIN.
+  - Workstation: less than 50 GB on C:, light backup older than one day, kit CI failed.
+- Daily summary (20:00 by default): usage, Telegram activity, `ws-health` and what is being done in each tab (`tmux-resumen --texto`). Try it: `ws-telegram resumen`. Turn alerts off: `ws-telegram alertas off`.
+
+## [1.20.0] - 2026-11-18
+
+### Fixed
+- Telegram: the same command in the same tab arrives only once every 30 min (it used to repeat on every turn that mentioned it).
+- Telegram: if Claude says "anteponle `!`", "con ! al inicio" ("prefix it with `!`", "with ! at the start") or similar, the commands that follow count even if the tool is not in the known list; the list grew (aws, gcloud, azd, func, apt, brew, winget, fnm, prisma, trivy, gitleaks, wsl.exe, powershell.exe…).
+
+## [1.19.0] - 2026-11-18
+
+### Fixed
+- Telegram: all the commands Claude asks for now arrive. The whole text of the turn is taken (intermediate messages too, not just the final one) and commands without `!` are recognized: ```bash/sh/console``` blocks and `commands` after "ejecuta/corre/run" if they start with a known tool (git, npm, az, kubectl, docker, terraform…); blocks in other languages, paths and heredocs are discarded.
+- Notices for turns that continue without a new prompt (previously lost) when they carry commands or questions.
+
+## [1.18.0] - 2026-11-18
+
+### Added
+- Telegram: reply with text to Claude's open questions. Only with Reply on the question (↩), starting with your PIN (4 to 6 digits, in the Windows Credential Manager); single use, 15 min; your message is deleted from the chat; it reaches Claude as `[Respuesta desde Telegram] …`. 3 wrong PINs in 1 h turn the feature off. Off by default: `ws-telegram texto on` or Menú → Estación.
+
+### Fixed
+- Telegram: the `!` commands in a long response did not arrive (only the last 1200 characters were examined); they are now extracted from the full message (up to 8).
+
+## [1.17.0] - 2026-11-18
+
+### Changed
+- Routing: moving down a model is only proposed with little context (< 30 %, `bajar_max_ctx` in `~/.config/ws-ruteo/ajustes.conf`). With more context, changing the model re-reads everything without cache and costs more than it saves: the hook does not block and suggests the cheap subagent to Claude (`sql-rapido` for SQL, `explorador` for searches). Moving up a model still always asks.
+- Telegram: the service restarts on its own when a patch updates `ws-telegram`.
+
+### Fixed
+- CI: the tmux step starts a single server with retries and `TERM` set; it used to fail sometimes with "server exited unexpectedly".
+
+## [1.16.0] - 2026-11-18
+
+### Added
+- Telegram: each `!` command Claude asks you for arrives in its own message (copied with one tap) with ▶ Ejecutar ("Run"). It runs only that command, in that tab, as a Claude `!` (Claude sees the output), and the result arrives redacted as a reply. Single use, 10 min.
+- Never run from Telegram (they arrive without a button, "hazlo en la PC", "do it on the PC"): sudo, recursive deletes, `curl | sh`, terraform apply/destroy, kubectl delete/apply/exec, helm install/upgrade, `az` changes, `git push`, docker run/exec/rm and commands that carried a secret.
+
+## [1.15.0] - 2026-11-18
+
+### Added
+- `Ctrl+b o` (tmux-open): → enters the subfolders of the highlighted folder, ← goes up one level and Enter opens; the first line of each level opens the folder itself.
+
+### Changed
+- The tab summary runs as an interactive floating window (scroll, copy, search), like the others.
+
+## [1.14.0] - 2026-11-18
+
+### Added
+- Summary of each tab: double click on the tab, `Ctrl+b i` or Menú → Sesión → Resumen. It shows folder, branch, changes, last commit, Claude's status and model, tasks in progress (what we are doing) and the last exchange (where we left off); `r` adds a 3-line summary with Haiku.
+- Telegram: the routing prompt arrives with buttons (Cambiar · Enviar con el actual · Editar: Switch · Send with the current one · Edit) and waits 2 min; whichever answers first, the PC or the phone, wins.
+
+### Changed
+- Notices (Windows and Telegram) also when Claude ends a short turn asking you for something: a question or a command for you.
+- Inside a floating window, Telegram reads the screen and sends the key to the floating window, not to the tab outside.
+
+## [1.13.0] - 2026-11-18
+
+### Added
+- Word telemetry: per turn, how many words you write and how many Claude answers (only the count, never the text); in the dashboard, average per turn, ratio and output tokens per visible word, per project.
+- Network telemetry: WSL bytes every minute (measured) and Claude traffic per project estimated from tokens; "Red (24 h)" ("Network (24 h)") card in the dashboard.
+
+## [1.12.0] - 2026-11-18
+
+### Added
+- CI on GitHub (`.github/workflows/ci.yml`): lint (shellcheck, Python, JSON, tmux configuration and menus) → SAST and secrets (bandit, gitleaks with verified checksum) → kit tests. No third-party actions; read-only permissions. Dependabot for `actions/checkout`.
+- Usage dashboard: cards for model routing (suggestions accepted or rejected per rule) and for Telegram (notices, replies, unauthorized attempts, errors).
+- `install.sh` adds the terminal (`shell.sh`) and account lines to `.bashrc`; it recognizes the ones that already exist even if they are written with `$HOME`.
+
+### Changed
+- The light backup includes telemetry, routing rules, Telegram configuration (without token) and the solo-mode profile.
+
+### Fixed
+- `ws-telegram configurar` no longer shows an error when saving the first `offset`.
+- `ws-telemetria`: bandit findings (sha1 only for cache names; DuckDB view with a fixed path).
+
+## [1.11.0] - 2026-11-18
+
+### Added
+- Claude notices over Telegram (`ws-telegram`, ADR-010). They arrive when Claude asks for your decision or finishes a long turn, with the question redacted (no tokens, keys or passwords) and `1 · 2 · 3 · Cancelar` buttons that are sent to that tab.
+- Security: token in the Windows Credential Manager (`ws-secret`), never in argv. Only buttons from your chat. Single-use code that expires in 10 min. The screen is read again before sending (if the dialog changed, it does not send). Only closed options. Log in `~/.local/share/ws-telemetria/telegram/`.
+- Menú → Estación → Telegram (turn on or off); `ws-telegram configurar | estado | prueba | olvidar`.
+
+### Fixed
+- `ws-secret` without PowerShell's CLIXML noise ("Preparing modules for first use").
+
+## [1.10.0] - 2026-11-18
+
+### Added
+- Model routing per task (ADR-009, R1), always with your confirmation. A single rule table (`~/.config/ws-ruteo/reglas.conf`) for the Claude hook and for `cr`. If a rule says the task belongs to a different tier than the tab's model, a popup asks: switch and send, send with the current one or edit. The text is not lost and your default model does not change.
+- `cr "tarea"`: classifies, explains (`--explica`), simulates (`--dry-run`), forces a tier (`-t`) and sends to the tab's Claude with the right model, or opens it with `--model`. With no rule, it asks Haiku (redacted text); with confidence < 0.7 it goes up one tier. `cr --probar`: 20 labeled tasks.
+- Menú → Claude → Modelo de esta pestaña: Fable 5.2, Opus 5.5, Sonnet 5.5, Haiku 5.5, and turning routing on or off.
+- Subagents `depurador` (Opus 5.5, medium) and `sql-rapido` (Sonnet 5.5, low); `arquitecto` moves to Fable 5.2 (high) and `explorador` to Haiku 5.5 (low).
+- `fallbackModel`: Opus 5.5 → Sonnet 5.5 if the main model is overloaded or down (that turn only).
+- Routing decisions in the telemetry (`~/.local/share/ws-telemetria/ruteo/`), without the text of the tasks.
+
+## [1.9.0] - 2026-11-18
+
+### Added
+- Clicking a Claude Windows notification (or its "Ir a la pestaña" ("Go to the tab") button) brings Windows Terminal to the front and takes tmux to the tab and pane that raised it. `ws-claude://` protocol registered per user (no administrator); `tmux-foco` only accepts a pane number and only switches tabs.
+
+## [1.8.1] - 2026-11-18
+
+### Security
+- The bash history no longer stores lines with credentials (`HISTIGNORE`) or lines that start with a space.
+- `ws-historial`: finds possible secrets in the history without showing them and deletes them with confirmation; `ws-auditoria` uses the same pattern (it now includes `client_secret=`, tokens and `Bearer`).
+
+### Fixed
+- `ws-auditoria`: read-only Docker commands outside the sandbox are no longer flagged as a failure; only `docker *`, `run`, `exec`, `cp`, `build`, `pull`, `push` and `compose up/run/exec`.
+
+### Changed
+- The terminal opens ~1.7 s faster: nvm is loaded only when used (fnm handles Node). Local change in `~/.bashrc`.
+
+## [1.8.0] - 2026-11-17
+
+### Added
+- Local Claude telemetry (`ws-telemetria`, ADR-008): exact tokens per response (input, output, cache written and read, reasoning) from the transcripts, grouped by turn, session, project, branch and model; responses repeated by streaming are counted once; subagents and the copilot included. Cost equivalent at API prices (editable table in `~/.config/ws-telemetria/precios.json`).
+- Resources of the Claude process per project (CPU, RAM, disk operations and bytes), sampled every minute from `/proc`.
+- HTML dashboard that is regenerated every minute and reloads on its own (`%UserProfile%\ws-telemetria\tablero.html`); Menú → Estación → Consumo de Claude. `ws-telemetria resumen` and `ws-telemetria sql` (DuckDB, optional).
+- No text of prompts or responses; 13-month retention; 0700 permissions.
+
+## [1.7.0] - 2026-11-14
+
+### Added
+- `ws-test`: deterministic tests of the whole workstation in an isolated environment (simulated HOME, tmux and Claude): configuration and menus, solo mode, accounts, persistence and auto-restore, floating windows, backup, screensaver, terminal and copilot, sandbox limits. `ws-test --ia`: non-deterministic smoke test with the real Claude and API (tolerant, only warns). `ws-verify` runs `ws-test`.
+- Interactive floating windows (`tmux-flot-run` + `flot.conf`): each floating window runs in its own tmux session with scroll, selection and copy to the Windows clipboard (`ws-copiar`), search and `Ctrl+b d` to close; the internal scripts keep controlling the outer tmux.
+- AI suggestions in gray as you type (ble.sh) with the Anthropic API directly (Haiku, ~0.5 s): one query in flight, minimum 0.8 s between queries, secret redaction and circuit breaker (3 failures → 5 min pause). `Alt+a/e/x` use the API if there is a key and, if not, `claude -p`.
+- Screensaver: three original epic scenes in the style of the bonsai (they grow step by step): `fortaleza` (Valdrun and Kaelen), `expedicion` (the caravan of Ostvar) and `gigantes` (the moss giants and Nim), in `tmux-escenas`.
+- `ws-secret`: secrets in the Windows Credential Manager (DPAPI) from WSL; the API key is read once per shell and lives only in memory.
+
+## [1.6.0] - 2026-11-14
+
+### Added
+- `tmux-recuperar` (Menú → Sesión → Recuperar pestañas): lists the saves with time, number and names of tabs and restores the chosen one in one step.
+- Backup restore at startup: `.tmux.conf` marks the last save before loading plugins and, if the session ends up empty, restores it on its own.
+- `docs/runbook.md`: troubleshooting and recovery (tabs, conversations, backups, WSL, accounts, copilot, sandbox, patches).
+
+### Fixed
+- `tmux-save-now` does not save during the server's first 3 minutes: on restart it overwrote the last save with an empty session and the tabs were not restored.
+- `claude-cuenta estado` was cut short when reading the account status.
+
+## [1.5.0] - 2026-11-14
+
+### Added
+- Two Claude accounts on the same workstation (`claude-cuenta`, Menú → Claude): the work one in `~/.claude` and the personal one in `~/.claude-personal`, each with its own login (`CLAUDE_CONFIG_DIR`). They share setup, conversations, history and work state, so a tab switches accounts while resuming the same conversation (for example, when one runs out of usage). Each organization's policies (`remote-settings.json`, `policy-limits.json`) and the login stay separate. Personal tabs are marked with `·P`.
+
+## [1.4.0] - 2026-11-14
+
+### Added
+- Terminal: Tab completion (`bash-completion` + `ws-completions` for kubectl, helm, gh, az, aws, terraform, docker, fnm, cargo…), fzf (`Ctrl+R`, `Ctrl+T`, `Alt+C`, `**<Tab>`) and ble.sh pinned to a commit (gray suggestions from history and syntax colors). Turned off with `touch ~/.config/tmux-claude/sin-ble`.
+- AI copilot in the terminal (`ai-shell.sh`): `Alt+a` turns what you type in Spanish into a command, `Alt+e` explains the command on the line, `Alt+x` fixes the last one that failed. Claude Haiku with no tools, hooks, MCP or saved session; it redacts secrets before sending; it never executes: the suggestion stays on the line.
+
+## [1.3.0] - 2026-11-13
+
+### Added
+- Solo mode (`tmux-solo`, Menú → Claude): Claude in auto mode **without sandbox** for unattended work; the auto-mode classifier reviews each command instead of asking you (profile `~/.config/claude-solo/settings.json`, only in that session). It is enabled in the current tab resuming the conversation, in a new tab or in a worktree `<repo>.wt/solo-<fecha>`, and you go back to normal from the same menu. `ask` rules still ask; `deny`, `guard.sh` and dangerous `rm`s stay blocked.
+
+## [1.2.0] - 2026-11-13
+
+### Added
+- `ws-backup-lite`: daily light backup of Claude's and the workstation's data (conversations including subagents', todos, plans, `/rewind`, history, memory, audit, tmux saves, MemPalace) plus an inventory for reinstalling. No credentials or caches; verified with SHA-256, atomic write, rotation (14) and optional encryption with age. It triggers on its own once a day from the tmux save.
+- `ws-restore-lite`: `--probar` checks in a temporary folder that everything can be recovered and that it carries no credentials; `--restaurar` extracts into `$HOME` without overwriting (`.~N~`).
+- Menú → Estación: "Respaldar Claude ahora" ("Back up Claude now") and "Probar el último respaldo" ("Test the last backup").
+
+### Changed
+- `ws-health`: accepts the light backup (<2 days) in place of the full snapshot; on C: it requires 50 GB free instead of 15 %.
+
+## [1.1.0] - 2026-11-13
+
+### Added
+- Kit for the team: `export.sh` stores personal paths and users as a template (`@WINHOME@`, `@WIN_USER@`, `@HOME@`, `@LINUX_USER@`) and `install.sh` replaces them with those of the target machine; `--win-user` and `--repos` options.
+- Clickable menu (`Ctrl+b m`, `≡ menú`, right click on a tab) organized in submenus: navigation, Claude, panes, session, tests/recording/presentation, appearance and workstation.
+- Navigation without prefix: `Alt+←/→`, `Alt+0`, `Alt+s` (finder with priority ⚠ ! ⏳), `Alt+Shift+←/→` (move while keeping focus).
+- Subagents: record per tab, `Ctrl+b A` live and `v` to view their transcript with reasoning (`showThinkingSummaries`).
+- Windows notifications (`win-notify.sh`) and the `tmux-watch` watcher: usage traffic light, pending approvals, inactivity and reminders.
+- Quality and security gate `ws-gate` in the global git hooks, lint on edit for Claude and a full repo report.
+- Conversion of PDF, Office, CSV, RTF, ODT and EPUB to Markdown with images (`ws-tomd` + `read-convert.sh` hook), isolated with no network.
+- `ws-tools`: inventory and installer by groups (base, nube, aws, contenedores, calidad, python, web, rust, sql, dev).
+- `ws-health`, `devsnapshot` and `devrestoretest` (resilience); tmux save when tabs or panes change.
+- `ws-verify`: test of the whole setup before pushing (patches, shellcheck, tmux and theme loading, scenes, Claude settings and hooks, `ws-check`/`ws-health`, kit tests, personal data, secrets and remote). Read-only.
+- Playwright with visible windows (WSLg), tab recording to GIF, presentation mode and persistent floating shell.
+- Dark, light or automatic theme (follows Windows) for tmux, Windows Terminal and Claude statuses.
+- Pixel art screensaver with its own scenes: invasion, creatures, colossus, synthwave, city at night, fireworks, aquarium and snake.
+- starship prompt with production context and WSL ↔ Windows bridge (`wopen`, `wexp`, `wpath`, `wcopy`, `wpaste`).
+- Versioned PowerShell profile (`windows/profile.ps1`, `windows/instalar.ps1`).
+
+### Changed
+- `install.sh` skips MCP servers whose executable does not exist on the machine.
+- Conversation backup to Windows every 15 minutes (previously, every hour).
+- WSL networking in NAT: mirrored mode was tried and it blocked internet access on corporate machines.
+
+### Security
+- Permission rules for AWS (secrets forbidden, mutations with confirmation), databases and destructive Docker.
+- Sandbox with no way out (`allowUnsandboxedCommands: false`) and `~/.kube`, `~/.aws` out of reach of sandboxed commands.
+- No Trivy (compromise of its supply chain, CVE-2026-33634); osv-scanner and Docker Scout are used.
+
+### Fixed
+- `ws-tools`: false FALTA ("missing") results caused by `pipefail`, the Node check with the field separator and an `&1` file created by a badly escaped redirection.
+- `fnm` fails if `/run/user/$UID` does not exist when WSL starts: it uses `/tmp/fnm-$UID`.
+- The kit's "sin usuario de Windows" ("no Windows user") test: it no longer depends on `cmd.exe` being available.
+
+## [1.0.0] - 2026-11-12
+
+### Added
+- `export.sh`: captures the real configuration (manifest, user MCP, `.wslconfig`) and blocks secrets.
+- `install.sh`: applies without overwriting (backup of what changes, `--dry-run`, idempotent), tmux plugins and missing MCP servers.
+- `tests/run.sh`: export, secret blocking, clean install, idempotency and backup.
+- Configuration for phases 1 and 2: persistent tmux, agent status, audit, guardrails, intent-based routing, MemPalace and recall on WSL, Microsoft Learn, Release Communications and Azure MCP servers, sandbox.

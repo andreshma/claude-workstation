@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+#
+# ws-arranque — mide qué hace lenta la apertura de una terminal nueva (bash interactivo) y muestra
+# las 12 líneas de tus archivos de arranque que más tiempo toman. Solo lee; no cambia nada.
+# Uso: ws-arranque
+set -uo pipefail
+log="$(mktemp)"; trap 'rm -f "$log"' EXIT
+t0=$(date +%s%N)
+PS4='+ ${EPOCHREALTIME} ${BASH_SOURCE[0]##*/}:${LINENO} ' bash -ixc exit 2>"$log" >/dev/null </dev/null
+echo "Arranque total: $(( ($(date +%s%N) - t0) / 1000000 )) ms"
+echo "Líneas más lentas (tiempo hasta la siguiente línea):"
+awk '/^\++ [0-9]+\.[0-9]+ /{ if (prev != "") { d = $2 - pt; if (d > 0.005) printf "%7.0f ms  %s\n", d * 1000, prev } pt = $2; prev = $3 }' "$log" \
+  | sort -rn | head -12

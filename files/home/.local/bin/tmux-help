@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+#
+# tmux-help — atajos de uso diario de la estación (tmux, Claude Code, shell y PowerShell).
+# Se abre con Ctrl+b h; cualquier tecla lo cierra.
+B=$'\033[1m'; M=$'\033[1;35m'; Y=$'\033[33m'; D=$'\033[2m'; R=$'\033[0m'
+cat <<TXT
+${M}TMUX${R}  ${D}Ctrl+b y luego la tecla · Alt+N sin prefijo${R}
+  ${Y}m${R} o clic en ${B}≡ menú${R} (barra): menú con todo   ${Y}clic derecho${R} en una pestaña: renombrar, cerrar, mover
+  ${Y}o${R} abrir repo o carpeta   ${Y}f${R} buscar pestaña     ${Y}D${R} tablero          ${Y}A${R} subagentes (v: razonamiento)
+  ${Y}g${R} shell persistente      ${Y}P${R} PowerShell         ${Y}h${R} esta ayuda       ${Y}d${R} salir sin cerrar nada
+  ${M}Sin prefijo:${R} ${Y}Alt+1…9${R} ir · ${Y}Alt+←/→${R} anterior/siguiente · ${Y}Alt+0${R} la última usada · ${Y}Alt+s${R} buscar · ${Y}Alt+Shift+←/→${R} mover
+  ${Y}'${R} ir por número (p. ej. 12)   ${Y},${R} renombrar        ${Y}&${R} cerrar pestaña   ${D}rueda del mouse en la barra: cambiar${R}
+  ${Y}z${R} zoom   ${Y}% "${R} dividir   ${Y}x${R} cerrar pane   ${Y}[${R} scroll y copiar (q sale)   ${Y}Tab${R} extrakto
+  ${D}Barra:${R} ${B}⚠ 2,5${R} esperan tu aprobación · ${B}⏳ 3(12m)${R} sin actividad · ${B}◉ \$4/h${R} consumo (verde/amarillo/rojo)
+  En el menú (${Y}Ctrl+b m${R}): ${Y}g${R} ir a la siguiente que te espera · Vistas: ${Y}r${R} grabar, ${Y}V${R} grabaciones · Estación: ${Y}I${R} herramientas, ${Y}Q${R} calidad del repo
+  ${Y}Ctrl+s${R} guardar   ${Y}Ctrl+r${R} restaurar   ${Y}r${R} recargar config   ${Y}Ctrl+b${R} manda Ctrl+B a Claude
+
+${M}CLAUDE CODE${R}
+  ${Y}Esc${R} interrumpir   ${Y}Esc Esc${R} volver a un punto anterior   ${Y}Shift+Tab${R} modos (plan, auto)   ${Y}Alt+P${R} modelo
+  ${Y}Ctrl+O${R} transcripción con razonamiento   ${Y}↓${R} panel de subagentes → ${Y}Enter${R} abre su transcripción
+  ${Y}Ctrl+B${R} (en tmux: Ctrl+b Ctrl+b) mandar tarea a segundo plano   ${Y}/tasks${R} tareas y subagentes
+  ${Y}Ctrl+T${R} checklist   ${Y}Ctrl+R${R} historial   ${Y}Ctrl+G${R} editor   ${Y}Shift+Enter${R} nueva línea   ${Y}?${R} ayuda de Claude
+  ${Y}!${R} comando tuyo (fuera del sandbox)   ${Y}@${R} archivo   ${Y}/compact /model /sandbox /exit${R}
+  ${Y}claude -c${R} retomar   ${Y}claude -r${R} elegir conversación
+
+${M}SHELL${R}  ${B}tw${R} repo · ${B}two${R} con Opus · ${B}twt${R} worktree · ${B}tp${R} pane · ${B}ws-check ws-health ws-update${R} · ${B}claude-report${R}
+${M}POWERSHELL${R}  ${B}dev devo devdash devagents devsave devcheck devsnapshot devrestoretest${R}
+TXT
+printf '\n%sCualquier tecla cierra%s' "$D" "$R"; read -rsn1

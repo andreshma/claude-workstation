@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+#
+# tmux-fondo — mantiene la barra y corre las tareas de fondo. Lo llama tmux-watch en cada refresco de la barra.
+#   Siempre (barato, solo opciones de tmux):
+#     · estado de Claude de cada pestaña con su tiempo (tmux-estado --todas)
+#     · etiqueta de pestaña, ⏺ de grabación y CI/PR en los formatos de las pestañas
+#     · tus segmentos personales en status-right, cada uno UNA vez: ~/.config/ws-local/barra-extra.conf
+#       (una línea por segmento, p. ej. #(~/.local/bin/ws-cache 30 ~/ruta/mi-segmento.sh); «# » = comentario).
+#       Ese archivo es personal: no va al kit del equipo. Sobrevive a cambios de tema y a recargar la configuración.
+#   Cada minuto como máximo (WS_FONDO_CADA), una corrida a la vez:
+#     · CI/PR/ticket de cada pestaña (tmux-rama --actualizar)
+#     · historial buscable, si lo encendiste (tmux-historial --muestrear)
+#   Una vez al día: ws-personal sync (tu configuración personal al repo privado)
+# Uso: tmux-fondo            todo
+#      tmux-fondo --barra    solo la barra (lo usa maravillas.tmux al cargar la configuración)
+set -uo pipefail
+B="$HOME/.local/bin"
+EXTRA="${WS_BARRA_EXTRA:-$HOME/.config/ws-local/barra-extra.conf}"
+
+barra() {
+  [[ -x "$B/tmux-estado" ]] && "$B/tmux-estado" --todas   # estado de Claude con su tiempo (parche 56)
+  [[ -x "$B/tmux-etiqueta" ]] && "$B/tmux-etiqueta" --barra
+  local o seg actual
+  for o in window-status-format window-status-current-format; do
+    [[ "$(tmux show -gv "$o" 2>/dev/null)" == *"@crama"* ]] || tmux set -ag "$o" '#{?@cgrab, #{@cgrab},}#{?@crama, #[dim]#{@crama}#[nodim],}'
+  done
+  for o in window-status-format window-status-current-format; do   # 🔒/🔓 del nivel de protección (parche 59)
+    [[ "$(tmux show -gv "$o" 2>/dev/null)" == *"@cnivel_ico"* ]] || tmux set -ag "$o" '#{?@cnivel_ico, #{@cnivel_ico},}'
+  done
+  # En modo enfoque la barra es mínima a propósito; al salir se restaura la de antes (con tus segmentos).
+  [[ -f "$EXTRA" && -z "$(tmux show -gqv @enf_fin 2>/dev/null)" ]] || return 0
+  actual="$(tmux show -gv status-right 2>/dev/null)"
+  while IFS= read -r seg || [[ -n "$seg" ]]; do
+    seg="${seg%$'\r'}"
+    [[ -z "${seg// /}" || "$seg" =~ ^#[[:space:]] || "$seg" == "#" ]] && continue
+    [[ "$actual" == *"$seg"* ]] && continue
+    tmux set -ga status-right " $seg"; actual+=" $seg"
+  done < "$EXTRA"
+}
+
+barra
+[[ "${1:-}" == --barra ]] && exit 0
+
+st="${XDG_RUNTIME_DIR:-/tmp}/tmux-fondo-$(id -u)"; mkdir -p "$st" 2>/dev/null && chmod 700 "$st"
+marca="$st/ultima"
+if [[ -f "$marca" ]] && (( $(date +%s) - $(stat -c %Y "$marca") < ${WS_FONDO_CADA:-60} )); then exit 0; fi
+exec 9>"$st/lock"; flock -n 9 || exit 0
+touch "$marca"
+[[ "$(tmux show -gqv @rama_barra)" == off ]] || timeout 50 "$B/tmux-rama" --actualizar
+[[ "$(tmux show -gqv @historial)" == on && -x "$B/tmux-historial" ]] && timeout 30 "$B/tmux-historial" --muestrear
+# Una vez al día: tu configuración personal al repo privado (ws-personal, ADR-011). Si encuentra algo que parece
+# secreto no hace commit y te avisa.
+dia="$st/personal-$(date +%F)"
+if [[ ! -f "$dia" && -x "$B/ws-personal" && -d "${WS_PERSONAL_DIR:-$HOME/code/estacion-personal}/.git" ]]; then
+  touch "$dia"
+  ( timeout 120 "$B/ws-personal" sync --silencioso >/dev/null 2>&1 \
+      || "$B/ws-aviso" "ws-personal: no sincronicé" "Revisa en la PC: ws-personal sync (¿posible secreto o sin red?)" ) &
+fi
+exit 0

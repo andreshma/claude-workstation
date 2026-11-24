@@ -1,0 +1,57 @@
+# starship.toml — prompt de la estación: dónde estás parado antes de ejecutar algo.
+# Muestra carpeta, rama, contexto de Kubernetes, suscripción de Azure y perfil de AWS;
+# en rojo con ⚠ PROD si el contexto parece de producción (mismo criterio que el guard).
+# Sin git_status: en repos de /mnt/c es lento. Fuente: kit claude-workstation.
+"$schema" = "https://starship.rs/config-schema.json"
+add_newline = false
+command_timeout = 500
+scan_timeout = 30
+format = """$directory$git_branch$kubernetes$azure$aws${custom.prod}$cmd_duration$line_break$character"""
+
+[directory]
+truncation_length = 3
+truncate_to_repo = true
+style = "bold cyan"
+
+[git_branch]
+format = "[$symbol$branch]($style) "
+symbol = " "
+style = "purple"
+
+[kubernetes]
+disabled = false
+format = "[⎈ $context( $namespace)]($style) "
+style = "blue"
+contexts = [
+  { context_pattern = ".*([pP][rR][oO][dD]|[pP][rR][dD]|[pP][rR][oO][dD][uU][cC][tT][iI][oO][nN]).*", style = "bold red", context_alias = "⚠ $context" },
+]
+
+[azure]
+disabled = false
+format = "[az $subscription]($style) "
+style = "yellow"
+
+[aws]
+format = "[aws $profile( $region)]($style) "
+style = "208"
+
+[custom.prod]
+description = "⚠ PROD si la suscripción de Azure o el perfil de AWS parecen de producción"
+when = '''
+p="$AWS_PROFILE"
+f="$HOME/.azure/azureProfile.json"
+[ -f "$f" ] && p="$p $(sed '1s/^\xEF\xBB\xBF//' "$f" | jq -r '.subscriptions[]? | select(.isDefault) | .name' 2>/dev/null)"
+printf '%s' "$p" | grep -qiE 'prod|production|prd|-pro$'
+'''
+shell = ["bash", "--noprofile", "--norc"]
+format = "[⚠ PROD ]($style)"
+style = "bold red"
+
+[cmd_duration]
+min_time = 5000
+format = "[⏱ $duration]($style) "
+style = "dimmed white"
+
+[character]
+success_symbol = "[❯](bold green)"
+error_symbol = "[❯](bold red)"

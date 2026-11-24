@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#
+# ws-copiar — copia stdin al portapapeles de Windows conservando acentos (clip.exe espera UTF-16LE).
+# Lo usan las flotantes (flot.conf) al soltar el mouse; sirve también en tuberías: comando | ws-copiar
+set -uo pipefail
+if command -v clip.exe >/dev/null 2>&1; then
+  iconv -f utf-8 -t utf-16le | clip.exe
+else
+  cat > /dev/null   # sin Windows (pruebas): descarta sin error
+fi

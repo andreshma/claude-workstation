@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+#
+# tmux-agents — tablero en vivo de los subagentes de Claude Code en todas las pestañas:
+# tipo, cuánto llevan y qué están haciendo; abajo, los últimos que terminaron y su respuesta.
+# Con "v" eliges uno y ves su transcripción: tarea, razonamiento, herramientas y respuesta.
+# Lee el registro que escribe ~/.claude/hooks/tmux-state.sh.
+# Uso: tmux-agents [--once | --render <transcripcion.jsonl>]
+set -uo pipefail
+base="/tmp/claude-agents-$(id -u)"
+TAB=$'\t'
+
+# ago <epoch> — tiempo transcurrido corto: 42s, 7m, 1h05m.
+ago() {
+  local s=$(( $(date +%s) - ${1:-0} ))
+  if (( s < 60 )); then echo "${s}s"; elif (( s < 3600 )); then echo "$(( s / 60 ))m"
+  else printf '%dh%02dm\n' $(( s / 3600 )) $(( s % 3600 / 60 )); fi
+}
+
+# rows <a|fin> — filas TSV por pestaña; la última columna es el agent_id.
+#   a:   pestaña, tipo, lleva, última, haciendo, id
+#   fin: hora, pestaña, tipo, respuesta, id
+rows() {
+  local pid wname d f ty st act ts id hh msg
+  while IFS="$TAB" read -r pid wname; do
+    d="$base/${pid#%}"; [[ -d "$d" ]] || continue
+    if [[ "$1" == a ]]; then
+      for f in "$d"/a-*; do
+        [[ -f "$f" ]] || continue
+        IFS="$TAB" read -r ty st act ts id < "$f"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$wname" "${ty:-agente}" "$(ago "$st")" "$(ago "$ts")" "${act:0:70}" "$id"
+      done
+    elif [[ "$1" == fin && -f "$d/done.log" ]]; then
+      while IFS="$TAB" read -r hh ty msg id; do
+        printf '%s\t%s\t%s\t%s\t%s\n' "$hh" "$wname" "$ty" "${msg:0:80}" "$id"
+      done < "$d/done.log"
+    fi
+  done < <(tmux list-panes -a -F "#{pane_id}${TAB}#{window_index} #{window_name}" 2>/dev/null)
+}
+
+draw() {
+  local act fin
+  act="$(rows a)"; fin="$(rows fin | sort -r | head -8)"
+  printf '\033[H\033[2J\033[1;35mSubagentes activos\033[0m  %s\n\n' "$(date +%H:%M:%S)"
+  if [[ -n "$act" ]]; then
+    { printf 'PESTAÑA\tAGENTE\tLLEVA\tÚLTIMA\tHACIENDO\n'; cut -f1-5 <<<"$act"; } | column -t -s "$TAB"
+  else echo "  (ninguno)"; fi
+  printf '\n\033[1mTerminados recientes\033[0m\n\n'
+  if [[ -n "$fin" ]]; then
+    { printf 'HORA\tPESTAÑA\tAGENTE\tRESPUESTA\n'; cut -f1-4 <<<"$fin"; } | column -t -s "$TAB"
+  else echo "  (ninguno)"; fi
+}
+
+# render <transcripción> — tarea, razonamiento, herramientas y respuestas de un subagente.
+render() {
+  jq -r '
+    def short: tostring | gsub("\n"; " ") | .[0:160];
+    select(.type == "assistant" or .type == "user") as $m
+    | ($m.message.content | if type == "array" then .[] else {type: "text", text: .} end)
+    | if .type == "thinking" then
+        "\u001b[35m∴ razonamiento\u001b[0m\n" + (if (.thinking // "") == "" then "(oculto: activa showThinkingSummaries)" else .thinking end) + "\n"
+      elif .type == "text" and $m.type == "assistant" then "\u001b[1m› respuesta\u001b[0m\n" + .text + "\n"
+      elif .type == "text" then "\u001b[36m» tarea\u001b[0m\n" + .text + "\n"
+      elif .type == "tool_use" then "\u001b[33m⚙ " + .name + "\u001b[0m " + ((.input.command // .input.file_path // .input.pattern // .input.url // .input.description // .input) | short)
+      else empty end' "$1"
+}
+
+# pick — elige un subagente (activo o terminado) y abre su transcripción en less.
+pick() {
+  local sel id f
+  sel="$( { rows a | awk -F "$TAB" -v OFS="$TAB" '{ print "activo    " $1 " · " $2 " · " $5, $6 }'
+            rows fin | sort -r | awk -F "$TAB" -v OFS="$TAB" '{ print "terminó   " $2 " · " $3 " · " $1, $5 }'; } |
+          fzf --reverse --delimiter="$TAB" --with-nth=1 --prompt='ver agente> ')" || return 0
+  id="${sel##*"$TAB"}"
+  f="$(find "$HOME/.claude/projects" -path "*/subagents/agent-$id.jsonl" 2>/dev/null | head -1)"
+  if [[ -z "$id" || -z "$f" ]]; then printf '\nNo encontré la transcripción de agent-%s.\n' "$id"; read -rsn1; return 0; fi
+  render "$f" | less -R +G
+}
+
+case "${1:-}" in
+  --once)   draw; exit 0 ;;
+  --render) render "$2"; exit 0 ;;
+esac
+while :; do
+  draw
+  printf '\n\033[2mv: ver razonamiento de un agente · cualquier otra tecla cierra · se actualiza cada 2 s\033[0m'
+  if read -rsn1 -t 2 k; then [[ "$k" == v ]] && { pick; continue; }; break; fi
+done

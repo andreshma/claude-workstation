@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+#
+# tmux-saver — protector de pantalla (lock-command de tmux). Se activa tras unos minutos sin tocar la terminal y
+# se quita con cualquier tecla; tus pestañas y tus Claude siguen trabajando detrás. No aparece en modo presentación
+# ni si hay un diálogo de permiso abierto.
+#
+# Las escenas las dibuja tmux-arte (arte ASCII animado, todo de diseño propio); este script elige cuál y guarda
+# tus preferencias. Las del motor de sombreado necesitan python3-numpy; sin él salen las demás.
+#
+# Uso: tmux-saver                       escena según preferencias (aleatoria por defecto)
+#      tmux-saver --escena <nombre>      una escena concreta (tmux-arte --todas las lista) o «galeria»
+#                                        galeria: tus imágenes y GIF animados pasados a caracteres con chafa
+#                                          (sudo apt install chafa). Ponlos en ~/.config/tmux-claude/galeria
+#                                          (o apunta WS_GALERIA a otra carpeta). WS_GALERIA_SEG = segundos por
+#                                          imagen (25); WS_GALERIA_SIMBOLOS=ascii para usar solo letras y signos.
+#      tmux-saver --siguiente-escena     cambia la escena guardada (lo usa el menú)
+#      tmux-saver --fijar <nombre>       deja esa escena guardada («aleatoria» = cada vez una distinta)
+#      tmux-saver --toggle               enciende / apaga el protector (lo usa el menú)
+#      tmux-saver --test <escena> <n>    dibuja n cuadros sin esperar teclas (pruebas)
+set -uo pipefail
+export LC_ALL=C.UTF-8
+cfg="$HOME/.config/tmux-claude/apariencia"
+ESCENAS=(aleatoria galeria oceano boreal nubes planeta agujero vuelo estanque fuego lava tunel fractal dona cumbres aurora nevada velero peces tuberias batalla fogata cerezo lluvia galaxia nebulosa hiperespacio)
+get() { sed -n "s/^$1=//p" "$cfg" 2>/dev/null | tail -1; }
+put() { mkdir -p "${cfg%/*}"; touch "$cfg"; if grep -q "^$1=" "$cfg"; then sed -i "s/^$1=.*/$1=$2/" "$cfg"; else echo "$1=$2" >> "$cfg"; fi; }
+
+case "${1:-}" in
+  --toggle)
+    if [[ "$(get protector)" == off ]]; then put protector on; else put protector off; fi
+    "$HOME/.local/bin/tmux-theme" apply
+    tmux display "Protector de pantalla: $([[ "$(get protector)" == off ]] && echo apagado || echo encendido)"
+    exit 0 ;;
+  --fijar)
+    e="${2:-aleatoria}"
+    [[ " ${ESCENAS[*]} " == *" $e "* ]] || { echo "tmux-saver: no conozco la escena «$e» (hay: ${ESCENAS[*]})" >&2; exit 2; }
+    put escena "$e"
+    if [[ "$e" == aleatoria ]]; then tmux set -gu @saver_scene 2>/dev/null; else tmux set -g @saver_scene "$e" 2>/dev/null; fi
+    echo "Escena del protector: $e"; exit 0 ;;
+  --siguiente-escena)
+    cur="$(get escena)"; cur="${cur:-aleatoria}"; next=aleatoria
+    for i in "${!ESCENAS[@]}"; do [[ "${ESCENAS[$i]}" == "$cur" ]] && next="${ESCENAS[$(( (i + 1) % ${#ESCENAS[@]} ))]}"; done
+    put escena "$next"; tmux set -g @saver_scene "$next"; tmux display "Escena del protector: $next"; exit 0 ;;
+esac
+
+TEST=0; FRAMES=0; scene=""
+case "${1:-}" in
+  --escena) scene="${2:-aleatoria}" ;;
+  --test)   TEST=1; scene="${2:-aurora}"; FRAMES="${3:-5}" ;;
+  *)
+    [[ "$(tmux show -gqv @present 2>/dev/null)" == on ]] && exit 0
+    # Solo un diálogo de permiso abierto frena el protector. «te toca» (Claude terminó con una pregunta) no: es el
+    # estado normal de casi cualquier pestaña en reposo y con él el protector no aparecía nunca.
+    tmux list-windows -a -F '#{@cmain}' 2>/dev/null | grep -qx 'te necesita' && exit 0
+    scene="$(get escena)" ;;
+esac
+scene="${scene:-aleatoria}"
+
+# ── Galería: imágenes y GIF con chafa ─────────────────────────────────────────
+GAL="${WS_GALERIA:-$HOME/.config/tmux-claude/galeria}"
+galeria_archivos() {
+  command -v chafa >/dev/null || return 0
+  find -L "$GAL" -maxdepth 2 -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o -iname '*.webp' \) 2>/dev/null
+}
+galeria() {
+  local imgs f pid n=0 seg="${WS_GALERIA_SEG:-25}" simb="${WS_GALERIA_SIMBOLOS:-}" c r
+  mapfile -t imgs < <(galeria_archivos | shuf)
+  (( ${#imgs[@]} )) || return 1
+  c="${COLUMNS:-$(tput cols 2>/dev/null || echo 100)}"; r="${LINES:-$(tput lines 2>/dev/null || echo 30)}"
+  (( TEST )) && seg=0
+  printf '\033[?25l'; trap 'printf "\033[0m\033[2J\033[H\033[?25h"' EXIT
+  while :; do
+    for f in "${imgs[@]}"; do
+      printf '\033[0m\033[2J\033[H'
+      chafa --format symbols ${simb:+--symbols "$simb"} --size "${c}x$(( r - 1 ))" --duration "$seg" -- "$f" </dev/null 2>/dev/null &
+      pid=$!
+      if (( TEST )); then wait "$pid"; n=$(( n + 1 )); (( n >= FRAMES )) && exit 0; continue; fi
+      if read -rsn1 -t "$seg"; then kill "$pid" 2>/dev/null; exit 0; fi
+      kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    done
+  done
+}
+if [[ "$scene" == galeria ]]; then galeria || scene=aleatoria; fi   # sin chafa o sin imágenes: una escena de arte
+ARTE="$HOME/.local/bin/tmux-arte"
+# Una escena guardada que ya no existe (las de pixel art se retiraron) pasa a aleatoria.
+[[ " ${ESCENAS[*]} " == *" $scene "* ]] || scene=aleatoria
+if [[ "$scene" == aleatoria ]]; then
+  # tmux-arte --lista solo nombra las que puede dibujar (las del motor de sombreado piden numpy).
+  mapfile -t pool < <("$ARTE" --lista 2>/dev/null); (( ${#pool[@]} )) || pool=(aurora)
+  [[ -n "$(galeria_archivos | head -1)" ]] && pool+=(galeria)   # si hay imágenes y chafa, la galería también entra
+  scene="${pool[RANDOM % ${#pool[@]}]}"
+fi
+[[ "$scene" == galeria ]] && { galeria || scene=aurora; }
+if (( TEST )); then exec "$ARTE" "$scene" --test "$FRAMES"; else exec "$ARTE" "$scene"; fi

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#
+# tmux-pwsh — PowerShell flotante en la carpeta de la pestaña: PowerShell 7 (pwsh.exe) si
+# está instalado en Windows; si no, Windows PowerShell 5.1 (powershell.exe).
+dir="$(tmux display -p '#{pane_current_path}')"
+cd "$dir" 2>/dev/null || cd "$HOME" || exit 1
+if command -v pwsh.exe >/dev/null; then exec pwsh.exe -NoLogo; else exec powershell.exe -NoLogo; fi

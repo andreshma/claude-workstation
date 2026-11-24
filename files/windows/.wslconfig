@@ -1,0 +1,11 @@
+[general]
+instanceIdleTimeout=-1
+
+[wsl2]
+dnsTunneling=true
+autoProxy=true
+firewall=true
+
+[experimental]
+autoMemoryReclaim=gradual
+

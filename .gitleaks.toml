@@ -1,0 +1,18 @@
+# .gitleaks.toml — reglas por defecto de gitleaks + excepciones revisadas.
+# Solo archivos que CONTIENEN patrones de detección o datos falsos de prueba, nunca secretos reales.
+# Cada alta se revisa en el PR (mismo criterio que secrets-allow.txt).
+title = "claude-workstation"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Patrones de detección y datos falsos de prueba"
+paths = [
+  '''tests/run\.sh''',                                   # AccountKey falso para probar que export bloquea secretos
+  '''files/home/\.claude/hooks/guard\.sh''',             # patrones que el guard bloquea
+  '''files/home/\.local/bin/ws-test''',                  # tokens falsos armados en tiempo de ejecución
+  '''files/home/\.local/bin/ws-telegram''',              # autoprueba de redacción
+  '''files/home/\.local/bin/ws-historial''',             # patrones de búsqueda de secretos
+  '''files/home/\.config/tmux-claude/ai-shell\.sh''',    # reglas de redacción
+]

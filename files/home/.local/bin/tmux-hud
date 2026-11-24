@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+#
+# tmux-hud — monitor de cómputo en tiempo real en la SEGUNDA línea de la barra de tmux (no tapa nada ni roba el
+# foco). Ctrl+b v lo muestra u oculta.
+#   CPU ▁▂▅▇ 43%  RAM ▃▄▄▅ 61% 9.8/16G  RED ↓1.2M ↑180K  C: 38% libre  $4.2/h  Claude 🧠2 ✋1 ✔5
+# CPU, RAM y red salen de /proc (WSL); mini-gráficas con las últimas 16 muestras (una por refresco de la barra).
+# $/h: equivalente API de los últimos 10 min (ws-telemetria ritmo, cada 60 s). Claude: pestañas trabajando,
+# esperándote y listas (tmux-estado).
+# Uso: tmux-hud              (lo llama la barra con #(…))
+#      tmux-hud --alternar   muestra u oculta la segunda línea
+set -uo pipefail
+ST="${XDG_RUNTIME_DIR:-/tmp}/tmux-hud-$(id -u)"; mkdir -p "$ST" 2>/dev/null && chmod 700 "$ST"
+BARRAS="▁▂▃▄▅▆▇█"
+
+if [[ "${1:-}" == --alternar ]]; then
+  if [[ "$(tmux show -gv status 2>/dev/null)" == 2 ]]; then tmux set -g status on \; set -g @hud off; tmux display "Monitor oculto (Ctrl+b v)"
+  else tmux set -g status 2 \; set -g @hud on; tmux display "Monitor visible (Ctrl+b v lo oculta)"; fi
+  exit 0
+fi
+
+tc() { local v; v="$(tmux show -gqv "@t_$1" 2>/dev/null)"; printf '%s' "${v:-$2}"; }
+chispa() {   # archivo valor(0-100) → mini-gráfica de las últimas 16 muestras
+  local f="$ST/$1" v="$2" s="" n
+  { [[ -f "$f" ]] && tail -n 15 "$f"; echo "$v"; } > "$f.tmp" && mv "$f.tmp" "$f"
+  while read -r n; do s+="${BARRAS:$(( n * 7 / 100 )):1}"; done < "$f"
+  printf '%s' "$s"
+}
+humano() { awk -v b="$1" 'BEGIN { if (b >= 1048576) printf "%.1fM", b / 1048576; else if (b >= 1024) printf "%.0fK", b / 1024; else printf "%dB", b }'; }
+color() {   # porcentaje → color (ok, aviso, alerta)
+  if (( $1 >= 85 )); then tc alert colour196; elif (( $1 >= 65 )); then tc tool colour214; else tc ok colour82; fi
+}
+
+# CPU: diferencia de /proc/stat contra la muestra anterior.
+read -r _ u n s i w q sq st _ < /proc/stat
+tot=$(( u + n + s + i + w + q + sq + st )); ocio=$(( i + w ))
+t0=$tot; o0=$ocio; [[ -f "$ST/cpu" ]] && read -r t0 o0 < "$ST/cpu"
+echo "$tot $ocio" > "$ST/cpu"
+dt=$(( tot - t0 )); cpu=0; (( dt > 0 )) && cpu=$(( 100 * (dt - (ocio - o0)) / dt ))
+# RAM
+tm=$(awk '/^MemTotal/ {print $2}' /proc/meminfo); dis=$(awk '/^MemAvailable/ {print $2}' /proc/meminfo)
+ram=$(( 100 * (tm - dis) / tm ))
+ramtxt="$(awk -v u=$(( tm - dis )) -v t="$tm" 'BEGIN { printf "%.1f/%.0fG", u / 1048576, t / 1048576 }')"
+# Red: bytes por segundo desde la muestra anterior (todas las interfaces menos lo).
+read -r rx tx < <(awk -F'[: ]+' 'NR > 2 && $2 != "lo" { r += $3; t += $11 } END { print r + 0, t + 0 }' /proc/net/dev)
+ahora=$(date +%s)
+r0=$rx; x0=$tx; a0=$((ahora - 1)); [[ -f "$ST/red" ]] && read -r r0 x0 a0 < "$ST/red"
+echo "$rx $tx $ahora" > "$ST/red"
+seg=$(( ahora - a0 )); (( seg < 1 )) && seg=1
+baja=$(( (rx - r0) / seg )); sube=$(( (tx - x0) / seg )); (( baja < 0 )) && baja=0; (( sube < 0 )) && sube=0
+# Disco C: (cada 60 s) y $/h (cada 60 s, en segundo plano)
+if [[ ! -f "$ST/disco" ]] || (( ahora - $(stat -c %Y "$ST/disco") > 60 )); then
+  df -P /mnt/c 2>/dev/null | awk 'NR == 2 { gsub("%", "", $5); print 100 - $5 }' > "$ST/disco"
+fi
+disco="$(cat "$ST/disco" 2>/dev/null)"
+if command -v ws-cache >/dev/null && command -v ws-telemetria >/dev/null; then
+  usd="$(ws-cache 60 ws-telemetria ritmo 2>/dev/null | jq -r '.usd_h // empty' 2>/dev/null)"
+fi
+# Claude: pestañas por fase
+read -r trab esp lis < <(tmux list-windows -a -F '#{@cfase}' 2>/dev/null | awk '
+  /^(pensando|herramienta|compactando)$/ { t++ } /^(permiso|pregunta|tetoca|error)$/ { e++ } /^(listo|interrumpido)$/ { l++ }
+  END { print t + 0, e + 0, l + 0 }')
+
+D="$(tc dim colour244)"
+printf '#[fg=%s]CPU #[fg=%s]%s %s%%  #[fg=%s]RAM #[fg=%s]%s %s%% #[fg=%s]%s  RED #[default]↓%s ↑%s' \
+  "$D" "$(color "$cpu")" "$(chispa cpu.h "$cpu")" "$cpu" "$D" "$(color "$ram")" "$(chispa ram.h "$ram")" "$ram" "$D" "$ramtxt" \
+  "$(humano "$baja")" "$(humano "$sube")"
+[[ -n "$disco" ]] && printf '  #[fg=%s]C: #[fg=%s]%s%% libre' "$D" "$(color $(( 100 - disco )))" "$disco"
+[[ -n "${usd:-}" ]] && printf '  #[fg=%s]$#[default]%s/h' "$D" "$usd"
+printf '  #[fg=%s]Claude #[fg=%s]🧠%s #[fg=%s]✋%s #[fg=%s]✔%s#[default]' "$D" "$(tc think colour39)" "$trab" \
+  "$(tc alert colour196)" "$esp" "$(tc ok colour82)" "$lis"

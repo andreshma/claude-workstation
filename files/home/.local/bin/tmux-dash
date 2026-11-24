@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+#
+# tmux-dash — tablero de todas las pestañas, por grupo (sesión tmux): estado de Claude, modelo, contexto, costo,
+# rama, cambios sin commit y etiqueta (Ctrl+b E); el estado lleva su tiempo, qué hace y cuánto lleva el turno. Ctrl+b D. Las sesiones espejo/monitor 2 (enlazadas) no se repiten.
+#   ↑/↓ o escribir para filtrar · Enter va a esa pestaña · Ctrl+R actualiza · Esc cierra
+#
+# Rápido con muchas pestañas: git se consulta en paralelo, con tiempo límite de 2 s por carpeta y sin bloqueos
+# (en /mnt/c cada `git status` puede tardar segundos); el resultado se guarda 60 s. Lo que no alcanza sale «…».
+# Uso interno: tmux-dash --filas (lo usa fzf para actualizar con Ctrl+R).
+set -uo pipefail
+TAB=$'\t'
+CACHE="${XDG_RUNTIME_DIR:-/tmp}/tmux-dash-$(id -u)"; mkdir -p "$CACHE" 2>/dev/null && chmod 700 "$CACHE"
+
+clave() { printf '%s' "$1" | md5sum | cut -c1-12; }
+git_info() {   # carpeta → "rama<TAB>cambios" (en caché 60 s)
+  local d="$1" c b n; c="$CACHE/$(clave "$d")"
+  if [[ -f "$c" ]] && (( $(date +%s) - $(stat -c %Y "$c") < 60 )); then cat "$c"; return; fi
+  b="$(GIT_OPTIONAL_LOCKS=0 timeout 2 git -C "$d" branch --show-current 2>/dev/null)" || b=""
+  if [[ -z "$b" ]] && ! GIT_OPTIONAL_LOCKS=0 timeout 1 git -C "$d" rev-parse --git-dir >/dev/null 2>&1; then
+    printf -- '-\t-' > "$c"; cat "$c"; return
+  fi
+  n="$(GIT_OPTIONAL_LOCKS=0 timeout 2 git -C "$d" status --porcelain --untracked-files=normal 2>/dev/null | wc -l)" || n="…"
+  printf '%s\t%s' "${b:-?}" "$n" > "$c"; cat "$c"
+}
+
+#######################################
+# Una fila por pestaña: "<destino><TAB><texto visible>"; destino = sesión:id-de-ventana (oculto en fzf).
+#######################################
+filas() {
+  local f=() l s idx nom cs mo ctx cost dir id gi rama cam etq grp det tur
+  [[ -x "$HOME/.local/bin/tmux-estado" ]] && "$HOME/.local/bin/tmux-estado" --todas
+  mapfile -t f < <(tmux list-windows -a -F "#{session_name}${TAB}#{window_index}${TAB}#{window_name}${TAB}#{?#{@cs},#{@cs},-}${TAB}#{?#{@cmodel},#{@cmodel},-}${TAB}#{?#{@cctx},#{@cctx}%,-}${TAB}#{?#{@ccost},\$#{@ccost},-}${TAB}#{pane_current_path}${TAB}#{window_id}${TAB}#{?#{@etq},#{@etq},-}${TAB}#{?session_grouped,#{session_group},#{session_name}}${TAB}#{?#{@cdet},#{@cdet},-}${TAB}#{?#{@cturno_txt},#{@cturno_txt},-}" 2>/dev/null)
+  for l in "${f[@]}"; do IFS="$TAB" read -r _ _ _ _ _ _ _ dir _ <<<"$l"; git_info "$dir" >/dev/null & done
+  wait
+  for l in "${f[@]}"; do
+    IFS="$TAB" read -r s idx nom cs mo ctx cost dir id etq grp det tur <<<"$l"
+    [[ "$s" == "$grp" ]] || continue   # sesión enlazada (monitor 2): ya sale con su grupo
+    gi="$(git_info "$dir")"; rama="${gi%%"$TAB"*}"; cam="${gi#*"$TAB"}"
+    printf '%s:%s\t\033[36m%-9.9s\033[0m %-18.18s %-22.22s %-26.26s %-6s %-12.12s %-5s %-8s %-18.18s %-4s %s\n' \
+      "$s" "$id" "[$s]" "$idx $nom" "$cs" "${det#-}" "${tur#-}" "$mo" "$ctx" "$cost" "$rama" "$cam" "${etq#-}"
+  done
+}
+
+[[ "${1:-}" == --filas ]] && { filas; exit 0; }
+
+if ! command -v fzf >/dev/null; then filas | cut -f2-; read -rsn1; exit 0; fi
+encabezado="$(printf '%-9s %-18s %-22s %-26s %-6s %-12s %-5s %-8s %-18s %-4s %s' GRUPO PESTAÑA ESTADO 'QUÉ HACE' TURNO MODELO CTX COSTO RAMA CAMB ETIQUETA)"
+sel="$(filas | fzf --ansi --delimiter="$TAB" --with-nth=2 --no-sort --reverse --cycle \
+        --header="$encabezado"$'\n'"Enter va a la pestaña · Ctrl+R actualiza · Esc cierra · escribe para filtrar" \
+        --bind "ctrl-r:reload(rm -f '$CACHE'/*; '$0' --filas)" --prompt 'pestaña> ')" || exit 0
+destino="${sel%%"$TAB"*}"
+tmux switch-client -t "=${destino%%:*}" 2>/dev/null
+tmux select-window -t "${destino#*:}" 2>/dev/null

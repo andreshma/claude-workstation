@@ -1,0 +1,855 @@
+{
+  "env": {
+    "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+    "OTEL_METRICS_EXPORTER": "otlp",
+    "OTEL_LOGS_EXPORTER": "otlp",
+    "OTEL_TRACES_EXPORTER": "otlp",
+    "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": "1",
+    "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
+    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": "http://127.0.0.1:14318/v1/metrics",
+    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": "http://127.0.0.1:14318/v1/logs",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://127.0.0.1:14318/v1/traces",
+    "OTEL_METRICS_INCLUDE_VERSION": "true",
+    "OTEL_METRICS_INCLUDE_ENTRYPOINT": "true",
+    "OTEL_LOG_TOOL_DETAILS": "1",
+    "OTEL_LOG_USER_PROMPTS": "1",
+    "OTEL_LOG_ASSISTANT_RESPONSES": "1",
+    "OTEL_LOG_TOOL_CONTENT": "1",
+    "OTEL_METRICS_INCLUDE_REPOSITORY": "true"
+  },
+  "cleanupPeriodDays": 365,
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "permissions": {
+    "allow": [
+      "Bash(az account list*)",
+      "Bash(az account show*)",
+      "Bash(az group list*)",
+      "Bash(az group show*)",
+      "Bash(az resource list*)",
+      "Bash(az resource show*)",
+      "Bash(gh issue list*)",
+      "Bash(gh issue view*)",
+      "Bash(gh pr checks*)",
+      "Bash(gh pr diff*)",
+      "Bash(gh pr list*)",
+      "Bash(gh pr view*)",
+      "Bash(gh run list*)",
+      "Bash(gh run view*)",
+      "Bash(obsidian backlinks*)",
+      "Bash(obsidian daily:read*)",
+      "Bash(obsidian files*)",
+      "Bash(obsidian links*)",
+      "Bash(obsidian outline*)",
+      "Bash(obsidian read*)",
+      "Bash(obsidian search*)",
+      "Bash(obsidian tags*)",
+      "Bash(obsidian tasks*)",
+      "Bash(obsidian vault*)",
+      "Bash(obsidian vault=* backlinks*)",
+      "Bash(obsidian vault=* daily:read*)",
+      "Bash(obsidian vault=* files*)",
+      "Bash(obsidian vault=* links*)",
+      "Bash(obsidian vault=* outline*)",
+      "Bash(obsidian vault=* read*)",
+      "Bash(obsidian vault=* search*)",
+      "Bash(obsidian vault=* tags*)",
+      "Bash(obsidian vault=* tasks*)",
+      "Bash(obsidian vault=* vault*)",
+      "Bash(obsidian vault=* vaults*)",
+      "Bash(obsidian vaults*)",
+      "Read(~/.cache/ws-tomd/**)"
+    ],
+    "deny": [
+      "Bash(*--unregister*)",
+      "Bash(aws configure export-credentials*)",
+      "Bash(aws configure get*)",
+      "Bash(aws ecr get-login-password*)",
+      "Bash(aws secretsmanager get-secret-value*)",
+      "Bash(aws ssm get-parameter*--with-decryption*)",
+      "Bash(aws sts get-session-token*)",
+      "Bash(az * keys list*)",
+      "Bash(az account get-access-token*)",
+      "Bash(az keyvault secret download*)",
+      "Bash(az keyvault secret show*)",
+      "Bash(gh release delete*)",
+      "Bash(gh repo delete*)",
+      "Bash(obsidian delete*)",
+      "Bash(obsidian dev*)",
+      "Bash(obsidian eval*)",
+      "Bash(obsidian plugin:install*)",
+      "Bash(obsidian plugin:uninstall*)",
+      "Bash(obsidian publish*)",
+      "Bash(obsidian theme:install*)",
+      "Bash(obsidian vault=* delete*)",
+      "Bash(obsidian vault=* dev*)",
+      "Bash(obsidian vault=* eval*)",
+      "Bash(obsidian vault=* plugin:install*)",
+      "Bash(obsidian vault=* plugin:uninstall*)",
+      "Bash(obsidian vault=* publish*)",
+      "Bash(obsidian vault=* theme:install*)",
+      "Read(~/.aws/**)",
+      "Read(~/.config/gh/**)",
+      "Read(~/.kube/**)",
+      "Read(~/.docker/config.json)",
+      "Read(~/.claude/.credentials.json)",
+      "Read(~/.claude-personal/.credentials.json)",
+      "Read(~/.config/anthropic/**)",
+      "Read(~/.config/anthropic-copiloto/**)",
+      "Read(~/.netrc)",
+      "Read(~/.npmrc)",
+      "Read(~/.pypirc)",
+      "Read(~/.git-credentials)",
+      "Read(~/.config/git/credentials)",
+      "Read(~/.terraform.d/**)",
+      "Read(~/.config/ws-telegram/**)",
+      "Read(~/.local/share/ws-telemetria/otel/**)",
+      "Read(~/.bash_history)",
+      "Read(/@WINHOME@/.ssh/**)",
+      "Read(/@WINHOME@/.aws/**)",
+      "Read(/@WINHOME@/.azure/**)",
+      "Read(/@WINHOME@/.kube/**)",
+      "Read(/@WINHOME@/.docker/**)",
+      "Read(/@WINHOME@/.gnupg/**)",
+      "Read(/@WINHOME@/.git-credentials)",
+      "Read(/@WINHOME@/.netrc)",
+      "Read(/@WINHOME@/.npmrc)",
+      "Read(/@WINHOME@/.pypirc)",
+      "Read(/@WINHOME@/.terraform.d/**)",
+      "Read(/@WINHOME@/AppData/Roaming/GitHub CLI/**)",
+      "Read(/@WINHOME@/AppData/Roaming/gcloud/**)",
+      "Read(/@WINHOME@/AppData/Local/Google/Chrome/User Data/**)",
+      "Read(/@WINHOME@/AppData/Local/Microsoft/Edge/User Data/**)",
+      "Read(/@WINHOME@/AppData/Roaming/Mozilla/Firefox/Profiles/**)",
+      "Read(/@WINHOME@/AppData/Local/Microsoft/Credentials/**)",
+      "Read(/@WINHOME@/AppData/Roaming/Microsoft/Credentials/**)",
+      "Read(/@WINHOME@/AppData/Roaming/Microsoft/Protect/**)",
+      "Bash(az * show-connection-string*)",
+      "Bash(az * credential show*)",
+      "Bash(az * list-keys*)",
+      "Bash(az * appsettings list*)",
+      "Bash(az * list-credentials*)",
+      "Bash(ws-secret get*)",
+      "Bash(* ws-secret get*)",
+      "Bash(git commit * --no-verify*)",
+      "Bash(git commit --no-verify*)",
+      "Bash(git push * --no-verify*)",
+      "Bash(git push --no-verify*)",
+      "Bash(git config *core.hooksPath*)",
+      "Bash(git -c core.hooksPath*)",
+      "Bash(git config *ws.gate*)",
+      "Read(~/.ssh/**)",
+      "Read(~/.azure/**)",
+      "Read(~/.gnupg/**)"
+    ],
+    "ask": [
+      "Bash(aws * create-*)",
+      "Bash(aws * delete-*)",
+      "Bash(aws * put-*)",
+      "Bash(aws * run-instances*)",
+      "Bash(aws * terminate-*)",
+      "Bash(aws * update-*)",
+      "Bash(aws cloudformation deploy*)",
+      "Bash(aws s3 cp*)",
+      "Bash(aws s3 mv*)",
+      "Bash(aws s3 rm*)",
+      "Bash(aws s3 sync*)",
+      "Bash(azd deploy*)",
+      "Bash(azd down*)",
+      "Bash(azd provision*)",
+      "Bash(azd up*)",
+      "Bash(docker push*)",
+      "Bash(docker rmi*)",
+      "Bash(docker system prune*)",
+      "Bash(docker volume rm*)",
+      "Bash(git add --all*)",
+      "Bash(git add -A*)",
+      "Bash(git add .*)",
+      "Bash(helm install*)",
+      "Bash(helm rollback*)",
+      "Bash(helm uninstall*)",
+      "Bash(helm upgrade*)",
+      "Bash(k6 run*)",
+      "Bash(kubectl apply*)",
+      "Bash(kubectl delete*)",
+      "Bash(mysql *)",
+      "Bash(psql *)",
+      "Bash(sqlcmd *)",
+      "Bash(terraform apply*)",
+      "Bash(terraform destroy*)",
+      "Bash(terraform import*)",
+      "Bash(terraform state *)",
+      "mcp__azure__*deploy*",
+      "mcp__azure__*restart*",
+      "mcp__azure__*set*",
+      "mcp__azure__*start*",
+      "mcp__azure__*stop*",
+      "mcp__azure__*update*",
+      "Bash(docker run *)",
+      "Bash(docker exec *)",
+      "Bash(docker compose up *)",
+      "Bash(docker compose run *)",
+      "Bash(docker build *)",
+      "Bash(docker cp *)",
+      "Bash(docker pull *)",
+      "Bash(docker push *)",
+      "Bash(pwsh.exe *)",
+      "Bash(pwsh *)",
+      "Bash(powershell.exe *)",
+      "Bash(cmd.exe *)",
+      "Bash(wsl.exe *)",
+      "mcp__azure__*create*",
+      "mcp__azure__*delete*",
+      "mcp__azure__*remove*",
+      "mcp__azure__*purge*",
+      "mcp__azure__*assign*",
+      "mcp__azure__*import*",
+      "mcp__azure__*scale*",
+      "mcp__azure__*rotate*",
+      "mcp__azure__*regenerate*",
+      "mcp__azure__*install*",
+      "mcp__azure__*execute*",
+      "mcp__azure__*invoke*",
+      "mcp__azure__keyvault",
+      "mcp__azure__appconfig",
+      "mcp__azure__role",
+      "mcp__azure__deploy",
+      "mcp__azure__azd",
+      "mcp__azure__extension_cli_*",
+      "mcp__azure__storage",
+      "mcp__azure__cosmos",
+      "mcp__azure__sql",
+      "mcp__azure__postgres",
+      "mcp__azure__mysql",
+      "mcp__azure__redis",
+      "mcp__azure__kusto",
+      "mcp__claude_ai_Microsoft_365__*send*",
+      "mcp__claude_ai_Microsoft_365__*reply*",
+      "mcp__claude_ai_Microsoft_365__*forward*",
+      "mcp__claude_ai_Microsoft_365__*delete*",
+      "mcp__claude_ai_Microsoft_365__*trash*",
+      "mcp__claude_ai_Microsoft_365__*create*",
+      "mcp__claude_ai_Microsoft_365__*update*",
+      "mcp__claude_ai_Microsoft_365__*modify*",
+      "mcp__claude_ai_Microsoft_365__*move*",
+      "mcp__claude_ai_Microsoft_365__*copy*",
+      "mcp__claude_ai_Microsoft_365__*rename*",
+      "mcp__claude_ai_Microsoft_365__*upload*",
+      "mcp__claude_ai_Microsoft_365__*respond*",
+      "mcp__claude_ai_Microsoft_365__*vacation*",
+      "mcp__mempalace__*delete*",
+      "mcp__mempalace__*invalidate*",
+      "mcp__mempalace__*supersede*"
+    ]
+  },
+  "model": "claude-fable-5-2",
+  "fallbackModel": [
+    "claude-opus-5-5",
+    "claude-sonnet-5-5"
+  ],
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "permission_prompt|elicitation_dialog|agent_needs_input",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/tmux-state.sh wait"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/win-notify.sh wait"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ws-trazas.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ws-sandbox-aviso.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/tmux-state.sh posttool"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/lint-on-edit.sh",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ws-trazas.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ws-sandbox-aviso.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/tmux-state.sh posttool"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ws-trazas.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/tmux-state.sh tool"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/audit.sh tool"
+          },
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/guard.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/read-convert.sh",
+            "timeout": 180
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ws-trazas.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/tmux-state.sh end"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/audit.sh end"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@HOME@/.claude/hooks/win-hook.sh",
+            "args": [
+              "mempalace.exe",
+              "hook",
+              "run",
+              "--hook",
+              "session-end",
+              "--harness",
+              "claude-code"
+            ],
+            "timeout": 45
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ws-trazas.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/tmux-state.sh start"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/audit.sh start"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@HOME@/.local/bin/ws-cache",
+            "args": [
+              "--max",
+              "1800",
+              "--tope",
+              "25",
+              "60",
+              "pwsh.exe",
+              "-NoProfile",
+              "-File",
+              "C:\\Users\\@WIN_USER@\\source\\repos\\mempalace-ops\\mempalace-health.ps1"
+            ],
+            "timeout": 25,
+            "statusMessage": "Verificando salud de MemPalace..."
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@HOME@/.claude/hooks/win-hook.sh",
+            "args": [
+              "mempalace.exe",
+              "hook",
+              "run",
+              "--hook",
+              "session-start",
+              "--harness",
+              "claude-code"
+            ],
+            "timeout": 20
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@HOME@/.local/bin/ws-cache",
+            "args": [
+              "60",
+              "pwsh.exe",
+              "-NoProfile",
+              "-File",
+              "C:\\Users\\@WIN_USER@\\source\\repos\\recall\\start-recall.ps1"
+            ],
+            "timeout": 10,
+            "statusMessage": "Arrancando recall..."
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ws-trazas.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/tmux-state.sh done"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@HOME@/.claude/hooks/win-hook.sh",
+            "args": [
+              "mempalace.exe",
+              "hook",
+              "run",
+              "--hook",
+              "stop",
+              "--harness",
+              "claude-code"
+            ],
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/win-notify.sh done"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ws-trazas.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/tmux-state.sh error"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ws-trazas.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/tmux-state.sh substart"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ws-trazas.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/tmux-state.sh substop"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ws-trazas.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/tmux-state.sh prompt"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/audit.sh prompt"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/intent-route.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@HOME@/.claude/hooks/win-hook.sh",
+            "args": [
+              "/@WINHOME@/source/repos/recall/.venv/Scripts/python.exe",
+              "-I",
+              "C:\\Users\\@WIN_USER@\\source\\repos\\recall\\recall_hook.py"
+            ],
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/win-notify.sh prompt"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.claude/hooks/ws-ruteo.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ws-trazas.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/audit.sh denied"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ws-trazas.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@HOME@/.claude/hooks/win-hook.sh",
+            "args": [
+              "mempalace.exe",
+              "hook",
+              "run",
+              "--hook",
+              "precompact",
+              "--harness",
+              "claude-code"
+            ],
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ws-trazas.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/tmux-state.sh compact"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "~/.claude/statusline.sh"
+  },
+  "sandbox": {
+    "enabled": true,
+    "failIfUnavailable": true,
+    "allowUnsandboxedCommands": false,
+    "network": {
+      "allowedDomains": [
+        "*.crates.io",
+        "*.github.com",
+        "*.githubusercontent.com",
+        "*.nuget.org",
+        "api.nuget.org",
+        "crates.io",
+        "files.pythonhosted.org",
+        "github.com",
+        "learn.microsoft.com",
+        "mcr.microsoft.com",
+        "packages.microsoft.com",
+        "pypi.org",
+        "registry.npmjs.org",
+        "registry.terraform.io",
+        "registry.yarnpkg.com",
+        "releases.hashicorp.com",
+        "static.rust-lang.org"
+      ]
+    },
+    "filesystem": {
+      "denyRead": [
+        "~/.aws",
+        "~/.azure",
+        "~/.config/gh",
+        "~/.kube",
+        "~/.ssh",
+        "~/.docker/config.json",
+        "~/.claude/.credentials.json",
+        "~/.claude-personal/.credentials.json",
+        "~/.config/anthropic",
+        "~/.config/anthropic-copiloto",
+        "~/.gnupg",
+        "~/.netrc",
+        "~/.npmrc",
+        "~/.pypirc",
+        "~/.git-credentials",
+        "~/.config/git/credentials",
+        "~/.terraform.d",
+        "~/.config/ws-telegram",
+        "~/.local/share/ws-telemetria/otel",
+        "~/.bash_history",
+        "/@WINHOME@/.ssh",
+        "/@WINHOME@/.aws",
+        "/@WINHOME@/.azure",
+        "/@WINHOME@/.kube",
+        "/@WINHOME@/.docker",
+        "/@WINHOME@/.gnupg",
+        "/@WINHOME@/.git-credentials",
+        "/@WINHOME@/.netrc",
+        "/@WINHOME@/.npmrc",
+        "/@WINHOME@/.pypirc",
+        "/@WINHOME@/.terraform.d",
+        "/@WINHOME@/AppData/Roaming/GitHub CLI",
+        "/@WINHOME@/AppData/Roaming/gcloud",
+        "/@WINHOME@/AppData/Local/Google/Chrome/User Data",
+        "/@WINHOME@/AppData/Local/Microsoft/Edge/User Data",
+        "/@WINHOME@/AppData/Roaming/Mozilla/Firefox/Profiles",
+        "/@WINHOME@/AppData/Local/Microsoft/Credentials",
+        "/@WINHOME@/AppData/Roaming/Microsoft/Credentials",
+        "/@WINHOME@/AppData/Roaming/Microsoft/Protect"
+      ]
+    },
+    "excludedCommands": [
+      "aws *",
+      "az *",
+      "azd *",
+      "gh *",
+      "git clone *",
+      "git fetch *",
+      "git ls-remote *",
+      "git pull *",
+      "git push *",
+      "helm *",
+      "k6 *",
+      "kubectl *",
+      "kubelogin *",
+      "mysql *",
+      "obsidian *",
+      "psql *",
+      "pwsh.exe *",
+      "sqlcmd *",
+      "terraform *",
+      "docker ps *",
+      "docker images *",
+      "docker logs *",
+      "docker inspect *",
+      "docker version",
+      "docker info",
+      "docker compose ps *",
+      "docker compose logs *",
+      "docker scout *"
+    ]
+  },
+  "modelSettings": {
+    "claude-opus-5-5": {
+      "effortLevel": "high"
+    }
+  },
+  "showThinkingSummaries": true,
+  "theme": "dark",
+  "preferredNotifChannel": "terminal_bell",
+  "teammateMode": "in-process"
+}

@@ -1,0 +1,4 @@
+# etiqueta|profundidad|ruta — carpetas que lista Ctrl+b o (tmux-open)
+repos|1|@WINHOME@/source/repos
+code|1|~/code
+downloads|1|@WINHOME@/Downloads

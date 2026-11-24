@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# obsidian — Obsidian CLI (app de Windows) desde WSL. Requiere Obsidian abierto; si no, lo abre.
+exec "@WINHOME@/AppData/Local/Programs/Obsidian/Obsidian.com" "$@"

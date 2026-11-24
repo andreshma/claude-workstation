@@ -1,0 +1,1104 @@
+#!/usr/bin/env bash
+#
+# ws-test — pruebas de comportamiento de toda la estación (tmux + Claude + extensiones).
+#
+# Uso:
+#   ws-test            pruebas DETERMINISTAS: HOME, tmux y Claude aislados (Claude y la API son
+#                      simulados). No tocan tu sesión, tus pestañas, tus cuentas ni gastan uso.
+#   ws-test --ia       además, pruebas NO DETERMINISTAS con Claude y la API reales (gastan un poco
+#                      de uso; tolerantes: reintentan y validan por patrón, no por texto exacto).
+#   ws-test --lista    muestra las pruebas
+# Sale con 1 si falla alguna prueba determinista. Las de --ia solo avisan.
+set -uo pipefail
+IA=0
+case "${1:-}" in --ia) IA=1 ;; --lista) grep -E '^prueba_[a-z_]+\(\)' "$0" | sed 's/() {.*//; s/^prueba_/  /'; exit 0 ;; esac
+
+OK=0 FA=0 AV=0
+ok()    { printf '  \e[32mok\e[0m     %s\n' "$1"; OK=$((OK + 1)); }
+falla() { printf '  \e[31mFALLA\e[0m  %s\n' "$1"; FA=$((FA + 1)); }
+aviso() { printf '  \e[33maviso\e[0m  %s\n' "$1"; AV=$((AV + 1)); }
+seccion() { printf '\n\e[1m== %s\e[0m\n' "$1"; }
+chk() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else falla "$d"; fi; }
+
+RH="$HOME"                           # home real (solo se LEE para copiar lo instalado)
+unset TMUX TMUX_PANE                 # ningún tmux de estas pruebas debe poder hablar con tu sesión real
+T="$(mktemp -d)"; TH="$T/home"; FB="$T/fakebin"
+# Cada prueba usa su propio directorio de sockets: un servidor que se está cerrando no estorba a la siguiente.
+SOCK=base
+socket_de() { SOCK="$1"; mkdir -p "$T/s/$SOCK"; }
+cleanup() {
+  local d; for d in "$T"/s/*/; do [[ -d "$d" ]] || continue
+    # -S con la ruta exacta del socket de prueba y sin TMUX: con TMUX definido (corriendo dentro de
+    # tmux), "tmux kill-server" apunta al servidor REAL y cerraba todas tus pestañas.
+    for sock in "$d"tmux-*/default "$d"tmux-*/flot; do
+      [[ -S "$sock" ]] && env -u TMUX tmux -S "$sock" kill-server 2>/dev/null
+    done; done
+  rm -rf "$T"
+}
+trap cleanup EXIT
+
+#######################################
+# Entorno aislado: copia de lo instalado + Claude y ant (API) simulados.
+#######################################
+preparar() {
+  mkdir -p "$TH/.local/bin" "$TH/.config" "$TH/.local/share" "$FB/versions" "$T/s" "$T/dest" "$T/repos"
+  cp -a "$RH/.local/bin/." "$TH/.local/bin/" 2>/dev/null
+  rm -f "$TH/.local/bin/claude" "$TH/.local/bin/ant"   # ni el Claude real ni tu sesión de la API en estas pruebas
+  for d in tmux-claude claude-solo ws-telemetria; do [[ -d "$RH/.config/$d" ]] && cp -a "$RH/.config/$d" "$TH/.config/"; done
+  rm -f "$TH/.config/tmux-claude/sin-ble"
+  [[ -f "$RH/.tmux.conf" ]] && cp "$RH/.tmux.conf" "$TH/.tmux.conf"
+  [[ -f "$RH/.blerc" ]] && cp "$RH/.blerc" "$TH/.blerc"
+  [[ -d "$RH/.local/share/blesh" ]] && ln -s "$RH/.local/share/blesh" "$TH/.local/share/blesh"
+  mkdir -p "$TH/.tmux/plugins"
+  [[ -d "$RH/.tmux/plugins/tmux-resurrect" ]] && cp -a "$RH/.tmux/plugins/tmux-resurrect" "$TH/.tmux/plugins/"
+  # Datos de Claude de prueba (conversaciones, tmux guardado) para respaldo/restauración.
+  mkdir -p "$TH/.claude/projects/-repo/s1/subagents" "$TH/.claude/todos" "$TH/.local/share/tmux/resurrect"
+  for i in 1 2; do printf '{"type":"user","n":%d}\n' "$i" > "$TH/.claude/projects/-repo/c$i.jsonl"; done
+  echo '{"a":1}' > "$TH/.claude/projects/-repo/s1/subagents/agent-1.jsonl"
+  echo '{}' > "$TH/.claude/settings.json"; echo SECRETO > "$TH/.claude/.credentials.json"
+  echo '{"hasCompletedOnboarding":true,"mcpServers":{}}' > "$TH/.claude.json"
+
+  # Claude simulado, con el nombre por versión como el binario nativo (p. ej. 2.1.999).
+  cat > "$FB/versions/2.1.999" <<'EOF'
+#!/bin/bash
+# --version y cualquier uso no interactivo responden y salen: solo "esperar /exit" en un panel.
+[[ "${1:-}" == --version ]] && { echo "2.1.999 (Claude Code)"; exit 0; }
+if [[ "${1:-}" == auth && "${2:-}" == status ]]; then
+  if [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then echo "Organization: ${ORG_PERSONAL:-Personal Org}"; else echo "Organization: Empresa"; fi
+  echo "Email: prueba@ejemplo.com"; exit 0
+fi
+if [[ " $* " == *" -p "* ]]; then cat >/dev/null; echo "ls -la"; exit 0; fi
+[[ -t 0 ]] || exit 0
+echo "cfg=${CLAUDE_CONFIG_DIR:-trabajo} args=$*" >> "$WST_LOG"
+while IFS= read -r l; do [[ "$l" == *"/exit" ]] && exit 0; done
+EOF
+  chmod +x "$FB/versions/2.1.999"; ln -s "$FB/versions/2.1.999" "$FB/claude"
+  # API simulada (ant): devuelve el texto escrito + "pods -A" y su uso de tokens.
+  cat > "$FB/ant" <<'EOF'
+#!/bin/bash
+b="$(cat)"; t="$(jq -r '.messages[0].content' <<<"$b" | sed -n 's/^Texto escrito: //p')"
+printf '{"content":[{"type":"text","text":"%spods -A"}],"usage":{"input_tokens":120,"output_tokens":8}}\n' "$t"
+EOF
+  # Sesión del copiloto simulada (solo existe el archivo; nunca hay credenciales reales).
+  mkdir -p "$TH/.config/anthropic-copiloto/credentials"; echo '{}' > "$TH/.config/anthropic-copiloto/credentials/default.json"
+  chmod +x "$FB/ant"
+}
+
+# Variables del entorno aislado para cada comando de prueba.
+E() { env -u TMUX -u CLAUDE_CONFIG_DIR HOME="$TH" TMUX_TMPDIR="$T/s/$SOCK" PATH="$TH/.local/bin:$FB:/usr/bin:/bin" \
+      TERM=xterm-256color WST_LOG="$T/claude.log" WS_TELEMETRIA_WIN="$T/win" WS_BACKUP_DEST="$T/dest" WS_BACKUP_LOCK="$T/backup.lock" WS_BACKUP_MIN_GB=0 WS_RECUPERAR_ESPERA=3 "$@"; }
+tm() { E tmux "$@"; }
+existe() { [[ -x "$TH/.local/bin/$1" ]]; }
+
+#######################################
+# Pruebas deterministas
+#######################################
+prueba_configuracion() {
+  socket_de configuracion
+  seccion "Configuración de tmux y menús"
+  local tmp; tmp="$(mktemp)"; grep -vE '^[[:space:]]*run(-shell)?\b' "$TH/.tmux.conf" > "$tmp"
+  local r; r="$(tm -f /dev/null new-session -d -s carga \; source-file "$tmp" 2>&1)"
+  [[ -z "$r" ]] && ok ".tmux.conf carga sin errores" || falla ".tmux.conf: $r"
+  local m
+  for m in "$TH"/.config/tmux-claude/menu*.tmux; do
+    [[ -f "$m" ]] || continue
+    r="$(tm source-file -n "$m" 2>&1)"; [[ -z "$r" ]] && ok "${m##*/}" || falla "${m##*/}: $r"
+  done
+  tm kill-server 2>/dev/null; rm -f "$tmp"
+}
+
+# panel_con_claude — sesión dev con un panel que corre el Claude simulado; imprime el id del panel.
+panel_con_claude() {
+  tm -f /dev/null new-session -d -s dev -n "${1:-repo}" -c "$T/repos" "bash --norc"; sleep 0.5
+  local p; p="$(tm display -p -t dev: '#{pane_id}')"
+  tm send-keys -t "$p" "export PATH='$TH/.local/bin:$FB:/usr/bin:/bin' WST_LOG='$T/claude.log'; claude" Enter; sleep 1
+  echo "$p"
+}
+
+prueba_modo_solo() {
+  socket_de modo_solo
+  seccion "Modo solo"
+  existe tmux-solo || { aviso "tmux-solo no instalado"; return; }
+  : > "$T/claude.log"; local p; p="$(panel_con_claude api)"
+  E tmux-solo esta "$p" >/dev/null 2>&1; sleep 2
+  [[ "$(tm show -wqv -t dev: @csolo)" == 1 ]] && ok "pasar a modo solo marca la pestaña" || falla "modo solo: sin marca @csolo"
+  tail -1 "$T/claude.log" | grep -q -- '-c --permission-mode auto --settings' && ok "reabre Claude en auto sin sandbox retomando la conversación" || falla "modo solo: Claude no se reabrió con los flags ($(tail -1 "$T/claude.log"))"
+  E tmux-solo normal "$p" >/dev/null 2>&1; sleep 2
+  [[ -z "$(tm show -wqv -t dev: @csolo)" ]] && tail -1 "$T/claude.log" | grep -q 'args=-c$' && ok "volver a normal retoma con sandbox" || falla "volver a normal"
+  git -C "$T/repos" init -q -b main 2>/dev/null; git -C "$T/repos" -c user.email=t@t -c user.name=t -c core.hooksPath=/dev/null commit -q --allow-empty -m "chore: repo de prueba"
+  E tmux-solo worktree "$T/repos" >/dev/null 2>&1; sleep 1
+  ls -d "$T"/repos.wt/solo-* >/dev/null 2>&1 && ok "worktree solo/<fecha> creado" || falla "worktree del modo solo"
+  tm kill-server 2>/dev/null
+}
+
+prueba_cuentas() {
+  socket_de cuentas
+  seccion "Cuentas de Claude"
+  existe claude-cuenta || { aviso "claude-cuenta no instalado"; return; }
+  E claude-cuenta setup >/dev/null 2>&1
+  [[ -L "$TH/.claude-personal/projects" && ! -e "$TH/.claude-personal/.credentials.json" ]] \
+    && ok "personal comparte conversaciones y NO credenciales" || falla "setup de la cuenta personal"
+  jq -e '.hasCompletedOnboarding' "$TH/.claude-personal/.claude.json" >/dev/null 2>&1 && ok "personal recibe el estado de arranque (sin pantalla de login)" || falla "personal sin estado de arranque"
+  echo x > "$TH/.claude-personal/.credentials.json"
+  : > "$T/claude.log"; local p; p="$(panel_con_claude api)"
+  E claude-cuenta pestaña "$p" >/dev/null 2>&1; sleep 2
+  tail -1 "$T/claude.log" | grep -q "cfg=$TH/.claude-personal args=-c" && ok "cambiar a personal reabre la misma conversación con su login" || falla "cambio a personal ($(tail -1 "$T/claude.log"))"
+  E claude-cuenta pestaña "$p" >/dev/null 2>&1; sleep 2
+  tail -1 "$T/claude.log" | grep -q 'cfg=trabajo args=-c' && ok "regresar a la cuenta de trabajo" || falla "regreso a la cuenta de trabajo"
+  E ORG_PERSONAL=Empresa claude-cuenta pestaña "$p" >/dev/null 2>&1
+  [[ "$(tm show -wqv -t dev: @ccuenta)" == trabajo ]] && ok "se niega si las dos cuentas están en la misma organización" || falla "salvaguarda de organización"
+  # Cuenta por proyecto: la shell que abre en el repo (o en un worktree suyo) toma la cuenta fija; fuera de él, no.
+  local pa="$T/proy-a" pb="$T/proy-b" cs="$TH/.config/tmux-claude/cuentas.sh"
+  mkdir -p "$pa/src" "$pa.wt/rama" "$pb"; ( cd "$pa" && git init -q )
+  E env -u TMUX claude-cuenta proyecto personal "$pa/src" >/dev/null 2>&1
+  q() { ( cd "$1" && env -u CLAUDE_CONFIG_DIR ${2:+CLAUDE_CONFIG_DIR="$2"} HOME="$TH" bash -c ". '$cs'; echo \"\${CLAUDE_CONFIG_DIR:-trabajo}\"" ); }
+  [[ "$(q "$pa/src")" == "$TH/.claude-personal" && "$(q "$pa.wt/rama")" == "$TH/.claude-personal" && "$(q "$pb")" == trabajo ]] \
+    && ok "cuenta por proyecto: el repo y sus worktrees abren con su cuenta; otro proyecto, con la de por defecto" || falla "cuenta por proyecto: $(q "$pa/src") / $(q "$pa.wt/rama") / $(q "$pb")"
+  E env -u TMUX claude-cuenta proyecto trabajo "$pb" >/dev/null 2>&1
+  [[ "$(q "$pb" "$TH/.claude-personal")" == trabajo ]] && ok "la cuenta del proyecto manda sobre la de pestañas nuevas" || falla "la cuenta fija no ganó: $(q "$pb" "$TH/.claude-personal")"
+  E env -u TMUX claude-cuenta proyecto quitar "$pa" >/dev/null 2>&1
+  [[ "$(q "$pa/src")" == trabajo ]] && E env -u TMUX claude-cuenta proyectos | grep -q "trabajo *$pb" && ok "se puede quitar y listar la cuenta fija" || falla "quitar o listar la cuenta fija"
+  q="$(E claude-cuenta estado 2>/dev/null)"; grep -q 'personal: Organization: Personal Org' <<<"$q" && ok "claude-cuenta estado muestra cada organización" || falla "claude-cuenta estado"
+  tm kill-server 2>/dev/null
+}
+
+prueba_persistencia() {
+  socket_de persistencia
+  seccion "Persistencia de pestañas"
+  [[ -d "$TH/.tmux/plugins/tmux-resurrect" ]] && existe tmux-recuperar || { aviso "sin tmux-resurrect o tmux-recuperar"; return; }
+  local R="$TH/.local/share/tmux/resurrect" conf="$T/persist.conf"
+  printf 'set -g @resurrect-dir "%s"\nrun-shell "~/.local/bin/tmux-recuperar --marcar-arranque"\nrun-shell "%s/.tmux/plugins/tmux-resurrect/resurrect.tmux"\nrun-shell -b "~/.local/bin/tmux-recuperar --auto-arranque"\n' "$R" "$TH" > "$conf"
+  tm -f "$conf" new-session -d -s dev -n uno -c /tmp; for n in dos tres; do tm new-window -t dev -n "$n" -c /tmp; done; sleep 1
+  E "$TH/.tmux/plugins/tmux-resurrect/scripts/save.sh" quiet; sleep 1; tm kill-server; sleep 1
+  tm -f "$conf" new-session -d -s dev -n vacia -c /tmp; sleep 1
+  local n0; n0="$(ls "$R"/tmux_resurrect_*.txt | wc -l)"
+  existe tmux-save-now && { E tmux-save-now; [[ "$(ls "$R"/tmux_resurrect_*.txt | wc -l)" == "$n0" ]] && ok "no guarda en los primeros minutos tras arrancar" || falla "tmux-save-now pisó el guardado al arrancar"; }
+  E "$TH/.tmux/plugins/tmux-resurrect/scripts/save.sh" quiet; sleep 6     # guardado vacío "malo"
+  [[ "$(tm list-windows -t dev | wc -l)" -ge 3 ]] && ok "restaura solo las pestañas si la sesión quedó vacía" || falla "no restauró al arrancar ($(tm list-windows -t dev | wc -l) pestañas)"
+  tm kill-server 2>/dev/null
+}
+
+prueba_flotantes() {
+  socket_de flotantes
+  seccion "Ventanas flotantes interactivas"
+  existe tmux-flot-run || { aviso "tmux-flot-run no instalado"; return; }
+  tm -f /dev/null new-session -d -s dev -n afuera; local val; val="$(tm display -p '#{socket_path},#{pid},0')"
+  # </dev/null: con la terminal como entrada, `timeout` deja a `script` en segundo plano y el sistema
+  # lo detiene al tocar la terminal (no llegaba ni a crear su archivo).
+  E timeout 20 script -qec "TMUX='$val' tmux-flot-run bash -c 'tmux display -p \"#S\" > $T/flot.out; echo \"cwd=\$PWD\" >> $T/flot.out'" "$T/flot.typescript" </dev/null >/dev/null 2>"$T/flot.err"
+  grep -q '^dev$' "$T/flot.out" 2>/dev/null && ok "adentro, los comandos controlan el tmux de afuera" || falla "flotante: no ve el tmux de afuera"
+  if grep -q '^cwd=' "$T/flot.out" 2>/dev/null; then ok "corre en su propia sesión tmux (scroll, copiar, buscar)"
+  else falla "flotante: la sesión interna no corrió"; cat "$T/flot.err" "$T/flot.typescript" 2>/dev/null | tr -d '\r'  | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | grep -v '^$' | tail -4 | sed 's/^/           /'; fi
+  local sin=0 m; local -a faltan=(); for m in "$TH"/.config/tmux-claude/menu*.tmux "$TH/.tmux.conf"; do [[ -f "$m" ]] || continue
+    grep 'display-popup' "$m" | grep -v 'tmux -L\|tmux-flot-run\|tmux-scratch' | grep -q '\.local/bin/' && { sin=$((sin + 1)); faltan+=("${m##*/}"); }; done
+  (( sin == 0 )) && ok "todos los menús usan flotantes interactivas" || aviso "flotantes sin tmux-flot-run en: ${faltan[*]}"
+  tm kill-server 2>/dev/null
+}
+
+prueba_respaldo() {
+  socket_de respaldo
+  seccion "Respaldo y restauración"
+  existe ws-backup-lite && existe ws-restore-lite || { aviso "sin ws-backup-lite"; return; }
+  E timeout 300 ws-backup-lite --ahora </dev/null >/dev/null 2>&1 && ls "$T"/dest/claude-lite-*.tar.* >/dev/null 2>&1 && ok "respaldo creado" || { falla "ws-backup-lite"; return; }
+  local r; r="$(E timeout 120 ws-restore-lite --probar </dev/null 2>&1)"
+  grep -q 'Se puede restaurar' <<<"$r" && ok "la prueba de restauración pasa" || falla "ws-restore-lite --probar"
+  grep -q 'sin credenciales dentro' <<<"$r" && ok "el respaldo no lleva credenciales" || falla "credenciales en el respaldo"
+}
+
+prueba_protector() {
+  socket_de protector
+  seccion "Protector de pantalla"
+  existe tmux-saver || { aviso "tmux-saver no instalado"; return; }
+  local s r malas=()
+  if existe tmux-arte; then   # arte ASCII: cada escena dibuja sin error, en dos tamaños y en 256 colores
+    malas=()
+    for s in $(E tmux-arte --lista); do
+      r="$(COLUMNS=100 LINES=30 E timeout 60 tmux-saver --test "$s" 12 2>&1 >/dev/null)" && [[ -z "$r" ]] || malas+=("$s")
+      r="$(COLUMNS=60 LINES=20 WS_ARTE_COLOR=256 E timeout 60 tmux-arte "$s" --test 4 2>&1 >/dev/null)" && [[ -z "$r" ]] || malas+=("$s-chica")
+      [[ "$(COLUMNS=100 LINES=30 E tmux-arte "$s" --texto 12 | grep -c '[^ ]')" -ge 12 ]] || malas+=("$s-vacia")
+      grep -q "\\[$s\\]=" "$TH/.local/bin/tmux-escena" || malas+=("$s-sin-descripcion")
+    done
+    mkdir -p "$T/gal-vacia"   # galería sin imágenes (o sin chafa): cae en una escena de arte, sin error
+    r="$(COLUMNS=80 LINES=24 WS_GALERIA="$T/gal-vacia" E timeout 60 tmux-saver --test galeria 3 2>&1 | head -c 300 | wc -c)"; (( r > 0 )) || malas+=("galeria-sin-respaldo")
+    if python3 -c 'import numpy' 2>/dev/null; then
+      [[ "$(E tmux-arte --lista | wc -l)" == "$(E tmux-arte --todas | wc -l)" ]] || malas+=("motor-no-listado")
+    else
+      aviso "sin numpy: las escenas del motor de sombreado no se prueban (sudo apt install python3-numpy)"
+      r="$(COLUMNS=80 LINES=24 E tmux-arte oceano --test 2 2>&1 >/dev/null)"; [[ "$r" == *numpy* ]] || malas+=("motor-sin-aviso")
+    fi
+    (( ${#malas[@]} == 0 )) && ok "arte ASCII: todas las escenas dibujan, también en pantalla chica y en 256 colores" || falla "arte ASCII con error: ${malas[*]}"
+    # El menú lee la lista de tmux-saver: tiene que nombrar las mismas escenas que tmux-arte, y ninguna retirada.
+    r="$(diff <(sed -n 's/^ESCENAS=(aleatoria galeria \(.*\))$/\1/p' "$TH/.local/bin/tmux-saver" | tr ' ' '\n' | sort) <(E tmux-arte --todas | sort))"
+    [[ -z "$r" ]] && ok "el menú de escenas y tmux-arte nombran las mismas" || falla "escenas desalineadas: $r"
+    printf 'escena=invasion\n' > "$TH/.config/tmux-claude/apariencia"
+    r="$(COLUMNS=80 LINES=24 E timeout 5 tmux-saver </dev/null 2>/dev/null | head -c 200 | wc -c)"; rm -f "$TH/.config/tmux-claude/apariencia"
+    (( r > 0 )) && ok "una escena guardada que ya se retiró pasa a aleatoria" || falla "escena retirada: el protector no dibujó nada"
+    tm -f /dev/null new-session -d -s prot; tm set -w -t prot: @cmain "te toca"
+    r="$(COLUMNS=80 LINES=24 WS_ARTE_SEMILLA=1 E timeout 3 tmux-saver </dev/null 2>/dev/null | head -c 200 | wc -c)"
+    (( r > 0 )) && ok "el protector aparece aunque una pestaña esté en «te toca»" || falla "el protector no aparece con una pestaña en «te toca»"
+    tm set -w -t prot: @cmain "te necesita"
+    r="$(COLUMNS=80 LINES=24 E timeout 3 tmux-saver </dev/null 2>/dev/null | head -c 200 | wc -c)"
+    (( r == 0 )) && ok "y no tapa la pantalla si hay un diálogo de permiso abierto" || falla "el protector salió con un diálogo de permiso abierto"
+    r="$(E tmux-saver --fijar cumbres)"; [[ "$(sed -n 's/^escena=//p' "$TH/.config/tmux-claude/apariencia")" == cumbres && "$(tm show -gqv @saver_scene)" == cumbres ]] \
+      && ok "elegir una escena la deja guardada (el selector del menú antes no la guardaba)" || falla "tmux-saver --fijar: $r"
+    E tmux-saver --fijar aleatoria >/dev/null; [[ -z "$(tm show -gqv @saver_scene)" ]] && ! E tmux-saver --fijar no-existe 2>/dev/null \
+      && ok "«aleatoria» suelta la escena fija y un nombre desconocido se rechaza" || falla "tmux-saver --fijar aleatoria"
+    tm kill-server 2>/dev/null
+  fi
+}
+
+prueba_terminal() {
+  socket_de terminal
+  seccion "Terminal: ble.sh, completado y copiloto"
+  [[ -f "$TH/.config/tmux-claude/shell.sh" ]] || { aviso "shell.sh no instalado"; return; }
+  printf 'source ~/.config/tmux-claude/shell.sh\n' > "$TH/.bashrc"
+  tm -f /dev/null new-session -d -s term -x 160 -y 30 "bash -i"; local res="" i
+  for (( i = 0; i < 15; i++ )); do
+    sleep 2; tm send-keys -t term 'echo "BLE=${BLE_VERSION:-no} IA=$(declare -F _ai_sugerir >/dev/null && echo si) FUENTES=${_ble_complete_auto_source[*]}"' Enter; sleep 1
+    res="$(tm capture-pane -p -J -t term | grep -E '^BLE=' | tail -1)"; [[ -n "$res" ]] && break
+  done
+  [[ "$res" == *"IA=si"* ]] && ok "la terminal carga el copiloto (Alt+a/e/x)" || falla "shell.sh no cargó ($res)"
+  if [[ -n "$res" && "$res" != *"BLE=no"* ]]; then
+    ok "ble.sh activo (sugerencias en gris)"
+    tm send-keys -t term C-u; tm send-keys -t term -l 'kubectl get '
+    for (( i = 0; i < 20; i++ )); do tm capture-pane -p -J -t term | grep -q 'kubectl get pods -A' && break; sleep 0.5; done
+    tm send-keys -t term Right; sleep 0.5; tm send-keys -t term C-a; tm send-keys -t term -l 'echo ACEPTADO: '; tm send-keys -t term Enter; sleep 1
+    tm capture-pane -p -J -t term | grep -q '^ACEPTADO: kubectl get pods -A' && ok "la IA sugiere en gris y → la acepta" || falla "sugerencia de IA en gris"
+  else aviso "ble.sh no está activo"; fi
+  tm kill-server 2>/dev/null
+  # Unidad: redacción de secretos y circuit breaker.
+  # El token de prueba se arma en tiempo de ejecución: escrito completo en este archivo, el escáner de
+  # secretos de ws-verify y de la compuerta lo marcaría (con razón) como un posible token real.
+  local tok="ghp""_ABCDEFGHIJKLMNOPQRSTUV12"
+  local red; red="$(printf '%s password=Sup3r --account-key abc Bearer abcdefghijklmnop' "$tok" \
+                    | E bash -c "source ~/.config/tmux-claude/ai-shell.sh 2>/dev/null; _ai_redact")"
+  [[ "$red" == *REDACTADO* && "$red" != *ghp_ABC* && "$red" != *Sup3r* && "$red" != *"key abc"* && "$red" != *abcdefghijklmnop* ]] && ok "el copiloto borra secretos antes de enviar" || falla "redacción: $red"
+  printf '#!/bin/bash\ncat >/dev/null; exit 1\n' > "$FB/ant.falla"; chmod +x "$FB/ant.falla"
+  red="$(E bash -c "mkdir -p '$T/cb'; ln -sf '$FB/ant.falla' '$T/cb/ant'; export PATH='$T/cb':\$PATH
+          source ~/.config/tmux-claude/ai-shell.sh 2>/dev/null; for i in 1 2 3; do echo x | _ai_consulta r 5 >/dev/null; done
+          _ai_api_abierta && echo abierta || echo pausada")"
+  [[ "$red" == *pausada* ]] && ok "tras 3 fallas la API se pausa y usa el respaldo" || falla "circuit breaker"
+}
+
+prueba_tapas_sandbox() {
+  seccion "Tapas del sandbox en tus repos (solo lectura)"
+  local base="${REPOS:-}" r p con=()
+  [[ -d "$base" ]] || { aviso "REPOS no definido"; return; }
+  # Tapa = archivo o carpeta VACÍO en una ruta protegida, que git no conoce.
+  for r in "$base"/*/; do
+    [[ -d "$r/.git" ]] || continue
+    while IFS= read -r p; do
+      git -C "$r" ls-files --error-unmatch "${p#"$r"}" >/dev/null 2>&1 || { con+=("$(basename "$r")"); break; }
+    done < <(find "$r" -maxdepth 2 -empty \( -path "${r}.claude/*" -o -name .mcp.json -o -name .vscode -o -name .gitmodules \) 2>/dev/null)
+  done
+  (( ${#con[@]} == 0 )) && ok "sin tapas vacías del sandbox" || aviso "tapas del sandbox en: ${con[*]} (cierra Claude ahí y ver docs/runbook.md)"
+}
+
+prueba_telemetria() {
+  socket_de telemetria
+  existe ws-telemetria || { aviso "ws-telemetria no instalado"; return; }
+  [[ -f "$TH/.config/ws-telemetria/tablero.plantilla.html" ]] || { aviso "falta la plantilla del tablero"; return; }
+  # Transcripción con el formato real de Claude Code: un prompt, una respuesta repetida (streaming) y otra.
+  local d="$TH/.claude/projects/-mnt-c-repos-pii-mx"; mkdir -p "$d"
+  {
+    printf '%s\n' '{"type":"user","sessionId":"s9","cwd":"/mnt/c/repos/pii-mx","gitBranch":"main","timestamp":"2026-11-16T10:00:00Z","message":{"content":"texto-privado-del-prompt"}}'
+    for id in m1 m1 m2; do
+      printf '{"type":"assistant","sessionId":"s9","cwd":"/mnt/c/repos/pii-mx","timestamp":"2026-11-16T10:00:05Z","message":{"id":"%s","model":"claude-sonnet-5-5","content":[{"type":"tool_use","name":"Bash"}],"usage":{"input_tokens":10,"output_tokens":1000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' "$id"
+    done
+  } > "$d/s9.jsonl"
+  E ws-telemetria build >/dev/null 2>&1 && [[ -s "$TH/.local/share/ws-telemetria/tablero.html" ]] && ok "genera el tablero" || { falla "ws-telemetria build"; return; }
+  local r; r="$(E ws-telemetria resumen 2>&1)"
+  grep -q 'pii-mx' <<<"$r" && ok "agrega por proyecto" || falla "resumen sin el proyecto: $r"
+  # 2 respuestas únicas (m1 repetida no se cuenta dos veces): 2000 de salida + 20 de entrada.
+  grep -q '"out": 2000' "$TH/.local/share/ws-telemetria/turnos.jsonl" && ok "no duplica respuestas repetidas" || falla "conteo de tokens duplicado"
+  ! grep -q 'texto-privado-del-prompt' "$TH/.local/share/ws-telemetria/"{tablero.html,turnos.jsonl} && ok "no guarda el texto de los prompts" || falla "el texto del prompt quedó guardado"
+  [[ -s "$T/win/tablero.html" ]] && ok "copia el tablero a la carpeta de Windows" || falla "sin copia en Windows"
+  # Solo tus prompts abren turno: ni la salida de un comando local ni una entrada meta; dos mensajes seguidos sin
+  # respuesta de Claude son un solo turno (con las palabras de los dos).
+  local d10="$TH/.claude/projects/-mnt-c-repos-turnos"; mkdir -p "$d10"
+  printf '%s\n' '{"type":"user","sessionId":"s10","cwd":"/mnt/c/repos/turnos","timestamp":"2026-11-16T12:00:00Z","isMeta":true,"message":{"content":"contexto meta del sistema"}}' \
+    '{"type":"user","sessionId":"s10","cwd":"/mnt/c/repos/turnos","timestamp":"2026-11-16T12:00:01Z","message":{"content":"<local-command-stdout>salida de un comando</local-command-stdout>"}}' \
+    '{"type":"user","sessionId":"s10","cwd":"/mnt/c/repos/turnos","timestamp":"2026-11-16T12:00:02Z","message":{"content":"primero"}}' \
+    '{"type":"user","sessionId":"s10","cwd":"/mnt/c/repos/turnos","timestamp":"2026-11-16T12:00:09Z","message":{"content":"segundo real"}}' \
+    '{"type":"assistant","sessionId":"s10","cwd":"/mnt/c/repos/turnos","timestamp":"2026-11-16T12:00:20Z","message":{"id":"t10","model":"claude-sonnet-5-5","content":[{"type":"text","text":"listo"}],"usage":{"input_tokens":1,"output_tokens":1}}}' > "$d10/s10.jsonl"
+  rm -f "$TH/.local/share/ws-telemetria/.ultimo"; E ws-telemetria build >/dev/null 2>&1
+  [[ "$(jq -c 'select(.sesion == "s10") | [.inicio, .prompt_palabras, .respuestas]' "$TH/.local/share/ws-telemetria/turnos.jsonl")" == '["2026-11-16T12:00:09Z",3,1]' ]] \
+    && ok "turnos: solo tus prompts abren turno y los seguidos sin respuesta se juntan" || falla "turnos de s10: $(jq -c 'select(.sesion == "s10")' "$TH/.local/share/ws-telemetria/turnos.jsonl" | head -3)"
+  # Tendencias: series por semana (lunes local), familia de modelo y mapa de horas; sin nombres de modelo crudos como serie.
+  local tj; tj="$(python3 - "$TH/.local/share/ws-telemetria/tablero.html" <<'PY'
+import json, re, sys
+d = json.loads(re.search(r"const D = (\{.*?\});\nconst \$", open(sys.argv[1], encoding="utf-8").read(), re.S).group(1))
+t = d.get("tendencias") or {}
+s = [f for f in t.get("semanas", []) if f.get("turnos")]
+print(len(t.get("semanas", [])), len(s), s[0]["semana"] if s else "-", ",".join(t.get("familias", [])),
+      sum(map(sum, t.get("calor", []))), len(t.get("dias", [])), s[0]["modelos"].get("sonnet", 0) > 0 if s else False)
+PY
+)"
+  [[ "$tj" == "12 1 2026-W47 sonnet 2 30 True" ]] && ok "tendencias: 12 semanas, la del turno, familia de modelo, mapa de horas y 30 días" || falla "tendencias del tablero: $tj"
+  # Una rama con </script> no debe cerrar el bloque de datos del tablero (inyección de script).
+  local dx="$TH/.claude/projects/-mnt-c-repos-xss"; mkdir -p "$dx"
+  printf '%s\n' '{"type":"user","sessionId":"sx","cwd":"/mnt/c/repos/xss","gitBranch":"x</script><script>alert(1)</script>","timestamp":"2026-11-16T11:00:00Z","message":{"content":"hola mundo prueba"}}' \
+    '{"type":"assistant","sessionId":"sx","cwd":"/mnt/c/repos/xss","gitBranch":"x</script><script>alert(1)</script>","timestamp":"2026-11-16T11:00:05Z","message":{"id":"mx","model":"claude-sonnet-5-5","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}' > "$dx/sx.jsonl"
+  rm -f "$TH/.local/share/ws-telemetria/.ultimo"; E ws-telemetria build >/dev/null 2>&1
+  ! grep -q '</script><script>alert' "$TH/.local/share/ws-telemetria/tablero.html" && ok "el tablero escapa </script> en los datos" || falla "inyección de script en el tablero"
+  python3 - "$TH/.local/share/ws-telemetria/tablero.html" <<'PY' && ok "razones para estimar: texto, modelo y costo por turno, palabra y token" || falla "tablero sin razones para estimar"
+import json, re, sys
+d = json.loads(re.search(r"const D = (\{.*?\});\nconst \$", open(sys.argv[1], encoding="utf-8").read(), re.S).group(1)).get("razones") or {}
+n = {x["nombre"]: x["valor"] for x in d.get("razones", [])}
+sys.exit(0 if n.get("Palabras tuyas por turno", 0) > 0 and "Tokens de salida por palabra visible de Claude" in n and "Costo por turno tuyo" in n else 1)
+PY
+  grep -q 'function tendencias' "$TH/.local/share/ws-telemetria/tablero.html" && ok "el tablero trae la sección de tendencias" || falla "plantilla sin tendencias"
+}
+
+#######################################
+# Pruebas NO deterministas (Claude y API reales)
+#######################################
+reintenta() { local i; for i in 1 2 3; do "$@" && return 0; sleep 2; done; return 1; }
+
+ia_cuentas() {
+  local om op
+  om="$(env -u CLAUDE_CONFIG_DIR timeout 20 claude auth status --text </dev/null 2>/dev/null | sed -n 's/^Organization: //p')"
+  op="$( [[ -d "$RH/.claude-personal" ]] && CLAUDE_CONFIG_DIR="$RH/.claude-personal" timeout 20 claude auth status --text </dev/null 2>/dev/null | sed -n 's/^Organization: //p')"
+  [[ -n "$om" ]] && ok "Empresa con sesión ($om)" || aviso "Empresa sin sesión"
+  if [[ -n "$op" ]]; then [[ "$op" != "$om" ]] && ok "personal con su propia organización ($op)" || aviso "las dos cuentas están en la misma organización"; fi
+}
+ia_claude_p() { timeout 60 claude -p --model haiku --tools "" --no-session-persistence "Responde exactamente con la palabra: listo" </dev/null 2>/dev/null | grep -qi listo; }
+ia_copiloto() {
+  local r; r="$(printf 'Petición: listar los archivos ocultos de esta carpeta\n' | bash -c 'source ~/.config/tmux-claude/ai-shell.sh 2>/dev/null; _ai_consulta "Devuelve SOLO el comando bash en una línea." 100')"
+  grep -qE '(^|[ ;|&])(ls|find)( |$)' <<<"$r"
+}
+ia_api_ghost() {
+  local t0 r; t0=$(date +%s%N)
+  r="$(printf 'Texto escrito: git commi\n' | bash -c 'source ~/.config/tmux-claude/ai-shell.sh 2>/dev/null; _ai_cargar_llave; _ai_api "$_AI_GHOST_REGLAS" 60 5')" || return 1
+  IA_LAT=$(( ($(date +%s%N) - t0) / 1000000 ))
+  [[ "$r" == "git commi"* ]]
+}
+ia_modo_auto() {
+  local token="prueba-auto-$RANDOM"
+  ( cd "$(mktemp -d)" && timeout 120 claude -p --permission-mode auto --no-session-persistence \
+      "Ejecuta con Bash el comando: echo $token  y responde solo con su salida." </dev/null 2>/dev/null ) | grep -q "$token"
+}
+
+correr_ia() {
+  seccion "Con Claude y API reales (no deterministas)"
+  command -v claude >/dev/null || { aviso "claude no está en PATH"; return; }
+  ia_cuentas
+  reintenta ia_claude_p && ok "claude -p responde (Haiku)" || aviso "claude -p no respondió lo esperado"
+  reintenta ia_copiloto && ok "el copiloto propone un comando válido (ls/find)" || aviso "el copiloto no propuso un comando reconocible"
+  if command -v ant >/dev/null && compgen -G "$RH/.config/anthropic-copiloto/credentials/*.json" >/dev/null; then
+    IA_LAT=0; reintenta ia_api_ghost && ok "API: sugerencia en gris coherente (${IA_LAT} ms)" || aviso "API: la sugerencia no empezó con el texto escrito"
+  else aviso "sin sesión del copiloto (ws-copiloto login): se omite la prueba de la API"; fi
+  reintenta ia_modo_auto && ok "modo auto ejecuta un comando y devuelve su salida" || aviso "modo auto no devolvió la salida esperada"
+}
+
+#######################################
+preparar
+prueba_ruteo() {
+  seccion "Ruteo de modelos (cr + hook)"
+  [[ -x "$RH/.local/bin/cr" && -x "$RH/.claude/hooks/ws-ruteo.sh" ]] || { aviso "ruteo no instalado"; return; }
+  local r; r="$(HOME="$RH" "$RH/.local/bin/cr" --probar 2>&1)"
+  if [[ $? -eq 0 ]]; then ok "$(tail -1 <<<"$r")"; else falla "$(tail -1 <<<"$r")"; fi
+  socket_de ruteo
+  local tt="$T/s/ruteo" run="$T/run-ruteo" sock pane sql='escribe una consulta SQL que sume ventas por mes'
+  mkdir -p "$run"
+  TMUX_TMPDIR="$tt" tmux -f /dev/null new -d -s r -x 80 -y 20
+  sock="$(ls -d "$tt"/tmux-*/default)"; pane="$(TMUX_TMPDIR="$tt" tmux display -p -t r '#{pane_id}')"
+  TMUX_TMPDIR="$tt" tmux set -w -t r @cmodel "Opus 5.5"
+  hk() { printf '{"prompt":%s}' "$(jq -Rn --arg p "$1" '$p')" | env TMUX="$sock,1,0" TMUX_PANE="$pane" \
+           XDG_RUNTIME_DIR="$run" WS_RUTEO_LOG="$T/log-ruteo" WS_RUTEO_SIN_POPUP=1 HOME="$RH" "$RH/.claude/hooks/ws-ruteo.sh"; }
+  [[ -z "$(hk 'implementa el endpoint de facturas con pruebas')" ]] && ok "hook: sin regla → no pregunta" || falla "hook preguntó sin regla"
+  [[ -z "$(hk 'depura por qué falla el login con 500')" ]] && ok "hook: mismo nivel → no pregunta" || falla "hook preguntó con el mismo nivel"
+  [[ "$(hk "$sql")" == *'"block"'* ]] && ok "hook: SQL en Opus → pide confirmación" || falla "hook no pidió confirmación"
+  [[ "$(stat -c %a "$run/ws-ruteo/prompt-${pane#%}" 2>/dev/null)" == 600 ]] && ok "hook: guarda el texto (0600) para reenviarlo" || falla "texto no guardado con 0600"
+  printf '%s' "$sql" | sha256sum | cut -c1-64 > "$run/ws-ruteo/pass-${pane#%}"
+  [[ -z "$(hk "$sql")" ]] && ok "hook: el reenvío confirmado pasa sin preguntar" || falla "el reenvío confirmado volvió a preguntar"
+  [[ -z "$(hk '/model claude-sonnet-5-5 por favor')" ]] && ok "hook: ignora comandos /" || falla "hook bloqueó un comando /"
+  TMUX_TMPDIR="$tt" tmux set -g @cruteo off
+  [[ -z "$(hk "$sql")" ]] && ok "hook: ruteo apagado → no pregunta" || falla "ruteo apagado y aun así preguntó"
+  # Bajar con contexto alto: no bloquea; sugiere el subagente barato. Con poco contexto sí pregunta.
+  TMUX_TMPDIR="$tt" tmux set -gu @cruteo
+  TMUX_TMPDIR="$tt" tmux set -w -t r @cctx 62
+  local s; s="$(hk "$sql")"
+  [[ "$s" != *'"block"'* && "$s" == *sql-rapido* ]] && ok "bajar con contexto alto → sugiere el subagente, no cambia el modelo" || falla "bajar con contexto alto: $s"
+  TMUX_TMPDIR="$tt" tmux set -w -t r @cctx 12
+  [[ "$(hk "$sql")" == *'"block"'* ]] && ok "bajar con poco contexto → pregunta" || falla "bajar con poco contexto no preguntó"
+  [[ -z "$(hk "$sql /model claude-fable-5-2")" ]] && ok "hook: texto con /model pegado → no pregunta (sin bucle)" || falla "hook preguntó con /model pegado"
+  TMUX_TMPDIR="$tt" tmux set -w -t r @cruteo_si "sonnet:$(date +%s)"
+  [[ -z "$(hk "$sql")" ]] && ok "hook: recién cambiado por el ruteo → no vuelve a preguntar" || falla "hook volvió a preguntar tras el cambio"
+  TMUX_TMPDIR="$tt" tmux set -wu -t r @cruteo_si
+}
+
+prueba_telegram() {
+  seccion "Telegram: avisos y respuesta con botones (API simulada)"
+  local W="$RH/.local/bin/ws-telegram"
+  [[ -x "$W" ]] || { aviso "ws-telegram no instalado"; return; }
+  [[ "$(HOME="$RH" "$W" autoprueba 2>&1)" == ok ]] && ok "lee las opciones del diálogo y redacta secretos" || falla "autoprueba de ws-telegram"
+  socket_de telegram
+  local tt="$T/s/telegram" g="$T/tg" sock pane
+  mkdir -p "$g/cfg" "$g/st" "$g/log"; printf 'chat_id=42\nbot=prueba_bot\n' > "$g/cfg/config"
+  # API de Telegram simulada: registra lo enviado; getUpdates entrega el botón pedido en $g/cb ("<de> <opción>").
+  cat > "$g/curl" <<'EOF'
+#!/usr/bin/env bash
+cfg=""; while (( $# )); do [[ "$1" == -K ]] && cfg="$2"; shift; done
+m="$(sed -n 's|.*/bot[^/]*/\([A-Za-z]*\)".*|\1|p' "$cfg")"; body="$(cat)"; G="${WS_TG_FAKE:?}"
+printf '%s %s\n' "$m" "$body" >> "$G/llamadas"
+case "$m" in
+  sendMessage) echo '{"ok":true,"result":{"message_id":7}}' ;;
+  getUpdates)
+    if [[ -f "$G/msg" ]]; then read -r de rmid txt < "$G/msg"; rm -f "$G/msg"
+      jq -nc --argjson de "$de" --argjson r "$rmid" --arg t "$txt" '{ok: true, result: [{update_id: 9, message: {message_id: 99, from: {id: $de}, chat: {id: $de}, text: $t, reply_to_message: {message_id: $r}}}]}'
+    elif [[ -f "$G/cb" ]]; then read -r de op < "$G/cb"; rm -f "$G/cb"
+      n="$(basename "$(ls "$G"/st/pendientes/*.json 2>/dev/null | head -1)" .json)"
+      printf '{"ok":true,"result":[{"update_id":5,"callback_query":{"id":"c1","from":{"id":%s},"message":{"chat":{"id":%s}},"data":"%s:%s"}}]}\n' "$de" "$de" "$n" "$op"
+    else echo '{"ok":true,"result":[]}'; fi ;;
+  *) echo '{"ok":true,"result":true}' ;;
+esac
+EOF
+  chmod +x "$g/curl"
+  TMUX_TMPDIR="$tt" tmux -f /dev/null new -d -s tg -x 100 -y 20 \
+    "bash -c 'printf \" Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, and do not ask again\n   3. No (esc)\n\"; read -rsn1 k; echo ELEGIDO:\$k; sleep 60'"
+  sock="$(ls -d "$tt"/tmux-*/default)"; pane="$(TMUX_TMPDIR="$tt" tmux display -p -t tg '#{pane_id}')"; sleep 0.5
+  tg_env() { env TMUX="$sock,1,0" HOME="$RH" WS_TELEGRAM_CFG="$g/cfg" WS_TELEGRAM_ST="$g/st" WS_TELEGRAM_LOG="$g/log" \
+               WS_TELEGRAM_TOKEN=prueba WS_TELEGRAM_CURL="$g/curl" WS_TELEGRAM_SIN_SERVICIO=1 WS_TG_FAKE="$g" "$@"; }
+  tg_env "$W" avisar wait "$pane" "Claude necesita permiso para usar Bash"
+  [[ "$(jq '.opciones | length' "$g"/st/salida/*.json 2>/dev/null)" == 3 ]] && ok "el aviso lleva las 3 opciones de la pantalla" || falla "aviso sin opciones"
+  echo "99 1" > "$g/cb"; tg_env "$W" servicio --una-vez
+  grep -q '"inline_keyboard"' "$g/llamadas" 2>/dev/null && ok "envía el mensaje con botones" || falla "no envió botones"
+  ! grep -q 'ELEGIDO' <<<"$(TMUX_TMPDIR="$tt" tmux capture-pane -p -t tg)" && grep -q no_autorizado "$g"/log/*.jsonl \
+    && ok "ignora botones de otro chat" || falla "aceptó un botón de otro chat"
+  echo "42 1" > "$g/cb"; tg_env "$W" servicio --una-vez; sleep 0.5
+  grep -q 'ELEGIDO:1' <<<"$(TMUX_TMPDIR="$tt" tmux capture-pane -p -t tg)" && ok "tu botón 1 llega a la pestaña" || falla "el botón no llegó a la pestaña"
+  [[ -z "$(ls "$g"/st/pendientes/ 2>/dev/null)" ]] && ok "el código es de un solo uso" || falla "el código sigue vigente"
+  grep -q 'Respondiste' "$g/llamadas" && ok "marca el mensaje como respondido" || falla "no marcó el mensaje"
+  # Ventana del ruteo respondida desde Telegram: la respuesta va a su archivo, solo si la ventana sigue esperando.
+  mkdir -p "$g/run/ws-ruteo"; : > "$g/run/ws-ruteo/remoto-7.esperando"
+  tg_env "$W" preguntar "$pane" "Ruteo de modelo: prueba" "s=Cambiar a sonnet;n=Seguir;x=Editar" "$g/run/ws-ruteo/remoto-7"
+  echo "42 s" > "$g/cb"; tg_env "$W" servicio --una-vez
+  [[ "$(cat "$g/run/ws-ruteo/remoto-7" 2>/dev/null)" == s ]] && ok "responde la ventana del ruteo desde Telegram" || falla "la respuesta del ruteo no llegó"
+  # Claude dentro de una ventana flotante: lee y teclea en el servidor -L flot, no en la pestaña de afuera.
+  TMUX_TMPDIR="$tt" tmux -L flot -f /dev/null new -d -s fprueba \
+    "bash -c 'printf \" Do you want to proceed?\n ❯ 1. Yes\n   2. No (esc)\n\"; read -rsn1 k; echo FLOT:\$k; sleep 60'"; sleep 0.5
+  rm -f "$g"/st/pendientes/*.json
+  TMUX_TMPDIR="$tt" tg_env "$W" avisar wait "flot:fprueba" "Claude necesita permiso" "$pane"
+  echo "42 2" > "$g/cb"; TMUX_TMPDIR="$tt" tg_env "$W" servicio --una-vez; sleep 0.5
+  grep -q 'FLOT:2' <<<"$(TMUX_TMPDIR="$tt" tmux -L flot capture-pane -p -t fprueba)" && ok "en una flotante, el botón llega a la flotante" || falla "el botón no llegó a la flotante"
+  TMUX_TMPDIR="$tt" tmux -L flot kill-server 2>/dev/null
+  # Comandos `!` propuestos por Claude: uno por mensaje; ▶ Ejecutar corre solo ese comando en esa pestaña.
+  TMUX_TMPDIR="$tt" tmux new-window -d -t tg -n cmd "bash -c 'read -r l; echo \"CORRIO:\$l\"; sleep 60'"
+  local pc; pc="$(TMUX_TMPDIR="$tt" tmux display -p -t tg:cmd '#{pane_id}')"
+  rm -f "$g"/st/pendientes/*.json "$g"/st/salida/*.json; : > "$g/llamadas"
+  tg_env "$W" avisar "done" "$pc" 'Terminó en 0m 5s: corre `! echo hola` y también `! sudo rm -rf /tmp/x`'
+  [[ "$(find "$g/st/salida" -name '*_c*.json' | wc -l)" == 2 ]] && ok "cada comando ! va en su propio mensaje" || falla "comandos no separados"
+  : > "$g/cfg/ejecutar-sin-pin"   # primero el botón directo (opción explícita); abajo, con PIN (lo de fábrica)
+  echo "42 r" > "$g/cb"
+  WS_TELEGRAM_SIN_CHEQUEO_CLAUDE=1 WS_TELEGRAM_ESPERA=10 tg_env "$W" servicio --una-vez; sleep 11
+  grep -q 'CORRIO:!echo hola' <<<"$(TMUX_TMPDIR="$tt" tmux capture-pane -p -t "$pc")" && ok "▶ Ejecutar corre ese comando en la pestaña" || falla "el comando no se ejecutó"
+  grep -q 'Resultado' "$g/llamadas" && ok "manda el resultado como respuesta" || falla "no llegó el resultado"
+  grep -q 'Hazlo en la PC' "$g/llamadas" && ok "los comandos peligrosos llegan sin botón" || falla "un comando peligroso tuvo botón"
+  # Con PIN (de fábrica): el botón no ejecuta; pide el PIN y solo con el PIN correcto corre.
+  rm -f "$g/cfg/ejecutar-sin-pin" "$g"/st/pendientes/*.json "$g"/st/salida/*.json; : > "$g/llamadas"
+  TMUX_TMPDIR="$tt" tmux new-window -d -t tg -n cmd2 "bash -c 'read -r l; echo \"CORRIO:\$l\"; sleep 60'"
+  local pc2; pc2="$(TMUX_TMPDIR="$tt" tmux display -p -t tg:cmd2 '#{pane_id}')"
+  tg_env "$W" avisar "done" "$pc2" 'Terminó en 0m 6s: corre `! echo dos` y también `! sudo rm -rf /tmp/y`'
+  echo "42 r" > "$g/cb"; WS_TELEGRAM_PIN=4821 WS_TELEGRAM_SIN_CHEQUEO_CLAUDE=1 tg_env "$W" servicio --una-vez; sleep 1
+  ! grep -q 'CORRIO' <<<"$(TMUX_TMPDIR="$tt" tmux capture-pane -p -t "$pc2")" && grep -q 'con tu PIN' "$g/llamadas" && [[ -f "$g/st/por-ejecutar/7.json" ]] \
+    && ok "▶ Ejecutar no corre nada: pide el PIN" || falla "Ejecutar con PIN: corrió sin PIN o no lo pidió"
+  echo "42 7 0000" > "$g/msg"; WS_TELEGRAM_PIN=4821 WS_TELEGRAM_SIN_CHEQUEO_CLAUDE=1 tg_env "$W" servicio --una-vez; sleep 1
+  ! grep -q 'CORRIO' <<<"$(TMUX_TMPDIR="$tt" tmux capture-pane -p -t "$pc2")" && ok "PIN incorrecto: no ejecuta" || falla "ejecutó con PIN incorrecto"
+  echo "42 7 4821" > "$g/msg"; WS_TELEGRAM_PIN=4821 WS_TELEGRAM_SIN_CHEQUEO_CLAUDE=1 WS_TELEGRAM_ESPERA=10 tg_env "$W" servicio --una-vez; sleep 11
+  grep -q 'CORRIO:!echo dos' <<<"$(TMUX_TMPDIR="$tt" tmux capture-pane -p -t "$pc2")" && [[ ! -f "$g/st/por-ejecutar/7.json" ]] \
+    && ok "con el PIN correcto ejecuta, una sola vez" || falla "no ejecutó con el PIN correcto"
+  rm -f "$g/st/pin-fallos"
+  # Alertas: error de Claude con botón de cuenta; contexto alto con /compact; el botón /compact llega a la pestaña.
+  mkdir -p "$g/bin"; ln -sf "$(command -v sleep)" "$g/bin/2.1.999"
+  # exec directo: tmux reporta el proceso en primer plano (como el binario de Claude, llamado como su versión)
+  TMUX_TMPDIR="$tt" tmux new-window -d -t tg -n errores "printf 'API Error: 529 Overloaded\\n'; exec $g/bin/2.1.999 120"
+  sleep 0.5; printf 'alertas=on\nresumen_hora=99\ncontexto_pct=80\nconsumo_usd_h=999999\n' > "$g/cfg/ajustes"
+  TMUX_TMPDIR="$tt" tmux set -w -t tg:errores @cctx 85
+  rm -f "$g"/st/salida/*.json "$g"/st/pendientes/*.json; : > "$g/llamadas"
+  WS_TELEGRAM_SIN_ESTACION=1 tg_env "$W" revisar
+  grep -qs 'Overloaded' "$g"/st/salida/*_a.json && ok "alerta: Claude se detuvo por un error" || falla "no hubo alerta de error"
+  grep -qs '/compact' "$g"/st/salida/*_a.json && ok "alerta: contexto alto con botón /compact" || falla "no hubo alerta de contexto"
+  WS_TELEGRAM_SIN_ESTACION=1 tg_env "$W" revisar
+  [[ "$(ls "$g"/st/salida/*_a.json 2>/dev/null | wc -l)" == 2 ]] && ok "las alertas no se repiten en cada revisión" || falla "alertas repetidas"
+  tg_env "$W" servicio --una-vez
+  rm -f "$g"/st/pendientes/*.json
+  tg_env "$W" alerta-prueba "$(TMUX_TMPDIR="$tt" tmux display -p -t tg:errores '#{pane_id}')"
+  tg_env "$W" servicio --una-vez
+  echo "42 k" > "$g/cb"; tg_env "$W" servicio --una-vez; sleep 1
+  grep -q '/compact' <<<"$(TMUX_TMPDIR="$tt" tmux capture-pane -p -t tg:errores)" && ok "el botón /compact llega a la pestaña" || falla "el botón /compact no llegó"
+  # Respuesta larga: los comandos del inicio también llegan (antes solo se miraban los últimos 1200 caracteres).
+  rm -f "$g"/st/salida/*.json; local largo; largo="$(mktemp)"
+  { printf 'Primero corre `! node --version` y luego revisa.\n'; head -c 6000 /dev/zero | tr '\0' 'x'; printf '\nListo.\n'; } > "$largo"
+  tg_env "$W" avisar "done" "$pc" "Terminó en 2m 0s: …Listo." "$pc" "$largo"
+  grep -qs 'node --version' "$g"/st/salida/*_c*.json && ok "comandos de una respuesta larga también llegan" || falla "se perdió el comando de una respuesta larga"
+  [[ ! -e "$largo" ]] && ok "el mensaje completo se borra al leerlo" || falla "quedó el archivo del mensaje completo"
+  # El mismo comando en la misma pestaña llega una sola vez (aunque Claude lo repita en turnos siguientes).
+  rm -f "$g"/st/salida/*.json
+  tg_env "$W" avisar "done" "$pc" 'Terminó en 0m 3s: corre `! git status`'
+  tg_env "$W" avisar "done" "$pc" 'Terminó en 0m 4s: de nuevo, corre `! git status`'
+  [[ "$(grep -ls '"git status"' "$g"/st/salida/*_c*.json | wc -l)" == 1 ]] && ok "un comando repetido llega una sola vez" || falla "el comando se repitió"
+  # Respuesta de texto con PIN a una pregunta abierta: solo como Responder, un solo uso; PIN incorrecto no envía.
+  rm -f "$g"/st/salida/*.json "$g"/st/pendientes/*.json; : > "$g/cfg/texto"
+  TMUX_TMPDIR="$tt" tmux new-window -d -t tg -n txt "bash -c 'read -r l; echo \"LLEGO:\$l\"; sleep 60'"
+  local pt; pt="$(TMUX_TMPDIR="$tt" tmux display -p -t tg:txt '#{pane_id}')"
+  WS_TELEGRAM_PIN=4821 tg_env "$W" avisar "done" "$pt" "Terminó en 0m 4s: ¿Uso cursor opaco o el id?"
+  WS_TELEGRAM_PIN=4821 tg_env "$W" servicio --una-vez
+  [[ -f "$g/st/abiertas/7.json" ]] && grep -q 'Responder a este mensaje' "$g/llamadas" && ok "la pregunta abierta invita a responder" || falla "no quedó la pregunta abierta"
+  echo "42 7 1111 usa cursor" > "$g/msg"; WS_TELEGRAM_PIN=4821 tg_env "$W" servicio --una-vez; sleep 0.5
+  ! grep -q 'LLEGO' <<<"$(TMUX_TMPDIR="$tt" tmux capture-pane -p -t "$pt")" && ok "PIN incorrecto: no se envía" || falla "se envió con PIN incorrecto"
+  echo "42 7 4821 usa cursor opaco" > "$g/msg"; WS_TELEGRAM_PIN=4821 tg_env "$W" servicio --una-vez; sleep 0.8
+  grep -q 'LLEGO:.*Respuesta desde Telegram.*usa cursor opaco' <<<"$(TMUX_TMPDIR="$tt" tmux capture-pane -p -J -t "$pt")" \
+    && ok "con PIN, tu respuesta llega a Claude marcada" || falla "la respuesta de texto no llegó"
+  [[ ! -f "$g/st/abiertas/7.json" ]] && ok "la pregunta abierta es de un solo uso" || falla "la pregunta sigue abierta"
+  # Responder sobre un aviso que NO decía ↩ (p. ej. «terminó») también llega a esa pestaña.
+  rm -f "$g"/st/salida/*.json "$g"/st/abiertas/*.json; : > "$g/cfg/texto"
+  TMUX_TMPDIR="$tt" tmux new-window -d -t tg -n txt2 "bash -c 'read -r l; echo \"LLEGO2:\$l\"; sleep 60'"
+  local pt2; pt2="$(TMUX_TMPDIR="$tt" tmux display -p -t tg:txt2 '#{pane_id}')"
+  WS_TELEGRAM_PIN=4821 tg_env "$W" avisar "done" "$pt2" "Terminó en 2m 0s: listo, quedó."
+  WS_TELEGRAM_PIN=4821 tg_env "$W" servicio --una-vez
+  echo "42 7 4821 ahora agrega pruebas" > "$g/msg"; WS_TELEGRAM_PIN=4821 tg_env "$W" servicio --una-vez; sleep 0.8
+  grep -q 'LLEGO2:.*ahora agrega pruebas' <<<"$(TMUX_TMPDIR="$tt" tmux capture-pane -p -J -t "$pt2")" \
+    && ok "Responder sobre cualquier aviso de la pestaña llega a Claude" || falla "Responder sobre un aviso sin ↩ no llegó"
+  rm -f "$g/cfg/texto"
+  rm -f "$g/cfg/texto"
+  python3 -m py_compile "$RH/.local/bin/tmux-resumen" 2>/dev/null && ok "tmux-resumen compila" || falla "tmux-resumen no compila"
+}
+
+prueba_grupos() {
+  seccion "Grupos de pestañas y traer conversaciones"
+  [[ -x "$RH/.local/bin/tmux-traer" ]] || { aviso "tmux-traer no instalado"; return; }
+  socket_de grupos
+  local gh="$T/home-grupos" tt="$T/s/grupos" r="$T/repos-grupos" d k
+  mkdir -p "$gh/.config/tmux-claude" "$r/repos/api" "$r/repos/web" "$r/code/tool"
+  printf 'repos|1|%s\ncode|1|%s\n' "$r/repos" "$r/code" > "$gh/.config/tmux-claude/roots.txt"
+  for d in "$r/repos/api" "$r/code/tool"; do
+    k="$(sed 's#[/.]#-#g' <<<"$d")"; mkdir -p "$gh/.claude/projects/$k"
+    printf '{"type":"user","cwd":"%s"}\n' "$d" > "$gh/.claude/projects/$k/s-$(basename "$d").jsonl"
+  done
+  TMUX_TMPDIR="$tt" tmux -f /dev/null new -d -s dev -c "$r/repos/web" "sleep 120"
+  echo s | env HOME="$gh" TMUX_TMPDIR="$tt" "$RH/.local/bin/tmux-traer" --reorganizar >/dev/null 2>&1
+  local l; l="$(TMUX_TMPDIR="$tt" tmux list-windows -a -F '#S:#W')"
+  grep -qx 'repos:api' <<<"$l" && grep -qx 'code:tool' <<<"$l" && ok "abre cada conversación sin pestaña en la sesión de su grupo" || falla "grupos: $l"
+  grep -q '^repos:' <<<"$l" && ! grep -q '^dev:' <<<"$l" && ok "--reorganizar mueve las pestañas de dev a su grupo" || falla "reorganizar: $l"
+  grep -q 'claude --resume s-api' <<<"$(TMUX_TMPDIR="$tt" tmux capture-pane -p -t '=repos:api')" && ok "deja la pestaña lista para retomar (Enter)" || falla "no dejó el comando de retomar"
+}
+
+prueba_trazas() {
+  seccion "Trazas, estimación, reporte semanal y presupuestos"
+  local h="$RH/.claude/hooks/ws-trazas.sh" r d="$TH/.claude/projects/-mnt-c-repos-estima" hoy ses
+  [[ -x "$h" ]] || { aviso "ws-trazas.sh no instalado"; return; }
+  existe ws-telemetria || return
+  r="$(mktemp -d)"; ses="s-traza"; hoy="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  ( cd "$r" && git init -q && git checkout -qb feature/EST-42-pagos && git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q --allow-empty -m "chore: init" )
+  ev() { jq -nc --arg r "$r" --arg s "$ses" "$1" | E env WS_TRAZAS_DIR="$TH/.local/share/ws-telemetria/trazas" XDG_RUNTIME_DIR="$T" bash "$h"; }
+  ev '{hook_event_name:"SessionStart",session_id:$s,cwd:$r,source:"startup"}'
+  ev '{hook_event_name:"UserPromptSubmit",session_id:$s,cwd:$r,prompt:"texto-privado-traza ¿sirve?"}'
+  ev '{hook_event_name:"PreToolUse",session_id:$s,cwd:$r,tool_name:"Bash",tool_use_id:"tb1"}'
+  ev '{hook_event_name:"PostToolUse",session_id:$s,cwd:$r,tool_name:"Bash",tool_use_id:"tb1",tool_input:{command:"pytest -q --opcion=valor_privado_123"},tool_response:{stdout:"ok"}}'
+  ev '{hook_event_name:"PostToolUse",session_id:$s,cwd:$r,tool_name:"Edit",tool_use_id:"te1",tool_input:{file_path:($r+"/src/a.py"),old_string:"x",new_string:"x\ny"}}'
+  ev '{hook_event_name:"PostToolUseFailure",session_id:$s,cwd:$r,tool_name:"mcp__azure__listar",tool_use_id:"tm1",tool_input:{},error:"timed out"}'
+  ev '{hook_event_name:"PostToolUse",session_id:$s,cwd:$r,tool_name:"Bash",tool_use_id:"tc1",tool_input:{command:"git add -A && git -c user.name=t commit -m \"feat: x\" && git log --grep commit"},tool_response:{stdout:"ok"}}'
+  ev '{hook_event_name:"Stop",session_id:$s,cwd:$r}'
+  ev '{hook_event_name:"SessionEnd",session_id:$s,cwd:$r,reason:"exit"}'
+  local f; f="$TH/.local/share/ws-telemetria/trazas/$(date +%F).jsonl"
+  [[ "$(grep -c "\"sesion\":\"$ses\"" "$f" 2>/dev/null)" == 8 ]] && ok "el hook deja una traza por evento (8)" || falla "trazas: $(wc -l < "$f" 2>/dev/null) líneas"
+  [[ "$(grep '"id":"tc1"' "$f" | jq -r .commits)" == 1 ]] && ok "cuenta el git commit del comando (y no un git log que lo menciona)" || falla "commits del comando: $(grep '"id":"tc1"' "$f")"
+  # Cierre de una sesión sin su inicio: toma la hora del primer mensaje de la conversación y cuenta los commits desde ahí.
+  local tp2="$T/conv-sin-inicio.jsonl"; printf '{"type":"user","timestamp":"%s","message":{"content":"x"}}\n' "$(date -u -d '-2 minutes' +%FT%TZ)" > "$tp2"
+  ( cd "$r" && git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q --allow-empty -m "feat: desde la conversación" )
+  jq -nc --arg r "$r" --arg tp "$tp2" '{hook_event_name:"SessionEnd",session_id:"s-sin-inicio",cwd:$r,reason:"other",transcript_path:$tp}' \
+    | E env WS_TRAZAS_DIR="$TH/.local/share/ws-telemetria/trazas" XDG_RUNTIME_DIR="$T" bash "$h"
+  [[ "$(grep '"sesion":"s-sin-inicio"' "$f" | jq -r '[.commits, .desde] | @tsv')" == $'2\tconversacion' ]] \
+    && ok "al cerrar sin inicio, cuenta los commits desde el primer mensaje" || falla "cierre sin inicio: $(grep '"sesion":"s-sin-inicio"' "$f")"
+  grep -q '"accion":"pytest","programas":\["pytest"\]' "$f" && grep -q '"ticket":"EST-42"' "$f" && grep -q '"error_tipo":"timeout"' "$f" \
+    && ok "acción, ticket de la rama y tipo de error" || falla "campos de la traza: $(tail -3 "$f")"
+  ! grep -qE 'valor_privado|texto-privado-traza' "$f" && ok "no guarda comandos completos ni el texto del prompt" || falla "la traza guardó contenido"
+  mkdir -p "$d"
+  printf '{"type":"user","sessionId":"%s","cwd":"/mnt/c/repos/estima","gitBranch":"feature/EST-42-pagos","timestamp":"%s","message":{"content":"x"}}\n{"type":"assistant","sessionId":"%s","cwd":"/mnt/c/repos/estima","timestamp":"%s","message":{"id":"e1","model":"claude-opus-5-5","content":[],"usage":{"input_tokens":1000,"output_tokens":100000}}}\n' \
+    "$ses" "$hoy" "$ses" "$hoy" > "$d/$ses.jsonl"
+  grep -q 'pytest' <<<"$(E ws-telemetria trazas --dias 1 2>&1)" && ok "ws-telemetria trazas" || falla "ws-telemetria trazas"
+  grep -q 'EST-42' <<<"$(E ws-telemetria estimar 2>&1)" && ok "ws-telemetria estimar (por ticket)" || falla "ws-telemetria estimar"
+  grep -q '^# Semana' <<<"$(E ws-telemetria semana --actual 2>&1)" && ok "ws-telemetria semana (Markdown)" || falla "ws-telemetria semana"
+  printf 'estima=1\n' > "$TH/.config/ws-telemetria/presupuestos.conf"
+  grep -qP '^estima\t\d+' <<<"$(E ws-telemetria presupuestos --alertas 2>&1)" && ok "presupuesto rebasado aparece en --alertas" || falla "presupuestos --alertas"
+  E ws-telemetria build >/dev/null 2>&1; grep -q 'EST-42' "$TH/.local/share/ws-telemetria/tablero.html" && ok "el tablero trae estimación por ticket" || falla "tablero sin estimación"
+  rm -rf "$r" "$TH/.config/ws-telemetria/presupuestos.conf"
+}
+
+prueba_maravillas() {
+  socket_de maravillas
+  seccion "tmux: panel → Claude, paleta, avísame, extraer, etiquetas, enfoque, logs"
+  existe tmux-panel && existe ws-redactar || { aviso "parche 52 no instalado"; return; }
+  # Datos de prueba armados al correr («pass""word», «PRIV""ATE»): así el escáner de secretos del kit no los confunde.
+  local r; r="$(printf 'ok %s_%s y %s=Sup3r! %s abcdefghijk123\n%s\nabc8Q~%s\n-----BEGIN RSA %s KEY-----\nMIIx\n-----END RSA %s KEY-----\n' \
+    ghp "$(printf 'a%.0s' {1..30})" "pass""word" "Bear""er" 'texto normal' "$(printf 'b%.0s' {1..34})" "PRIV""ATE" "PRIV""ATE" | E ws-redactar)"
+  ! grep -qE 'aaaaaaaaaa|Sup3r|abcdefghijk|bbbbbbbbbb|MIIx' <<<"$r" && grep -q 'texto normal' <<<"$r" \
+    && ok "ws-redactar tapa tokens, contraseñas, Bearer, secretos de Azure y llaves privadas" || falla "ws-redactar: $r"
+  r="$(printf 'ver https://dev.azure.com/org/p?x=1 en /mnt/c/repos/app/src/a.ts:12\ncommit 3f9a2c1d ABC-77 id 8c1d2f3a-1b2c-4d5e-8f90-a1b2c3d4e5f6\n' | E tmux-extraer --lista)"
+  for t in url ruta hash ticket guid; do grep -q "^$t" <<<"$r" || { falla "tmux-extraer no encontró $t: $r"; r=""; break; }; done
+  [[ -n "$r" ]] && ok "tmux-extraer encuentra URL, ruta, hash, ticket y GUID"
+  E env WS_AVISO_LOG="$T/avisos" WS_AVISAME_PAUSA=0.3 tmux -f /dev/null new-session -d -s dev -x 120 -y 30 "printf 'hola\n%s=xyz\n' pass""word; sleep 60"
+  local p; p="$(tm display -p -t dev '#{pane_id}')"; sleep 0.5
+  r="$(E tmux-panel --texto "$p")"
+  grep -q hola <<<"$r" && ! grep -q xyz <<<"$r" && ok "tmux-panel arma el bloque para Claude, redactado" || falla "tmux-panel: $r"
+  tm split-window -t dev "bash --norc --noprofile"; local p2; p2="$(tm display -p -t dev '#{pane_id}')"; sleep 0.3
+  E tmux-avisame "$p2" >/dev/null 2>&1; sleep 0.5; tm send-keys -t "$p2" 'sleep 1.5' Enter
+  local i; for i in $(seq 1 30); do grep -q 'Terminó «sleep»' "$T/avisos" 2>/dev/null && break; sleep 0.5; done
+  grep -q 'Terminó «sleep»' "$T/avisos" 2>/dev/null && ok "tmux-avisame avisa cuando termina el comando" || falla "tmux-avisame no avisó"
+  E tmux-etiqueta "$(tm display -p -t dev '#{window_id}')" '🟡rev'; E tmux-etiqueta --barra
+  [[ "$(tm show -wv -t dev @etq)" == '🟡rev' && "$(tm show -gv window-status-format | grep -o '@etq' | wc -l)" -le 2 ]] \
+    && ok "tmux-etiqueta pone la etiqueta y la barra la muestra (sin duplicarse)" || falla "tmux-etiqueta"
+  tm set -g status-right 'ORIGINAL'; E tmux-enfoque 25 >/dev/null
+  local en; en="$(tm show -gv status-right)"; E tmux-enfoque off >/dev/null
+  [[ "$en" == *enfoque* && "$(tm show -gv status-right)" == ORIGINAL && -z "$(tm show -gqv @enf_fin)" ]] \
+    && ok "modo enfoque cambia la barra y la deja como estaba" || falla "tmux-enfoque: $en / $(tm show -gv status-right)"
+  r="$(printf 'todo bien\nERROR: fallo %s=abc123\n' "tok""en" | E env WS_AVISO_LOG="$T/avisos2" tmux-logs --filtro prueba)"
+  for i in $(seq 1 20); do [[ -s "$T/avisos2" ]] && break; sleep 0.25; done   # el aviso sale en segundo plano
+  grep -q 'ERROR' <<<"$r" && grep -q 'Error en logs:prueba' "$T/avisos2" && ! grep -q abc123 "$T/avisos2" \
+    && ok "tmux-logs pinta el error y avisa (redactado)" || falla "tmux-logs: $(cat "$T/avisos2" 2>/dev/null)"
+  r="$(E tmux-paleta --lista 2>&1)"
+  (( $(wc -l <<<"$r") > 40 )) && grep -q 'Mandar el panel de al lado' <<<"$r" && ok "la paleta lista las opciones de todos los menús ($(wc -l <<<"$r"))" || falla "tmux-paleta: ${r:0:200}"
+  tm source-file -n "$TH/.config/tmux-claude/maravillas.tmux" && ok "maravillas.tmux carga" || falla "maravillas.tmux no carga"
+  tm kill-server 2>/dev/null
+}
+
+prueba_tmux53() {
+  socket_de tmux53
+  seccion "tmux: CI/PR en la barra, plantillas, grabación, historial y enjambre"
+  existe tmux-enjambre && existe tmux-plantilla || { aviso "parche 53 no instalado"; return; }
+  local r="$T/r53" i w
+  mkdir -p "$r" && ( cd "$r" && git init -q && git checkout -qb feature/ABC-9-x && git remote add origin https://github.com/ejemplo/r53.git && git config user.email t@t && git config user.name t \
+    && git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q --allow-empty -m "chore: init" )
+  grep -q 'ABC-9' <<<"$(E env WS_RAMA_TTL=0 tmux-rama "$r")" && ok "tmux-rama: ticket de la rama (CI/PR si hay gh/az)" || falla "tmux-rama"
+  E env WS_HISTORIAL_DIR="$T/hist" tmux -f /dev/null new-session -d -s dev -x 160 -y 40 -c "$r" "bash --norc --noprofile"
+  E env WS_FONDO_CADA=0 tmux-fondo; [[ "$(tm show -gv window-status-format)" == *@crama* ]] && ok "tmux-fondo agrega CI/PR a la barra" || falla "tmux-fondo"
+  mkdir -p "$TH/.config/tmux-claude/plantillas"
+  printf '# prueba\nprincipal echo principal-ok\nderecha 30%% echo derecha-ok\nventana extra true\n' > "$TH/.config/tmux-claude/plantillas/p53.conf"
+  E tmux-plantilla p53 "$r"; sleep 0.5
+  w="$(tm display -p -t dev '#{window_id}')"
+  [[ "$(tm list-panes -t "$w" | wc -l)" == 2 ]] && tm list-windows -t dev -F '#W' | grep -qx extra \
+    && ok "tmux-plantilla arma paneles y pestañas" || falla "tmux-plantilla: $(tm list-windows -t dev -F '#W #{window_panes}' | tr '\n' ' ')"
+  E tmux-plantilla --guardar g53 "$w" >/dev/null && grep -q '^acomodo ' "$TH/.config/tmux-claude/plantillas/g53.conf" \
+    && ok "guarda la pestaña como plantilla (con su acomodo)" || falla "tmux-plantilla --guardar"
+  local p; p="$(tm display -p -t "dev:0" '#{pane_id}')"
+  E env WS_GRABAR_DIR="$TH/grabaciones" tmux-grabar "$p"; sleep 0.3; tm send-keys -t "$p" 'echo grabado-53' Enter; sleep 0.8
+  E env WS_GRABAR_DIR="$TH/grabaciones" tmux-grabar "$p"; sleep 0.5
+  local c; c="$(ls "$TH"/grabaciones/*.cast 2>/dev/null | head -1)"
+  [[ -n "$c" ]] && head -1 "$c" | grep -q '"version": 2' && grep -q 'grabado-53' "$c" && [[ -s "${c%.cast}.txt" ]] \
+    && ok "tmux-grabar deja .cast reproducible y .txt" || falla "tmux-grabar: ${c:-sin archivo}"
+  tm send-keys -t "$p" 'echo historial-unico-53' Enter; sleep 0.4
+  E env WS_HISTORIAL_DIR="$T/hist" tmux-historial --muestrear; E env WS_HISTORIAL_DIR="$T/hist" tmux-historial --muestrear
+  [[ "$(cat "$T"/hist/*/*.log 2>/dev/null | grep -cx 'historial-unico-53')" == 1 ]] \
+    && ok "tmux-historial guarda lo nuevo sin repetir" || falla "tmux-historial: $(cat "$T"/hist/*/*.log 2>/dev/null | grep -cx historial-unico-53)"
+  ( cd "$r" && printf 's\n' | E env EDITOR=true tmux-enjambre nuevo "agregar validación" >/dev/null 2>&1 )
+  local id; id="$(ls "$TH/.local/share/tmux-enjambre/" 2>/dev/null | sed -n 's/\.json$//p' | head -1)"
+  local wt; wt="$(jq -r '.tareas[0].ruta' "$TH/.local/share/tmux-enjambre/$id.json" 2>/dev/null)"
+  [[ -n "$id" && -d "$wt" ]] && tm has-session -t "enj-$id" 2>/dev/null && git -C "$r" rev-parse -q --verify "enjambre/$id/1" >/dev/null \
+    && ok "tmux-enjambre crea worktree, rama y grupo con Claude" || { falla "tmux-enjambre nuevo"; tm kill-server; return; }
+  ( cd "$wt" && echo x > nuevo.txt && git add nuevo.txt && git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -qm "feat: x" )
+  printf 's\n' | E tmux-enjambre integrar "$id" >/dev/null 2>&1
+  [[ "$(git -C "$r" branch --show-current)" == "enjambre/$id/integracion" && -f "$r/nuevo.txt" ]] \
+    && ok "integra las ramas en enjambre/<id>/integracion (sin push)" || falla "tmux-enjambre integrar"
+  git -C "$r" switch -q feature/ABC-9-x
+  printf 's\n' | E tmux-enjambre limpiar "$id" >/dev/null 2>&1
+  [[ ! -d "$wt" ]] && ! tm has-session -t "enj-$id" 2>/dev/null && ok "limpia worktrees y pestañas" || falla "tmux-enjambre limpiar"
+  tm kill-server 2>/dev/null
+}
+
+prueba_barra_extra() {
+  socket_de barraextra
+  seccion "Barra: segmentos personales y ws-cache"
+  existe ws-cache && existe tmux-fondo || { aviso "parche 53b no instalado"; return; }
+  local f="$T/barra-extra.conf"
+  printf '# comentario\n#(echo segmento-53b)\n' > "$f"
+  tm -f /dev/null new-session -d -s dev; tm set -g status-right 'BASE'
+  E env WS_BARRA_EXTRA="$f" tmux-fondo --barra; E env WS_BARRA_EXTRA="$f" tmux-fondo --barra
+  local sr; sr="$(tm show -gv status-right)"
+  [[ "$sr" == "BASE #(echo segmento-53b)" ]] && ok "agrega el segmento una sola vez (y no los comentarios)" || falla "status-right: $sr"
+  tm set -g status-right 'BASE'; E env WS_BARRA_EXTRA="$f" tmux-fondo --barra
+  [[ "$(tm show -gv status-right)" == *segmento-53b* ]] && ok "lo repone si el tema reescribe la barra" || falla "no lo repuso"
+  local a b; mkdir -p "$T/xdg-cache"
+  a="$(E env XDG_RUNTIME_DIR="$T/xdg-cache" ws-cache 30 date +%s%N)"; sleep 0.1; b="$(E env XDG_RUNTIME_DIR="$T/xdg-cache" ws-cache 30 date +%s%N)"
+  [[ -n "$a" && "$a" == "$b" ]] && ok "ws-cache devuelve lo guardado mientras está fresco" || falla "ws-cache: $a / $b"
+  # Hooks lentos de arranque: lo viejo se devuelve al instante y se refresca detrás; pasado --max se corre y se espera.
+  local c="$T/xdg-cache2" lento="$T/lento.sh" t0 r; mkdir -p "$c"
+  printf '#!/usr/bin/env bash\nsleep 1; date +%%s%%N\n' > "$lento"; chmod +x "$lento"
+  a="$(E env XDG_RUNTIME_DIR="$c" ws-cache --max 1800 0 "$lento")"
+  t0=$(date +%s%N); b="$(E env XDG_RUNTIME_DIR="$c" ws-cache --max 1800 0 "$lento")"; r=$(( ($(date +%s%N) - t0) / 1000000 ))
+  [[ -n "$a" && "$a" == "$b" ]] && (( r < 700 )) && ok "ws-cache: lo viejo sale al instante (${r} ms) y se refresca detrás" || falla "ws-cache viejo: ${r} ms · $a / $b"
+  sleep 1.6; b="$(E env XDG_RUNTIME_DIR="$c" ws-cache --max 1800 60 "$lento")"
+  [[ -n "$b" && "$a" != "$b" ]] && ok "ws-cache: el refresco en segundo plano sí guardó el resultado nuevo" || falla "ws-cache no refrescó: $a / $b"
+  touch -d '-2 hours' "$c"/ws-cache-*/????????????????
+  a="$(E env XDG_RUNTIME_DIR="$c" ws-cache --max 1800 60 "$lento")"
+  [[ -n "$a" && "$a" != "$b" ]] && ok "ws-cache --max: lo demasiado viejo no se usa, se corre y se espera" || falla "ws-cache --max: $a / $b"
+  r="$(jq -r '[.hooks.SessionStart[].hooks[] | select((.args // []) | map(test("\\.ps1$")) | any) | .command | test("ws-cache$")] | all' "$RH/.claude/settings.json" 2>/dev/null)"
+  [[ "$r" == "true" ]] && ok "los hooks de PowerShell del arranque no bloquean (van por ws-cache)" || falla "hay un .ps1 de SessionStart que corre directo: $r"
+  # La sandbox tapa las credenciales de los DOS lados: el home de Linux y el perfil de Windows (visible en /mnt/c).
+  r="$(jq -r '.sandbox.filesystem.denyRead as $d | [".ssh", ".aws", ".azure", ".kube", ".git-credentials", "AppData/Roaming/GitHub CLI"] | map(. as $p | ($d | map(test("^//mnt/c/Users/[^/]+/" + ($p | gsub("\\."; "\\.")) + "$")) | any)) | all' "$RH/.claude/settings.json" 2>/dev/null)"
+  [[ "$r" == "true" ]] && ok "la sandbox no deja leer las credenciales del perfil de Windows" || falla "faltan credenciales de Windows en sandbox.filesystem.denyRead: $r"
+  # Avisos de choques con la sandbox: el hook clasifica red, lectura de credenciales y escritura, y calla en lo normal.
+  local hk="$RH/.claude/hooks/ws-sandbox-aviso.sh" sd="$T/sbx"
+  if [[ -x "$hk" ]]; then
+    sbx() { jq -nc --arg c "$1" --arg o "$2" '{tool_name: "Bash", cwd: "/x/repo", session_id: "s", tool_input: {command: $c}, tool_response: {stderr: $o}}' | env -u TMUX_PANE WS_TELEMETRIA_DIR="$sd" bash "$hk"; }
+    sbx 'curl https://ejemplo.test/a' 'deny network-outbound ejemplo.test:443 (x)'
+    sbx 'cat /mnt/c/Users/u/.git-credentials' 'cat: x: No such file or directory'
+    sbx 'echo x > .git/hooks/pre-push' 'bash: .git/hooks/pre-push: Read-only file system'
+    sbx 'ls /no/existe' 'ls: /no/existe: No such file or directory'; sbx 'cat README.md' 'hola'
+    r="$(jq -r '.tipo' "$sd"/raw/sandbox-*.jsonl 2>/dev/null | tr '\n' ' ')"
+    [[ "$r" == "red lectura escritura " ]] && ! grep -q 'ejemplo.test/a\|README' "$sd"/raw/sandbox-*.jsonl \
+      && ok "avisos de sandbox: registra red, lectura de credenciales y escritura; nada en lo normal ni el comando completo" || falla "ws-sandbox-aviso: $r"
+    r="$(jq -r '[.hooks.PostToolUse, .hooks.PostToolUseFailure] | map(map(.hooks[].command) | any(test("ws-sandbox-aviso"))) | all' "$RH/.claude/settings.json" 2>/dev/null)"
+    [[ "$r" == "true" ]] && ok "el aviso de sandbox está enganchado al resultado de cada comando" || falla "ws-sandbox-aviso sin enganchar: $r"
+  fi
+  r="$(jq -r '.permissions.ask as $a | ["mcp__azure__keyvault", "mcp__claude_ai_Microsoft_365__*send*", "mcp__mempalace__*delete*", "Bash(pwsh.exe *)"] | map(. as $x | $a | index($x) != null) | all' "$RH/.claude/settings.json" 2>/dev/null)"
+  [[ "$r" == "true" ]] && ok "las herramientas MCP que envían, borran o tocan secretos, y PowerShell, siempre piden confirmación" || falla "faltan reglas ask de MCP o PowerShell: $r"
+  tm kill-server 2>/dev/null
+}
+
+prueba_personal() {
+  seccion "Configuración personal versionada (ws-personal)"
+  existe ws-personal || { aviso "ws-personal no instalado"; return; }
+  local P="$T/personal" g=(env WS_PERSONAL_DIR="$T/personal" GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t)
+  mkdir -p "$TH/.config/ws-local/segmentos"; printf '#(echo x)\n' > "$TH/.config/ws-local/barra-extra.conf"
+  printf 'echo MP\n' > "$TH/.config/ws-local/segmentos/mp.sh"; chmod 755 "$TH/.config/ws-local/segmentos/mp.sh"
+  E "${g[@]}" ws-personal init >/dev/null 2>&1
+  [[ "$(git -C "$P" log --oneline 2>/dev/null | wc -l)" -ge 1 && -x "$P/home/.config/ws-local/segmentos/mp.sh" ]] \
+    && ok "init: repo con tu configuración (conserva permisos de ejecución)" || falla "ws-personal init"
+  printf 'x %s=abc12345\n' "pass""word" > "$TH/.config/ws-local/nota.txt"
+  ! E "${g[@]}" ws-personal sync >/dev/null 2>&1 && ! git -C "$P" ls-files | grep -q nota.txt \
+    && ok "con algo que parece secreto no hace commit" || falla "ws-personal guardó un secreto"
+  rm -f "$TH/.config/ws-local/nota.txt" "$TH/.config/ws-local/barra-extra.conf"
+  printf 's\n' | E "${g[@]}" ws-personal restaurar >/dev/null 2>&1
+  [[ -f "$TH/.config/ws-local/barra-extra.conf" ]] && ok "restaurar devuelve lo versionado" || falla "ws-personal restaurar"
+}
+
+prueba_estado() {
+  socket_de estado
+  seccion "Estado detallado de Claude (fase, tiempo, qué hace, sin quedarse pegado)"
+  local h="$RH/.claude/hooks/tmux-state.sh"
+  [[ -x "$h" ]] && existe tmux-estado || { aviso "parche 56 no instalado"; return; }
+  # Cada pestaña simula un Claude corriendo (no una shell) con cierta pantalla.
+  tm -f /dev/null new-session -d -s dev -n base "exec sleep 600"
+  local p w; p="$(tm display -p -t dev:base '#{pane_id}')"; w="$(tm display -p -t dev:base '#{window_id}')"
+  ev() { printf '%s' "$2" | E env TMUX_PANE="$p" bash "$h" "$1"; }
+  cs() { tm show -wqv -t "$1" @cs; }
+  ev prompt '{"prompt":"x"}'
+  [[ "$(tm show -wqv -t "$w" @cfase)" == pensando && "$(cs "$w")" == "🧠 pensando"* ]] && ok "prompt → 🧠 pensando" || falla "prompt: $(cs "$w")"
+  ev tool '{"tool_name":"Bash","tool_input":{"command":"npm test"}}'
+  [[ "$(cs "$w")" == "🔧 Bash"* && "$(tm show -wqv -t "$w" @cdet)" == "Bash: npm test" ]] && ok "herramienta → 🔧 Bash y qué hace (Bash: npm test)" || falla "tool: $(cs "$w")"
+  tm set -w -t "$w" @cdesde "$(( $(date +%s) - 130 ))"; tm set -w -t "$w" @cts "$(date +%s)"; E tmux-estado --todas
+  [[ "$(cs "$w")" == "🔧 Bash 2m" ]] && ok "el tiempo avanza con la barra (2m)" || falla "tiempo: $(cs "$w")"
+  ev wait '{"notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}'
+  [[ "$(cs "$w")" == "✋ aprobar Bash"* && "$(tm show -wqv -t "$w" @cmain)" == "te necesita" ]] && ok "permiso → ✋ aprobar Bash (el vigía sigue viendo «te necesita»)" || falla "permiso: $(cs "$w")"
+  ev wait '{"notification_type":"elicitation_dialog","message":"Elige una opción"}'
+  [[ "$(cs "$w")" == "❓ te pregunta"* ]] && ok "pregunta → ❓ te pregunta" || falla "pregunta: $(cs "$w")"
+  ev compact '{"trigger":"auto"}'
+  [[ "$(cs "$w")" == "📦 compactando"* ]] && ok "PreCompact → 📦 compactando" || falla "compact: $(cs "$w")"
+  ev start '{"source":"compact"}'
+  [[ "$(tm show -wqv -t "$w" @cfase)" == pensando ]] && ok "tras compactar en automático sigue pensando" || falla "tras compactar: $(tm show -wqv -t "$w" @cfase)"
+  # «Te toca»: el último mensaje de Claude decide entre 👉 te toca y ✔ listo (sin tmux: --pide).
+  local tq="$T/tq.jsonl" tn="$T/tn.jsonl" tc="$T/tc.jsonl"
+  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"Hice el cambio.\n\n¿Lo subo o prefieres revisarlo antes?"}]}}' > "$tq"
+  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"Para aplicarlo, corre:\n\n```bash\nbash install.sh\n```"}]}}' > "$tc"
+  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"¿Qué archivo?"}]}}' '{"type":"assistant","message":{"content":[{"type":"text","text":"Listo: las 12 pruebas pasan y el cambio quedó guardado."}]}}' > "$tn"
+  bash "$h" --pide "$tq" && bash "$h" --pide "$tc" && ! bash "$h" --pide "$tn" \
+    && ok "te toca: detecta pregunta final y pedido de correr algo; un cierre informativo no" || falla "detección de «te toca»"
+  ev "done" "$(jq -nc --arg t "$tq" '{transcript_path: $t}')"
+  [[ "$(cs "$w")" == "👉 te toca"* && "$(tm show -wqv -t "$w" @cmain)" == "te toca" ]] && ok "Stop con pregunta → 👉 te toca (el vigía lo cuenta)" || falla "te toca: $(cs "$w")"
+  ev prompt '{"prompt":"x"}'; ev tool '{"tool_name":"Bash","tool_input":{"command":"npm test"}}'
+  ev "done" '{}'
+  [[ "$(cs "$w")" == "✔ listo" && "$(tm show -wqv -t "$w" @cdet)" == "último: Bash: npm test" && -n "$(tm show -wqv -t "$w" @cturno_txt)" ]] \
+    && ok "Stop → ✔ listo, con lo último que hizo y la duración del turno" || falla "done: $(cs "$w") / $(tm show -wqv -t "$w" @cdet)"
+  # Autocorrección (sin hook que avise): según lo que se ve en pantalla.
+  pestana() {   # nombre texto-en-pantalla fase hace-cuántos-s → id de ventana
+    tm new-window -d -t dev -n "$1" "printf '%b\n' '$2'; exec sleep 600"; sleep 0.3
+    local v; v="$(tm display -p -t "dev:$1" '#{window_id}')"
+    tm set -w -t "$v" @cfase "$3"; tm set -w -t "$v" @cpane "$(tm display -p -t "dev:$1" '#{pane_id}')"
+    tm set -w -t "$v" @cts "$(( $(date +%s) - $4 ))"; tm set -w -t "$v" @cdesde "$(( $(date +%s) - $4 ))"; echo "$v"
+  }
+  local wi wl ws wp wb
+  wi="$(pestana int '  ⎿  Interrupted by user\n> ' pensando 30)"
+  wl="$(pestana idle '● Listo, terminé.\n> ' herramienta 30)"
+  ws="$(pestana spin '✻ Pensando… (esc to interrupt)' pensando 700)"
+  wp="$(pestana perm 'Do you want to proceed?\n❯ 1. Yes\n  2. No' permiso 40)"
+  tm new-window -d -t dev -n shell "bash --norc --noprofile"; sleep 0.3
+  wb="$(tm display -p -t dev:shell '#{window_id}')"; tm set -w -t "$wb" @cfase pensando
+  tm set -w -t "$wb" @cpane "$(tm display -p -t dev:shell '#{pane_id}')"; tm set -w -t "$wb" @cts "$(( $(date +%s) - 30 ))"
+  E tmux-estado --todas
+  [[ "$(cs "$wi")" == "⛔ interrumpido"* ]] && ok "Esc (Interrupted en pantalla) → ⛔ interrumpido" || falla "interrumpido: $(cs "$wi")"
+  [[ "$(cs "$wl")" == "✔ listo"* ]] && ok "sin hook pero Claude ya espera tu mensaje → ✔ listo (no se queda pegado)" || falla "pegado: $(cs "$wl")"
+  [[ "$(cs "$ws")" == "⏳ sin avance 11m" ]] && ok "trabajando sin eventos 11 min → ⏳ sin avance" || falla "sin avance: $(cs "$ws")"
+  [[ "$(cs "$wp")" == "✋ aprobar"* ]] && ok "el diálogo de permiso sigue en pantalla → sigue ✋ aprobar" || falla "permiso visible: $(cs "$wp")"
+  [[ -z "$(cs "$wb")" ]] && ok "Claude ya no corre en la pestaña → se borra el estado" || falla "salió de Claude: $(cs "$wb")"
+  tm kill-server 2>/dev/null
+}
+
+prueba_ux() {
+  socket_de ux
+  seccion "Menús y UX: activas, escenas, monitor, cambio de modelo"
+  existe tmux-activas && existe tmux-hud || { aviso "parche 58 no instalado"; return; }
+  tm -f /dev/null new-session -d -s repos -n api "exec sleep 600"; tm new-window -d -t repos -n web "exec sleep 600"
+  tm new-session -d -s code -n kit "exec sleep 600"
+  local ahora; ahora=$(date +%s)
+  # Con tmux-estado instalado el estado se repinta desde @cfase/@cdet: se ponen igual que los hooks.
+  tm set -w -t repos:api @cfase herramienta; tm set -w -t repos:api @cdet "Bash: npm test"; tm set -w -t repos:api @cs "🔧 Bash 2m"
+  tm set -w -t repos:api @cts "$ahora"; tm set -w -t repos:api @cdesde "$ahora"
+  tm set -w -t code:kit @cfase permiso; tm set -w -t code:kit @cdet "Bash: terraform plan"; tm set -w -t code:kit @cs "✋ aprobar Bash"
+  tm set -w -t code:kit @cts "$ahora"; tm set -w -t code:kit @cdesde "$ahora"
+  sleep 1.2
+  local r; r="$(E tmux-activas --lista --minutos 0 | cut -f2- | sed 's/\x1b\[[0-9;]*m//g')"
+  [[ "$(head -1 <<<"$r")" == *kit*aprobar* && "$(sed -n 2p <<<"$r")" == *api*Bash* && "$(wc -l <<<"$r")" == 2 ]] \
+    && ok "activas: primero lo que te espera, luego lo que trabaja; lo inactivo no sale" || falla "tmux-activas: $r"
+  mkdir -p "$TH/.local/bin"; [[ -f "$TH/.local/bin/tmux-saver" ]] || printf 'ESCENAS=(aurora oceano)\n' > "$TH/.local/bin/tmux-saver"
+  tm set -g @saver_scene oceano
+  r="$(E tmux-escena --lista)"
+  grep -qP '^oceano\t✓' <<<"$r" && grep -q '^aleatoria' <<<"$r" && ok "selector de escenas: lista con la actual marcada" || falla "tmux-escena: $r"
+  local pr="$TH/.claude/projects/-rec-a"; mkdir -p "$pr"
+  printf '%s\n' '{"type":"user","cwd":"/rec/a","gitBranch":"feature/REC-1","message":{"content":"arregla el login de cobros por favor ahora mismo"}}' \
+    '{"type":"assistant","message":{"content":[{"type":"text","text":"Listo, quedó arreglado el login de cobros."}]}}' > "$pr/rec1.jsonl"
+  r="$(E env XDG_RUNTIME_DIR="$T" tmux-recientes --lista | sed 's/\x1b\[[0-9;]*m//g')"
+  grep -q $'^abrir\t/rec/a\trec1\t' <<<"$r" && grep -q 'feature/REC-1.*arregla el login' <<<"$r" \
+    && ok "recientes: lista conversaciones con rama y último pedido, lista para retomar" || falla "tmux-recientes: $r"
+  r="$(E tmux-hud)"; [[ "$r" == *CPU*RAM*RED*Claude* ]] && ok "monitor: CPU, RAM, red y Claude en la segunda línea" || falla "tmux-hud: $r"
+  # Cambio de modelo desde el menú: limpia lo escrito si Claude espera; si trabaja, no lo interrumpe.
+  if [[ -f "$RH/.local/lib/ws-ruteo.sh" ]] && existe cr; then
+    mkdir -p "$TH/.local/lib" "$T/fake-claude"; cp "$RH/.local/lib/ws-ruteo.sh" "$TH/.local/lib/"
+    # «Claude» de mentira: una copia de cat llamada claude (tmux reconoce a Claude por el nombre del proceso),
+    # que ignora Ctrl+C y repite cada línea que recibe.
+    cp "$(command -v cat)" "$T/fake-claude/claude"
+    local sock; sock="$(ls -d "$T/s/$SOCK"/tmux-*/default)"
+    cm() {   # ventana texto-en-pantalla → lo que recibió el «Claude»
+      tm new-window -d -t repos -n "$1" "printf '%s\\n' '$2'; trap '' INT; exec $T/fake-claude/claude"; sleep 0.4
+      local pc; pc="$(tm display -p -t "repos:$1" '#{pane_id}')"
+      tm select-window -t "repos:$1"; tm send-keys -t "$pc" -l 'texto previo'; sleep 0.2   # el menú actúa sobre la pestaña actual
+      E env TMUX="$sock,1,0" TMUX_PANE="$pc" WS_RUTEO_LOG="$T/ruteo.log" cr --cambiar sonnet >/dev/null 2>&1; sleep 0.6
+      tm capture-pane -p -t "$pc"
+    }
+    r="$(cm espera 'esperando')"
+    grep -qx '/model claude-sonnet-5-5' <<<"$r" && ! grep -q 'texto previo/model' <<<"$r" && ok "modelo: si Claude espera, limpia lo escrito y manda /model solo" || falla "modelo (espera): $r"
+    r="$(cm trabaja 'Working… (esc to interrupt)')"
+    grep -q 'texto previo/model claude-sonnet-5-5' <<<"$r" && ok "modelo: si Claude trabaja, no lo interrumpe (Ctrl+C no se manda)" || falla "modelo (trabaja): $r"
+  else aviso "ruteo no instalado: se omite la prueba del cambio de modelo"; fi
+  tm kill-server 2>/dev/null
+}
+
+prueba_nivel() {
+  socket_de nivel
+  seccion "Protección por pestaña: completo, normal, puro"
+  existe tmux-nivel || { aviso "parche 59 no instalado"; return; }
+  local s="$T/s59.json" r
+  printf '%s' '{"permissions":{"allow":["Bash(ls:*)"],"ask":["Bash(terraform apply*)"],"deny":["Read(~/.aws/**)"]},"sandbox":{"enabled":true,"excludedCommands":["docker"]},"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"~/.claude/hooks/audit.sh tool"},{"type":"command","command":"~/.claude/hooks/guard.sh"}]},{"hooks":[{"type":"command","command":"~/.claude/hooks/tmux-state.sh tool"}]}]},"statusLine":{"type":"command","command":"~/.claude/statusline.sh"}}' > "$s"
+  r="$(E tmux-nivel --perfil completo "$s")"
+  jq -e '(.sandbox | (.enabled == true) and (.allowUnsandboxedCommands == false) and (has("excludedCommands") | not))
+         and (.permissions.deny == ["Read(~/.aws/**)"]) and (.permissions.allow | length == 1) and ([.hooks[][].hooks[].command] | any(test("guard")))' <<<"$r" >/dev/null \
+    && ok "completo: sandbox sin escapatorias ni comandos excluidos; conserva permisos y hooks" || falla "completo: $r"
+  r="$(E env PATH="$T/fc59x:$TH/.local/bin:/usr/bin:/bin" WS_NIVELES_DIR="$T/niv" tmux-nivel --comando completo 2>&1)" || true
+  [[ "$r" == *"no puede quitar los comandos excluidos"* || "$r" == *"--setting-sources project,local"* ]] \
+    && ok "completo arranca sin los ajustes de usuario (o avisa si Claude no lo permite)" || falla "comando completo: $r"
+  # «completo» con carpeta: la lectura queda en ese proyecto (niega las carpetas de roots.txt y vuelve a permitir el repo).
+  mkdir -p "$T/ais/code/a/src" "$T/ais/code/b" "$TH/.config/tmux-claude"; git -C "$T/ais/code/a" init -q 2>/dev/null
+  cp "$TH/.config/tmux-claude/roots.txt" "$T/roots.bak" 2>/dev/null; printf 'code|1|%s\n' "$T/ais/code" > "$TH/.config/tmux-claude/roots.txt"
+  r="$(E env WS_WINHOME=/no/existe tmux-nivel --perfil completo "$s" "$T/ais/code/a/src" | jq -r --arg d "/$T/ais/code" '[(.sandbox.filesystem.denyRead | index($d) != null), (.sandbox.filesystem.allowRead | index($d + "/a") != null), (.sandbox.filesystem.allowRead | index($d + "/b") == null)] | all')"
+  [[ -f "$T/roots.bak" ]] && cp "$T/roots.bak" "$TH/.config/tmux-claude/roots.txt"
+  [[ "$r" == "true" ]] && ok "completo: los comandos en sandbox solo leen el proyecto de la pestaña" || falla "completo sin aislar la lectura: $r"
+  r="$(E tmux-nivel --perfil puro "$s")"
+  jq -e '(.permissions.ask == null) and (.permissions.allow == null) and (.permissions.deny == ["Read(~/.aws/**)"]) and (.sandbox.enabled == false)
+         and ([.hooks[][].hooks[].command] | any(test("guard"))) and ([.hooks[][].hooks[].command] | any(test("tmux-state")))
+         and (.statusLine.command | test("statusline"))' <<<"$r" >/dev/null \
+    && ok "puro: sin sandbox ni allow/ask; conserva el piso (deny y guard), la barra y el estado" || falla "puro: $r"
+  # El kit no autoriza de antemano lecturas de credenciales de nube y trae el piso de deny (ADR-013).
+  jq -e '(.permissions.allow | any(test("^Bash\\(az \\* ")) | not)
+         and (.permissions.deny | (index("Read(~/.ssh/**)") != null) and (index("Bash(ws-secret get*)") != null) and (index("Bash(git config *ws.gate*)") != null))' \
+     "$RH/.claude/settings.json" >/dev/null && ok "settings: sin comodines de az en allow y con el piso de deny" || falla "settings sin el piso de ADR-013"
+  mkdir -p "$T/fc59"; printf '#!/bin/bash\n[[ "$1" == --help ]] && echo "  --setting-sources <sources>"\n' > "$T/fc59/claude"; chmod +x "$T/fc59/claude"
+  r="$(E env PATH="$T/fc59:$TH/.local/bin:/usr/bin:/bin" WS_NIVELES_DIR="$T/niv" tmux-nivel --comando puro)"
+  [[ "$r" == "claude -c --setting-sources project,local --settings '$T/niv/puro.json'" && "$(stat -c %a "$T/niv/puro.json")" == 600 ]] \
+    && ok "puro arranca con --setting-sources project,local y su perfil (0600)" || falla "comando puro: $r"
+  tm -f /dev/null new-session -d -s dev "bash --norc --noprofile"; local p w; p="$(tm display -p -t dev '#{pane_id}')"; w="$(tm display -p -t dev '#{window_id}')"
+  E env PATH="$T/fc59:$TH/.local/bin:/usr/bin:/bin" WS_NIVELES_DIR="$T/niv" tmux-nivel completo "$p" >/dev/null 2>&1; sleep 0.4
+  [[ "$(tm show -wqv -t "$w" @cnivel)" == completo && "$(tm capture-pane -p -t "$p")" == *"claude -c --setting-sources project,local --settings"*completo*.json* ]] \
+    && ok "cambiar de nivel reinicia Claude con su perfil y marca la pestaña (🔒)" || falla "tmux-nivel completo: nivel=$(tm show -wqv -t "$w" @cnivel) · $(tm capture-pane -p -t "$p" | grep -v '^$' | tail -3)"
+  tm kill-server 2>/dev/null
+}
+
+prueba_reinicio_todas() {
+  socket_de reinicio
+  seccion "Reiniciar Claude en todas las pestañas"
+  existe tmux-claude-restart && grep -q -- '--todas' "$TH/.local/bin/tmux-claude-restart" || { aviso "reinicio de todas no instalado"; return; }
+  local p1 p2 w1 w2 antes r p
+  # El Claude simulado es un script de bash y tmux lo vería como «bash» (una terminal sin Claude, que --todas se
+  # salta). Aquí se lanza con otro nombre de proceso, como el Claude real.
+  tm -f /dev/null new-session -d -s dev -n libre -c "$T/repos" "bash --norc"; sleep 0.5
+  p1="$(tm display -p -t dev: '#{pane_id}')"; w1="$(tm display -p -t "$p1" '#{window_id}')"
+  tm new-window -d -t dev -n ocupada -c "$T/repos" "bash --norc"; sleep 0.4
+  p2="$(tm display -p -t dev:ocupada '#{pane_id}')"; w2="$(tm display -p -t "$p2" '#{window_id}')"
+  for p in "$p1" "$p2"; do
+    tm send-keys -t "$p" "export PATH='$TH/.local/bin:$FB:/usr/bin:/bin' WST_LOG='$T/claude.log'; ( exec -a claude-prueba bash '$FB/claude' )" Enter
+  done; sleep 1
+  tm set -w -t "$w1" @cpane "$p1" \; set -w -t "$w1" @cfase listo \; set -w -t "$w2" @cpane "$p2" \; set -w -t "$w2" @cfase pensando
+  r="$(E tmux-claude-restart --todas --lista)"
+  [[ "$r" == *"reinicia"*"libre"* && "$r" == *"ocupada"*"(pensando)"* ]] && ok "--lista: reinicia la libre y deja la que está trabajando" || falla "reinicio --lista: «$r» (tmux ve: $(tm list-panes -a -F '#{pane_current_command}' | tr '\n' ' '))"
+  antes="$(wc -l < "$T/claude.log" 2>/dev/null || echo 0)"
+  E tmux-claude-restart --todas >/dev/null 2>&1; sleep 2
+  [[ "$(wc -l < "$T/claude.log")" == "$(( antes + 1 ))" && "$(tm capture-pane -p -t "$p1")" == *claude-resume* && "$(tm capture-pane -p -t "$p2")" != *claude-resume* ]] \
+    && ok "sale y vuelve a entrar solo en la pestaña libre, retomando la conversación" || falla "reinicio de todas: $(tm capture-pane -p -t "$p1" | tail -2)"
+  tm kill-server 2>/dev/null
+}
+
+prueba_menus_coherencia() {
+  seccion "Menús: lo que prometen existe (sin abrir tmux)"
+  local mm sinp=""
+  for mm in "$TH"/.config/tmux-claude/menu*.tmux; do
+    [[ "$(grep -c 'status-interval' "$mm")" == 3 && "$(tail -1 "$mm")" == "set -gF status-interval"* ]] || sinp+=" ${mm##*/}"
+  done
+  [[ -z "$sinp" ]] && ok "cada menú pausa el refresco de la barra mientras está abierto y lo repone al cerrar" || falla "menús sin pausa de la barra:$sinp"
+  local c="$TH/.config/tmux-claude" f k x fz="" sn="" teclas
+  # 1. Toda función que un script abre por nombre (fn=…) está definida en functions.sh.
+  for f in $(grep -rhoE '\bfn=[a-z_]+' "$TH/.local/bin" 2>/dev/null | sort -u | cut -d= -f2); do
+    bash -c ". '$c/functions.sh' 2>/dev/null; declare -F '$f' >/dev/null" || fz+=" $f"
+  done
+  [[ -z "$fz" ]] && ok "las funciones que abren pestañas existen (tw, two…)" || falla "funciones sin definir:$fz"
+  # 2. Cada «(Ctrl+b X)» que anuncia un menú tiene su bind en la configuración (bind [-r] X …, sin los de -n).
+  teclas=" $(grep -hE '^bind(-key)?( -r)? +[^-]' "$TH/.tmux.conf" "$c"/ux.tmux "$c"/maravillas.tmux 2>/dev/null \
+              | sed -E 's/^bind(-key)?( -r)? +//' | awk '{ print $1 }' | tr -d "'\"\\\\" | tr '\n' ' ')"
+  for k in $(grep -rhoE '\(Ctrl\+b [^ )]+\)' "$c"/menu*.tmux 2>/dev/null | sed -E 's/\(Ctrl\+b (.*)\)/\1/' | sort -u); do
+    x="$k"; [[ "$k" == Espacio ]] && x=Space
+    [[ "$teclas" == *" $x "* ]] || sn+=" $k"
+  done
+  [[ -z "$sn" ]] && ok "cada atajo «Ctrl+b X» anunciado en un menú existe" || falla "atajos anunciados sin bind:$sn"
+  # 3. La ayuda no menciona entradas que ya no están.
+  ! grep -qE 'Playwright|detener y GIF|modo presentación' "$TH/.local/bin/tmux-help" 2>/dev/null && ok "la ayuda no anuncia opciones retiradas" || falla "tmux-help anuncia opciones que no existen"
+  # 4. Todo script que llama un menú está instalado y es ejecutable.
+  fz=""
+  # shellcheck disable=SC2088  # la tilde es parte del texto que se busca en los menús
+  for f in $(grep -rhoE '~/\.local/bin/[A-Za-z0-9_-]+' "$c"/menu*.tmux "$c"/ux.tmux "$c"/maravillas.tmux "$TH/.tmux.conf" 2>/dev/null | sort -u); do
+    [[ -x "$TH/${f#\~/}" ]] || fz+=" ${f##*/}"
+  done
+  [[ -z "$fz" ]] && ok "todos los scripts que llaman los menús están instalados" || falla "scripts que faltan:$fz"
+}
+
+prueba_otel() {
+  seccion "Colector local de OpenTelemetry (ws-otel)"
+  existe ws-otel && existe ws-telemetria || { aviso "ws-otel no instalado"; return; }
+  local puerto=$(( 20000 + RANDOM % 20000 )) run="$T/otel-run" u t r f
+  mkdir -p "$run"; u="http://127.0.0.1:$puerto"; t="$(date +%s)000000000"
+  O() { E env WS_OTEL_PUERTO="$puerto" XDG_RUNTIME_DIR="$run" ws-otel "$@"; }
+  O iniciar >/dev/null 2>&1 && O estado >/dev/null 2>&1 && ok "el colector arranca en segundo plano y escucha solo en 127.0.0.1" || { falla "ws-otel no arrancó"; return; }
+  post() { curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST -H "Content-Type: ${3:-application/json}" "$u/v1/$1" -d "$2"; }
+  r="$(post logs '{"resourceLogs":[{"resource":{"attributes":[{"key":"user.email","value":{"stringValue":"persona@ejemplo.com"}}]},"scopeLogs":[{"logRecords":[
+    {"timeUnixNano":"'"$t"'","attributes":[{"key":"event.name","value":{"stringValue":"api_request"}},{"key":"model","value":{"stringValue":"claude-sonnet-5-5"}},{"key":"duration_ms","value":{"stringValue":"1200"}},{"key":"ttft_ms","value":{"intValue":"350"}},{"key":"cost_usd","value":{"doubleValue":0.05}}]},
+    {"timeUnixNano":"'"$t"'","attributes":[{"key":"event.name","value":{"stringValue":"claude_code.api_error"}},{"key":"status_code","value":{"stringValue":"529"}},{"key":"error","value":{"stringValue":"detalle-privado-del-error"}}]},
+    {"timeUnixNano":"'"$t"'","attributes":[{"key":"event.name","value":{"stringValue":"claude_code.user_prompt"}},{"key":"prompt","value":{"stringValue":"texto-libre-otel token=valor-secreto-otel"}},{"key":"prompt_length","value":{"intValue":"18"}}]},
+    {"timeUnixNano":"'"$t"'","attributes":[{"key":"event.name","value":{"stringValue":"claude_code.tool_decision"}},{"key":"tool_name","value":{"stringValue":"Bash"}},{"key":"decision","value":{"stringValue":"reject"}},{"key":"source","value":{"stringValue":"user_reject"}},{"key":"tool_parameters","value":{"stringValue":"{\"bash_command\":\"kubectl get pods --llave=valor-privado-otel\"}"}}]}]}]}]}')"
+  r+=" $(post metrics '{"resourceMetrics":[{"scopeMetrics":[{"metrics":[{"name":"claude_code.active_time.total","unit":"s","sum":{"dataPoints":[{"timeUnixNano":"'"$t"'","asDouble":120,"attributes":[{"key":"type","value":{"stringValue":"user"}}]}]}}]}]}]}')"
+  r+=" $(post traces '{"resourceSpans":[{"scopeSpans":[{"spans":[{"name":"claude_code.llm_request","traceId":"a","spanId":"b","startTimeUnixNano":"'"$t"'","endTimeUnixNano":"'"$t"'","attributes":[{"key":"ttft_ms","value":{"intValue":"350"}}]}]}]}]}')"
+  r+=" $(post logs 'xx' application/x-protobuf) $(curl -s -o /dev/null -w '%{http_code}' -m 5 -X POST "$u/otra" -d '{}')"
+  [[ "$r" == "200 200 200 415 404" ]] && ok "recibe eventos, métricas y trazas en JSON; rechaza protobuf y rutas ajenas" || falla "respuestas del colector: $r"
+  f="$(ls "$TH"/.local/share/ws-telemetria/otel/*.jsonl 2>/dev/null | head -1)"
+  [[ -n "$f" && "$(stat -c %a "$f")" == 600 ]] && grep -q 'texto-libre-otel' "$f" && grep -q 'detalle-privado-del-error' "$f" && ! grep -q 'valor-secreto-otel' "$f" \
+     && grep -q '"programa":"kubectl"' "$f" && ok "guarda todo (0600), con los secretos tapados y el programa del comando aparte" || falla "archivo del colector: ${f:-sin archivo}"
+  # Modo sin contenido: mismos envíos, sin textos ni identidad.
+  local run0="$T/otel-run0" d0="$T/otel-sin" p0=$(( puerto + 1 ))
+  mkdir -p "$run0"; E env WS_OTEL_PUERTO="$p0" XDG_RUNTIME_DIR="$run0" WS_OTEL_DIR="$d0" WS_OTEL_CONTENIDO=0 ws-otel iniciar >/dev/null 2>&1
+  curl -s -o /dev/null -m 5 -X POST -H 'Content-Type: application/json' "http://127.0.0.1:$p0/v1/logs" -d '{"resourceLogs":[{"resource":{"attributes":[{"key":"user.email","value":{"stringValue":"persona@ejemplo.com"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"'"$t"'","attributes":[{"key":"event.name","value":{"stringValue":"claude_code.user_prompt"}},{"key":"prompt","value":{"stringValue":"texto-libre-otel"}},{"key":"prompt_length","value":{"intValue":"16"}}]}]}]}]}'
+  E env WS_OTEL_PUERTO="$p0" XDG_RUNTIME_DIR="$run0" ws-otel detener >/dev/null 2>&1
+  grep -q '"prompt_length":16' "$d0"/*.jsonl 2>/dev/null && ! grep -qE 'texto-libre-otel|persona@ejemplo' "$d0"/*.jsonl \
+    && ok "con WS_OTEL_CONTENIDO=0 no guarda textos ni identidad" || falla "modo sin contenido: $(cat "$d0"/*.jsonl 2>/dev/null | head -2)"
+  rm -f "$TH/.local/share/ws-telemetria/.ultimo"; E ws-telemetria build >/dev/null 2>&1
+  r="$(python3 - "$TH/.local/share/ws-telemetria/tablero.html" <<'PY'
+import json, re, sys
+d = json.loads(re.search(r"const D = (\{.*?\});\nconst \$", open(sys.argv[1], encoding="utf-8").read(), re.S).group(1)).get("otel") or {}
+a = d.get("api") or {}
+print(a.get("llamadas"), a.get("med_ms"), a.get("errores"), a.get("ttft_med_ms"), (d.get("errores") or [{}])[0].get("codigo"),
+      (d.get("permisos") or [{}])[0].get("rechaza"), (d.get("activo") or [{}])[0].get("tuyo_min"))
+PY
+)"
+  [[ "$r" == "1 1200.0 1 350 529 1 2.0" ]] && ok "el tablero suma latencia, errores por código, permisos y tiempo activo" || falla "bloque otel del tablero: $r"
+  O detener >/dev/null 2>&1; ! O estado >/dev/null 2>&1 && ok "el colector se detiene" || falla "ws-otel sigue corriendo"
+}
+
+prueba_informe() {
+  seccion "Informe completo (ws-informe)"
+  existe ws-informe && existe ws-telemetria || { aviso "ws-informe no instalado"; return; }
+  local d="$TH/.claude/projects/-mnt-c-repos-inf" ts i r; mkdir -p "$d"; ts="$(date -u +%FT%TZ)"
+  for i in 1 2 3; do
+    printf '{"type":"user","sessionId":"inf%s","cwd":"/mnt/c/repos/inf","timestamp":"%s","message":{"content":"Revisa el PR de cobros y dime los riesgos %s"}}\n{"type":"assistant","sessionId":"inf%s","cwd":"/mnt/c/repos/inf","timestamp":"%s","message":{"id":"inf%s","model":"claude-opus-5-5","content":[{"type":"tool_use","name":"Task","input":{"subagent_type":"revisor-inf","model":"haiku"}}],"usage":{"input_tokens":10,"output_tokens":100}}}\n{"type":"user","sessionId":"inf%s","timestamp":"%s","message":{"content":"<command-name>/compact</command-name>"}}\n' \
+      "$i" "$ts" "$i" "$i" "$ts" "$i" "$i" "$ts" > "$d/inf$i.jsonl"
+  done
+  r="$(E env WS_INFORME_SIN_WINDOWS=1 ws-informe --json 2>&1)"
+  jq -e '(.agentes | any(.tipo == "revisor-inf" and .usos == 3)) and (.recurrentes | any(.frase | test("revisa pr cobros"))) and (.comandos | any(.comando == "/compact"))' <<<"$r" >/dev/null \
+    && ok "mide agentes, prompts que se repiten y comandos «/»" || falla "ws-informe --json: ${r:0:300}"
+  jq -e '(.tokens.salida > 0) and (.tokens.palabras_tuyas > 0) and (.tendencia.semanas | length == 12) and (.estimacion_base | length >= 1)
+         and (.ideas | type == "array") and (.aprendizaje.memorias >= 0) and (.recurrentes | all(.frase | test("^session being continued") | not))' <<<"$r" >/dev/null \
+    && ok "mide tokens, palabras, tendencia semanal, base para estimar, aprendizaje e ideas" || falla "ws-informe --json sin los bloques nuevos"
+  E env WS_INFORME_SIN_WINDOWS=1 ws-informe >/dev/null 2>&1
+  local f; f="$(ls "$TH"/.local/share/ws-telemetria/informes/informe-*.html 2>/dev/null | head -1)"
+  [[ -n "$f" ]] && grep -q 'Prompts que se repiten' "$f" && grep -q 'Tokens y palabras' "$f" && grep -q 'Base para estimar' "$f" && ! grep -q 'cobros y dime los riesgos 2' "$f" \
+    && ok "genera el informe HTML y Markdown sin el texto de los prompts" || falla "informe HTML: ${f:-sin archivo}"
+}
+
+prueba_traspaso() {
+  seccion "Exportar trabajo a otro Claude y aprender de ti"
+  existe ws-traspaso && existe ws-aprender || { aviso "parche 61 no instalado"; return; }
+  local fc="$T/fc61" r="$T/r61" d f; mkdir -p "$fc" "$r"
+  cat > "$fc/claude" <<'FAKE'
+#!/bin/bash
+echo "$*" >> "$WST_LOG.61"
+p="${*: -1}"
+case "$p" in
+  *"PAQUETE DE TRASPASO"*) cat >/dev/null; printf '## Objetivo\nTerminar el cobro\n' ;;
+  *"HECHOS ESTABLES"*) echo '[{"sujeto":"Andrés","predicado":"prefiere","objeto":"Conventional Commits","evidencia":"x"},{"sujeto":"Andrés","predicado":"usa","objeto":"tmux","evidencia":"y"}]' ;;
+  *"comandos «/»"*) cat >/dev/null; echo '[{"nombre":"revisa-cobros","descripcion":"Revisa un PR de cobros","prompt":"Revisa $ARGUMENTS"}]' ;;
+  *"mempalace_kg_add"*) cat > "$WST_LOG.61.kg"; echo "Guardé 1" ;;
+esac
+FAKE
+  chmod +x "$fc/claude"
+  ( cd "$r" && git init -q && git checkout -qb feature/COB-7 && git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -q --allow-empty -m "chore: init" )
+  d="$TH/.claude/projects/$(sed 's/[^A-Za-z0-9]/-/g' <<<"$r")"; mkdir -p "$d"
+  printf '%s\n' '{"type":"user","message":{"content":"arregla el cobro; password=abc12345"}}' \
+    '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TodoWrite","input":{"todos":[{"content":"Validar montos","status":"completed"},{"content":"Probar reintentos","status":"pending"}]}},{"type":"tool_use","name":"Edit","input":{"file_path":"'"$r"'/src/cobro.ts"}}]}}' > "$d/s1.jsonl"
+  local cg=(env PATH="$fc:$TH/.local/bin:/usr/bin:/bin" WST_LOG="$T/log" WS_TRASPASO_SIN_WINDOWS=1 WS_INFORME_SIN_WINDOWS=1)
+  E "${cg[@]}" ws-traspaso "$r" --conversacion >/dev/null 2>&1
+  f="$(ls "$TH"/.local/share/ws-telemetria/traspasos/r61-*.md 2>/dev/null | head -1)"
+  [[ -n "$f" ]] && grep -q '## Objetivo' "$f" && grep -q 'feature/COB-7' "$f" && grep -q '\[ \] Probar reintentos' "$f" && grep -q 'src/cobro.ts' "$f" \
+    && [[ -f "${f%.md}.jsonl" ]] && ! grep -q 'abc12345' "$f" \
+    && ok "traspaso: resumen de Claude, rama, tareas, archivos y conversación; secretos redactados" || falla "ws-traspaso: $(head -c 400 "$f" 2>/dev/null)"
+  printf '1\n' | E "${cg[@]}" ws-aprender hechos >/dev/null 2>&1
+  grep -q 'Conventional Commits' "$T/log.61.kg" 2>/dev/null && ! grep -q '"tmux"' "$T/log.61.kg" \
+    && ok "aprender: solo guarda en MemPalace los hechos que eliges" || falla "ws-aprender hechos: $(cat "$T/log.61.kg" 2>/dev/null)"
+  grep -q 'mcp__mempalace__mempalace_diary_read' "$T/log.61" && ok "aprender: Claude solo lee MemPalace al proponer" || falla "ws-aprender sin herramientas de lectura"
+  for i in 1 2 3; do printf '{"type":"user","sessionId":"ap%s","cwd":"/mnt/c/repos/ap","timestamp":"%s","message":{"content":"Revisa el PR de cobros por favor ahora %s"}}\n' "$i" "$(date -u +%FT%TZ)" "$i" > "$d/ap$i.jsonl"; done
+  printf '1\n' | E "${cg[@]}" WS_APRENDER_COMANDOS="$T/cmds" ws-aprender comandos >/dev/null 2>&1
+  [[ -f "$T/cmds/revisa-cobros.md" ]] && grep -q 'ARGUMENTS' "$T/cmds/revisa-cobros.md" && ok "comandos: crea el /comando que elegiste" || falla "ws-aprender comandos"
+}
+
+prueba_configuracion
+prueba_menus_coherencia
+prueba_reinicio_todas
+prueba_modo_solo
+prueba_cuentas
+prueba_persistencia
+prueba_flotantes
+prueba_respaldo
+prueba_protector
+prueba_terminal
+prueba_telemetria
+prueba_traspaso
+prueba_informe
+prueba_otel
+prueba_nivel
+prueba_ux
+prueba_estado
+prueba_personal
+prueba_barra_extra
+prueba_tmux53
+prueba_maravillas
+prueba_trazas
+prueba_ruteo
+prueba_telegram
+prueba_grupos
+prueba_tapas_sandbox
+(( IA )) && correr_ia
+printf '\n\e[1mResultado: %d ok · %d avisos · %d fallas\e[0m\n' "$OK" "$AV" "$FA"
+(( FA == 0 ))

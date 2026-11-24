@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+#
+# ws-restore-lite — prueba o restaura un respaldo de ws-backup-lite.
+#
+# Uso: ws-restore-lite [--probar | --restaurar] [ARCHIVO] [--identidad ARCHIVO_AGE]
+#   --probar     (por defecto) extrae en una carpeta temporal y comprueba que se puede
+#                recuperar todo: integridad, conversaciones legibles, tmux, inventario y
+#                que NO trae credenciales. No toca tu $HOME.
+#   --restaurar  extrae en $HOME. Pide confirmación; no corre con Claude abierto; lo que ya
+#                existe y es distinto se conserva como <archivo>.~N~ (no plancha).
+#   ARCHIVO      por defecto, el respaldo más reciente de %UserProfile%\WSL-Backups\lite
+# Orden en una máquina nueva: install.sh del kit → ws-restore-lite --restaurar → logins.
+set -euo pipefail
+MODO="--probar" ARCH="" IDENT=""
+while (( $# )); do
+  case "$1" in
+    --probar|--restaurar) MODO="$1" ;;
+    --identidad) IDENT="${2:?falta el archivo de identidad}"; shift ;;
+    -h|--help) sed -n '3,13p' "$0"; exit 0 ;;
+    *) ARCH="$1" ;;
+  esac
+  shift
+done
+
+win_home() {
+  local p=""
+  command -v wslvar >/dev/null && p="$(wslvar USERPROFILE 2>/dev/null || true)"
+  [[ -n "$p" ]] || p="$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r' || true)"
+  [[ -n "$p" ]] && wslpath -u "$p"
+}
+DEST="${WS_BACKUP_DEST:-$(win_home)/WSL-Backups/lite}"
+if [[ -z "$ARCH" ]]; then
+  ARCH="$(find "$DEST" -maxdepth 1 -name 'claude-lite-*.tar.*' ! -name '*.sha256' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)"
+fi
+[[ -f "$ARCH" ]] || { echo "✖ No hay respaldo en $DEST (corre ws-backup-lite)" >&2; exit 1; }
+
+fallas=0
+ok()    { printf '  \e[32mok\e[0m     %s\n' "$1"; }
+aviso() { printf '  \e[33maviso\e[0m  %s\n' "$1"; }
+falla() { printf '  \e[31mFALLA\e[0m  %s\n' "$1"; fallas=$((fallas + 1)); }
+
+echo "Respaldo: $ARCH ($(du -h "$ARCH" | cut -f1), $(( ($(date +%s) - $(stat -c %Y "$ARCH")) / 3600 )) h)"
+if [[ -f "$ARCH.sha256" ]]; then
+  if ( cd "$(dirname "$ARCH")" && sha256sum -c --quiet "$(basename "$ARCH").sha256" ) 2>/dev/null; then ok "suma SHA-256 coincide"
+  else falla "la suma SHA-256 no coincide: archivo dañado"; exit 1; fi
+else aviso "sin archivo .sha256"; fi
+
+# leer — descifra (si aplica) y descomprime a stdout.
+leer() {
+  local a="$ARCH"
+  if [[ "$a" == *.age ]]; then
+    [[ -n "$IDENT" ]] || { echo "✖ respaldo cifrado: usa --identidad <archivo de age>" >&2; return 1; }
+    age -d -i "$IDENT" "$a"; a="${a%.age}"
+  else cat "$a"; fi | case "$a" in *.zst) zstd -dc -q ;; *.gz) gzip -dc ;; *) cat ;; esac
+}
+
+#######################################
+# --probar: todo en una carpeta temporal
+#######################################
+if [[ "$MODO" == "--probar" ]]; then
+  T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+  if leer | tar -C "$T" -xf - 2>"$T.err"; then ok "se extrae completo"; else falla "no se pudo extraer: $(head -1 "$T.err")"; exit 1; fi
+  rm -f "$T.err"
+
+  n=$(find "$T/.claude/projects" -maxdepth 2 -name '*.jsonl' 2>/dev/null | wc -l)
+  (( n > 0 )) && ok "$n conversaciones" || falla "no trae conversaciones (~/.claude/projects)"
+  s=$(find "$T/.claude/projects" -path '*/subagents/*.jsonl' 2>/dev/null | wc -l)
+  ok "$s conversaciones de subagentes"
+  # Las 5 conversaciones más recientes deben poder leerse línea por línea (lo que hace claude -r).
+  malas=0
+  while IFS= read -r f; do jq -e . "$f" >/dev/null 2>&1 || malas=$((malas + 1)); done \
+    < <(find "$T/.claude/projects" -maxdepth 2 -name '*.jsonl' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -5 | cut -d' ' -f2-)
+  (( malas == 0 )) && ok "las conversaciones recientes se leen bien" || falla "$malas conversaciones recientes dañadas"
+  for d in history.jsonl todos file-history settings.json; do
+    [[ -e "$T/.claude/$d" ]] && ok ".claude/$d" || aviso ".claude/$d no viene (puede no existir en tu equipo)"
+  done
+  if [[ -e "$T/.local/share/tmux/resurrect/last" ]]; then
+    ok "tmux: $(grep -c '^window' "$T/.local/share/tmux/resurrect/last" 2>/dev/null || echo 0) pestañas guardadas"
+  else falla "no trae el guardado de tmux"; fi
+  if grep -qE 'mempalace' "$T/inventario/incluido.txt" 2>/dev/null; then ok "MemPalace incluido"
+  elif jq -er '.mcpServers.mempalace.command // ""' "$HOME/.claude.json" 2>/dev/null | grep -q '^/mnt/'; then
+    ok "MemPalace corre en Windows: sus datos no dependen de WSL"
+  else aviso "MemPalace no incluido (agrega su carpeta a ~/.config/ws-backup/extra.txt)"; fi
+  [[ -s "$T/inventario/apt-manual.txt" ]] && ok "inventario para reinstalar ($(ls "$T/inventario" | wc -l) archivos)" || falla "sin inventario de paquetes"
+  cred=$(find "$T" \( -name '.credentials.json' -o -path '*/.azure/*' -o -path '*/.kube/config' -o -path '*/.aws/credentials' -o -name 'age-identity*' \) 2>/dev/null | head -3)
+  [[ -z "$cred" ]] && ok "sin credenciales dentro" || falla "trae credenciales: $cred"
+  if [[ -s "$T/inventario/repos-pendientes.txt" ]]; then
+    aviso "repos de ~/code con trabajo sin subir al respaldar:"; sed 's/^/           /' "$T/inventario/repos-pendientes.txt"
+  fi
+  echo; (( fallas == 0 )) && echo "Se puede restaurar." || { echo "✖ $fallas fallas"; exit 1; }
+  exit 0
+fi
+
+#######################################
+# --restaurar: en $HOME, sin planchar
+#######################################
+if pgrep -x claude >/dev/null; then echo "✖ Cierra Claude en todas las pestañas antes de restaurar (escribe en ~/.claude)." >&2; exit 1; fi
+echo "Se extraerá en $HOME. Lo que exista y sea distinto quedará como <archivo>.~N~."
+read -rp "¿Restaurar? [s/N] " r; [[ "$r" =~ ^[sS]$ ]] || { echo "Cancelado."; exit 0; }
+leer | tar -C "$HOME" --backup=numbered --exclude='inventario' -xf -
+mkdir -p "$HOME/.local/state/ws-restore"
+leer | tar -C "$HOME/.local/state/ws-restore" -xf - inventario
+echo "✔ Restaurado. Inventario en ~/.local/state/ws-restore/inventario"
+cat <<EOF
+
+Siguientes pasos:
+  1. Paquetes:   xargs -a ~/.local/state/ws-restore/inventario/apt-manual.txt sudo apt-get install -y
+  2. Herramientas: ws-tools install base nube calidad   (compara con inventario/ws-tools.txt)
+  3. Logins:     claude auth login · az login · gh auth login · aws sso login
+  4. tmux:       Ctrl+b Ctrl+r (restaura pestañas; cada una retoma su conversación)
+EOF

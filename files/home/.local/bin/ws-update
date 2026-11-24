@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+#
+# ws-update — actualiza la estación: Claude Code, plugins de tmux y paquetes del sistema.
+# El MCP de Azure está fijado a una versión: aquí solo avisa si hay una nueva, para revisarla antes.
+set -u
+echo "== Claude Code";     claude update
+echo "== Plugins de tmux"; ~/.tmux/plugins/tpm/bin/update_plugins all
+echo "== Paquetes (incluye az, gh, tmux)"; sudo apt-get update -qq && sudo apt-get upgrade -y
+echo "== MCP de Azure"
+cur="$(claude mcp get azure 2>/dev/null | grep -o '@azure/mcp@[0-9][0-9.]*' | cut -d@ -f3)"
+new="$(npm view @azure/mcp version 2>/dev/null)"
+if [ "$cur" = "$new" ]; then echo "al día ($cur)"; else echo "versión nueva $new (tienes ${cur:-?}): revisa su changelog y re-regístralo con esa versión"; fi
+echo "== Exclusiones del sandbox"; ws-sandbox-repos
+echo "== Estado";          ws-check

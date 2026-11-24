@@ -1,0 +1,358 @@
+#!/usr/bin/env python3
+"""ws-otel — colector LOCAL de OpenTelemetry para Claude Code (ADR-014). Nada sale de la máquina.
+
+Claude Code exporta métricas, eventos y trazas por OTLP (http/json). Este colector escucha en 127.0.0.1, aplana
+cada señal a una línea JSON y la guarda en ~/.local/share/ws-telemetria/otel/AAAA-MM-DD.jsonl (carpeta 0700,
+archivos 0600). ws-telemetria e ws-informe leen esos archivos.
+
+Qué agrega a lo que ya registran los hooks:
+  · llamadas a la API una por una: duración, tokens, costo, modelo, esfuerzo, origen (hilo principal o subagente)
+  · errores de la API con su código (429, 529…), intentos y reintentos agotados
+  · cada decisión de permiso y quién la tomó (regla, hook, tú)
+  · tiempo activo tuyo y de Claude, líneas, commits y PR contados por Claude Code
+  · duración de los hooks, compactaciones, subagentes terminados, conexiones MCP, skills activadas
+
+Qué se guarda: TODO lo que Claude Code mande (decisión del dueño, ADR-014: los datos no salen de esta máquina y
+sirven para analizar y estimar). Eso incluye el texto de prompts y respuestas, los parámetros y el contenido de las
+herramientas cuando esas opciones están encendidas en ~/.claude/settings.json. Lo único que se tapa son los secretos
+que se reconocen por su forma (tokens, llaves, contraseñas en clave=valor): no aportan al análisis y no deben quedar
+en claro en disco. Con WS_OTEL_CONTENIDO=0 el colector vuelve al modo sin contenido: descarta textos, parámetros e
+identidad y deja solo conteos, tiempos y nombres.
+
+Uso:
+  ws-otel servir            escucha en primer plano (Ctrl+C lo detiene)
+  ws-otel iniciar|detener   lo deja corriendo en segundo plano / lo para
+  ws-otel asegurar          lo inicia solo si no está corriendo (lo llama el vigía de tmux)
+  ws-otel estado            si corre, puerto y cuántas señales hay guardadas hoy
+  ws-otel resumen [--dias N]   conteo por tipo de señal y por evento
+Variables: WS_OTEL_PUERTO (14318), WS_OTEL_DIR (destino), WS_OTEL_RETENCION_DIAS (395), WS_OTEL_CONTENIDO (1; 0 = sin contenido).
+"""
+from __future__ import annotations
+
+import datetime as dt
+import gzip
+import json
+import os
+import re
+import signal
+import subprocess  # nosec B404 — solo para relanzarse a sí mismo en segundo plano
+import sys
+import time
+from collections import Counter
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+PUERTO = int(os.environ.get("WS_OTEL_PUERTO", "14318"))
+DIR = Path(os.environ.get("WS_OTEL_DIR") or Path(os.environ.get("WS_TELEMETRIA_DIR") or Path.home() / ".local/share/ws-telemetria") / "otel")
+RUN = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / f"ws-otel-{os.getuid()}"  # nosec B108 — carpeta propia 0700
+PID = RUN / "pid"
+RETENCION = int(os.environ.get("WS_OTEL_RETENCION_DIAS", "395"))
+MAX_CUERPO = 16 * 1024 * 1024
+
+TODO = os.environ.get("WS_OTEL_CONTENIDO", "1") != "0"
+# Secretos por su forma: se tapan siempre, también en modo «todo». (Los patrones se arman por partes para que los
+# escáneres de secretos del kit no confundan este archivo con una fuga.)
+SECRETOS = re.compile("|".join([
+    r"gh[pousr]_[A-Za-z0-9]{20,}", r"github_pat_[A-Za-z0-9_]{20,}", r"sk-ant-[A-Za-z0-9_-]{20,}", r"AKIA[0-9A-Z]{16}",
+    r"xox[baprs]-[A-Za-z0-9-]{10,}", r"AIza[0-9A-Za-z_-]{30,}", r"(?i:bearer)\s+[A-Za-z0-9._~+/=-]{20,}",
+    r"AccountKey=[A-Za-z0-9+/=]{20,}", r"[?&]sig=[A-Za-z0-9%]{20,}", r"\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\b",
+    r"-----BEGIN [A-Z ]*" + "PRIV" + r"ATE KEY-----[\s\S]*?-----END [A-Z ]*" + "PRIV" + r"ATE KEY-----",
+    r"((?i:pass(?:word|wd)?|pwd|secret|token|api[_-]?key|client[_-]?secret)\s*[=:]\s*)[^\s\"'&,;]{4,}"]))
+
+
+def tapar(v):
+    """Tapa los secretos reconocibles dentro de un texto (o de cada texto de una lista)."""
+    if isinstance(v, str):
+        return SECRETOS.sub(lambda m: (m.group(1) or "") + "[SECRETO]" if m.lastindex else "[SECRETO]", v)
+    if isinstance(v, list):
+        return [tapar(x) for x in v]
+    return v
+
+
+# Contenido que no se guarda en modo sin contenido (WS_OTEL_CONTENIDO=0).
+CONTENIDO = {"prompt", "prompt_text", "response", "body", "body_ref", "tool_input", "tool_parameters", "error",
+             "hook_definitions", "hook_matcher", "classifier_category", "category", "user_prompt", "system_prompt",
+             "managed_settings.settings", "workspace.host_paths"}
+# Identidad que no hace falta para medir.
+IDENTIDAD = {"user.email", "user.account_uuid", "user.account_id", "user.id", "organization.id", "host.name", "host.id"}
+# De los parámetros de una herramienta solo se conservan estos nombres.
+NOMBRES = ("mcp_server_name", "mcp_tool_name", "skill_name", "subagent_type")
+
+
+def valor(v: dict):
+    """Valor de un atributo OTLP (AnyValue) como tipo nativo."""
+    if not isinstance(v, dict):
+        return v
+    for k in ("stringValue", "boolValue"):
+        if k in v:
+            return v[k]
+    if "intValue" in v:
+        try:
+            return int(v["intValue"])
+        except (TypeError, ValueError):
+            return v["intValue"]
+    if "doubleValue" in v:
+        return v["doubleValue"]
+    if "arrayValue" in v:
+        return [valor(x) for x in v["arrayValue"].get("values", [])]
+    return None
+
+
+def atributos(lista) -> dict:
+    """Atributos OTLP → dict. En modo «todo» se guarda todo con los secretos tapados; en modo sin contenido se quitan
+    textos e identidad. De tool_parameters siempre se sacan aparte los nombres y el programa de Bash."""
+    out = {}
+    for a in lista or []:
+        k, v = a.get("key"), valor(a.get("value"))
+        if k is None:
+            continue
+        if TODO:
+            out[k] = tapar(v)
+        if k in IDENTIDAD and not TODO:
+            continue
+        if k == "tool_parameters" and isinstance(v, str):
+            try:
+                p = json.loads(v)
+            except ValueError:
+                p = {}
+            if isinstance(p, dict):
+                for n in NOMBRES:
+                    if isinstance(p.get(n), str):
+                        out[n] = p[n][:80]
+                cmd = p.get("bash_command") or p.get("command")
+                if isinstance(cmd, str) and cmd.strip():
+                    out["programa"] = cmd.strip().split()[0].split("/")[-1][:40]
+            continue
+        if TODO or k in CONTENIDO:
+            continue
+        if isinstance(v, str) and len(v) > 300:      # un valor largo es contenido, no una etiqueta
+            v = v[:300]
+        out[k] = v
+    return out
+
+
+def iso(nanos) -> str:
+    try:
+        return dt.datetime.fromtimestamp(int(nanos) / 1e9, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    except (TypeError, ValueError, OSError, OverflowError):
+        return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def aplanar(senal: str, cuerpo: dict) -> list[dict]:
+    """Un envío OTLP (http/json) → una fila por punto de métrica, evento o span."""
+    filas = []
+    if senal == "metrics":
+        for rm in cuerpo.get("resourceMetrics", []):
+            rec = atributos((rm.get("resource") or {}).get("attributes"))
+            for sm in rm.get("scopeMetrics", []):
+                for m in sm.get("metrics", []):
+                    datos = m.get("sum") or m.get("gauge") or m.get("histogram") or {}
+                    for p in datos.get("dataPoints", []):
+                        v = p.get("asDouble", p.get("asInt", p.get("sum")))
+                        try:
+                            v = float(v)
+                        except (TypeError, ValueError):
+                            continue
+                        filas.append({"ts": iso(p.get("timeUnixNano")), "senal": "metrica", "nombre": m.get("name"), "valor": v,
+                                      "unidad": m.get("unit") or None, **rec, **atributos(p.get("attributes"))})
+    elif senal == "logs":
+        for rl in cuerpo.get("resourceLogs", []):
+            rec = atributos((rl.get("resource") or {}).get("attributes"))
+            for sl in rl.get("scopeLogs", []):
+                for r in sl.get("logRecords", []):
+                    a = atributos(r.get("attributes"))
+                    nombre = a.pop("event.name", None) or valor(r.get("body")) or r.get("eventName") or "?"
+                    a.pop("event.timestamp", None)
+                    filas.append({"ts": iso(r.get("timeUnixNano") or r.get("observedTimeUnixNano")), "senal": "evento",
+                                  "nombre": str(nombre)[:80], **rec, **a})
+    elif senal == "traces":
+        for rs in cuerpo.get("resourceSpans", []):
+            rec = atributos((rs.get("resource") or {}).get("attributes"))
+            for ss in rs.get("scopeSpans", []):
+                for s in ss.get("spans", []):
+                    try:
+                        ms = round((int(s["endTimeUnixNano"]) - int(s["startTimeUnixNano"])) / 1e6, 1)
+                    except (KeyError, TypeError, ValueError):
+                        ms = None
+                    filas.append({"ts": iso(s.get("startTimeUnixNano")), "senal": "span", "nombre": s.get("name"), "dur_ms": ms,
+                                  "traza": s.get("traceId"), "span": s.get("spanId"), "padre": s.get("parentSpanId") or None,
+                                  "error": (s.get("status") or {}).get("code") in (2, "STATUS_CODE_ERROR"),
+                                  **rec, **atributos(s.get("attributes"))})
+    return [{k: v for k, v in f.items() if v is not None} for f in filas]
+
+
+def guardar(filas: list[dict]) -> None:
+    if not filas:
+        return
+    DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(DIR, 0o700)
+    por_dia: dict[str, list[str]] = {}
+    for f in filas:
+        # el día del archivo es LOCAL, como el resto de la telemetría
+        try:
+            d = dt.datetime.strptime(f["ts"][:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=dt.timezone.utc).astimezone().date().isoformat()
+        except ValueError:
+            d = dt.date.today().isoformat()
+        por_dia.setdefault(d, []).append(json.dumps(f, ensure_ascii=False, separators=(",", ":")))
+    for d, lineas in por_dia.items():
+        ruta = DIR / f"{d}.jsonl"
+        fd = os.open(ruta, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write("\n".join(lineas) + "\n")
+
+
+def limpiar() -> None:
+    """Comprime los días de más de 35 y borra los de más de RETENCION."""
+    hoy = dt.date.today()
+    for f in DIR.glob("*.jsonl*"):
+        try:
+            edad = (hoy - dt.date.fromisoformat(f.name[:10])).days
+        except ValueError:
+            continue
+        if edad > RETENCION:
+            f.unlink(missing_ok=True)
+        elif edad > 35 and f.suffix == ".jsonl":
+            with open(f, "rb") as a, gzip.open(str(f) + ".gz", "wb") as b:
+                b.write(a.read())
+            os.chmod(str(f) + ".gz", 0o600)
+            f.unlink()
+
+
+class Receptor(BaseHTTPRequestHandler):
+    server_version = "ws-otel"
+
+    def log_message(self, *a):   # silencioso: no llena la terminal ni guarda rutas
+        pass
+
+    def _resp(self, codigo: int, cuerpo: bytes = b"{}") -> None:
+        self.send_response(codigo)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(cuerpo)))
+        self.end_headers()
+        self.wfile.write(cuerpo)
+
+    def do_GET(self):   # noqa: N802
+        self._resp(200, b'{"servicio":"ws-otel"}') if self.path == "/" else self._resp(404)
+
+    def do_POST(self):   # noqa: N802
+        senal = self.path.rstrip("/").rsplit("/", 1)[-1]
+        if not self.path.startswith("/v1/") or senal not in ("metrics", "logs", "traces"):
+            return self._resp(404)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = 0
+        if n <= 0 or n > MAX_CUERPO:
+            return self._resp(413 if n > MAX_CUERPO else 400)
+        crudo = self.rfile.read(n)
+        if "json" not in (self.headers.get("Content-Type") or "").lower():
+            # protobuf: se acepta para que Claude no reintente, pero no se guarda (configura http/json)
+            return self._resp(415, b'{"error":"usa OTEL_EXPORTER_OTLP_PROTOCOL=http/json"}')
+        try:
+            if (self.headers.get("Content-Encoding") or "").lower() == "gzip":
+                crudo = gzip.decompress(crudo)
+            guardar(aplanar(senal, json.loads(crudo)))
+        except (ValueError, OSError, EOFError):
+            return self._resp(400)
+        self._resp(200)
+
+
+def corre() -> int | None:
+    """PID del colector en segundo plano, si sigue vivo."""
+    try:
+        pid = int(PID.read_text().strip())
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError):
+        return None
+
+
+def servir() -> int:
+    RUN.mkdir(parents=True, exist_ok=True)
+    os.chmod(RUN, 0o700)
+    try:
+        srv = ThreadingHTTPServer(("127.0.0.1", PUERTO), Receptor)   # solo esta máquina
+    except OSError as e:
+        print(f"ws-otel: no pude escuchar en 127.0.0.1:{PUERTO} ({e})", file=sys.stderr)
+        return 1
+    PID.write_text(str(os.getpid()))
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    try:
+        limpiar()
+    except OSError:
+        pass
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.server_close()
+        if corre() == os.getpid():
+            PID.unlink(missing_ok=True)
+    return 0
+
+
+def iniciar() -> int:
+    if corre():
+        return 0
+    RUN.mkdir(parents=True, exist_ok=True)
+    os.chmod(RUN, 0o700)
+    with open(os.devnull, "rb") as nulo, open(RUN / "salida.log", "ab") as log:
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "servir"], stdin=nulo, stdout=log, stderr=log,  # nosec B603
+                         start_new_session=True, close_fds=True)
+    for _ in range(30):
+        if corre():
+            return 0
+        time.sleep(0.1)
+    print("ws-otel: no arrancó (revisa", RUN / "salida.log", ")", file=sys.stderr)
+    return 1
+
+
+def filas(dias: int):
+    desde = (dt.date.today() - dt.timedelta(days=dias - 1)).isoformat()
+    for f in sorted(DIR.glob("*.jsonl*")):
+        if f.name[:10] < desde:
+            continue
+        abrir = gzip.open if f.suffix == ".gz" else open
+        with abrir(f, "rt", encoding="utf-8", errors="replace") as fh:
+            for linea in fh:
+                try:
+                    yield json.loads(linea)
+                except ValueError:
+                    continue
+
+
+def main() -> int:
+    a = sys.argv[1:]
+    accion = a[0] if a else ""
+    if accion == "servir":
+        return servir()
+    if accion in ("iniciar", "asegurar"):
+        return iniciar()
+    if accion == "detener":
+        pid = corre()
+        if pid:
+            os.kill(pid, signal.SIGTERM)
+        print("ws-otel detenido" if pid else "ws-otel no estaba corriendo")
+        return 0
+    if accion == "estado":
+        pid = corre()
+        hoy = DIR / f"{dt.date.today().isoformat()}.jsonl"
+        n = sum(1 for _ in open(hoy, "rb")) if hoy.exists() else 0
+        print(f"{'corriendo (pid ' + str(pid) + ')' if pid else 'detenido'} · 127.0.0.1:{PUERTO} · hoy: {n:,} señales · {DIR}")
+        return 0 if pid else 1
+    if accion == "resumen":
+        dias = int(a[a.index("--dias") + 1]) if "--dias" in a else 7
+        c = Counter((f.get("senal"), f.get("nombre")) for f in filas(dias))
+        if not c:
+            print(f"Sin señales en {dias} días. ¿Claude arrancó con la telemetría encendida? (ws-otel estado)")
+            return 0
+        for (s, n), v in sorted(c.items(), key=lambda x: (x[0][0] or "", -x[1])):
+            print(f"{v:8,}  {s:8} {n}")
+        return 0
+    print(__doc__.split("Uso:")[1].strip() if "Uso:" in (__doc__ or "") else "ws-otel servir|iniciar|detener|asegurar|estado|resumen")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

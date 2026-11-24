@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+#
+# ws-actualizar — actualiza la estación desde el kit en GitHub (andreshma/claude-workstation), con vuelta atrás.
+#
+# Uso:
+#   ws-actualizar             revisa y, si hay versión nueva, pregunta y la aplica
+#   ws-actualizar --revisar   solo dice si hay versión nueva (exit 10 = hay; 0 = al día). Lo usa ws-telegram cada hora.
+#   ws-actualizar --aplicar   aplica sin preguntar (para usar desde otro script)
+#
+# Aplicar = git pull --ff-only → install.sh (respalda cada archivo que cambia) → ws-test. Si ws-test falla,
+# vuelve al commit anterior y reinstala; avisa por Telegram del resultado si está configurado.
+# No toca nada si tienes cambios locales sin commit o commits sin subir (en tu máquina principal, el kit
+# suele ir adelante: ahí no hay nada que bajar).
+set -uo pipefail
+export PATH="$HOME/.local/bin:$PATH"
+KIT="${WS_KIT:-$HOME/code/claude-workstation}"
+modo="${1:-}"
+die() { echo "✖ $*" >&2; exit 1; }
+avisar_tg() { command -v ws-telegram >/dev/null && ws-telegram activo 2>/dev/null && ws-telegram notificar "$1" >/dev/null 2>&1 || true; }
+
+[[ -d "$KIT/.git" ]] || die "no encuentro el kit en $KIT"
+cd "$KIT" || exit 1
+git fetch -q origin 2>/dev/null || die "no pude consultar GitHub (git fetch)"
+local_="$(git rev-parse HEAD)"; remoto="$(git rev-parse '@{u}' 2>/dev/null)" || die "la rama no sigue a origin"
+atras="$(git rev-list --count 'HEAD..@{u}')"; adelante="$(git rev-list --count '@{u}..HEAD')"
+ver_remota="$(git describe --tags --abbrev=0 '@{u}' 2>/dev/null || echo "${remoto:0:7}")"
+ver_local="$(git describe --tags --abbrev=0 HEAD 2>/dev/null || echo "${local_:0:7}")"
+
+if (( atras == 0 )); then
+  [[ "$modo" == --revisar ]] || echo "✔ Al día ($ver_local)$( (( adelante )) && echo "; tienes $adelante commits sin subir")"
+  exit 0
+fi
+novedades="$(git log --format='• %s' 'HEAD..@{u}' | head -12)"
+if [[ "$modo" == --revisar ]]; then
+  printf 'Versión nueva del kit: %s (tienes %s, %s commits atrás)\n%s\n' "$ver_remota" "$ver_local" "$atras" "$novedades"
+  exit 10
+fi
+
+echo "Versión nueva: $ver_remota (tienes $ver_local, $atras commits atrás)"; echo "$novedades"
+[[ -z "$(git status --porcelain)" ]] || die "hay cambios sin commit en el kit; súbelos o descártalos antes de actualizar"
+(( adelante == 0 )) || die "tienes $adelante commits sin subir; haz git push antes (o git pull --rebase a mano)"
+if [[ "$modo" != --aplicar ]]; then
+  read -rp "¿Actualizar ahora? [s/N] " r; [[ "$r" =~ ^[sS]$ ]] || { echo "Nada cambió."; exit 0; }
+fi
+
+echo "==> Bajando $ver_remota"
+git pull -q --ff-only || die "git pull falló; nada cambió"
+echo "==> Instalando (cada archivo que cambia queda respaldado como .bak.<fecha>)"
+if ! bash install.sh; then
+  echo "✖ install.sh falló: vuelvo a $ver_local"; git reset -q --hard "$local_"; bash install.sh >/dev/null 2>&1
+  avisar_tg "🔴 ws-actualizar: install.sh falló en $ver_remota; se volvió a $ver_local."; exit 1
+fi
+echo "==> Probando (ws-test)"
+if ! ws-test; then
+  echo "✖ Las pruebas fallaron: vuelvo a $ver_local"; git reset -q --hard "$local_"; bash install.sh >/dev/null 2>&1
+  avisar_tg "🔴 ws-actualizar: las pruebas fallaron en $ver_remota; se volvió a $ver_local. Revisa en la PC: ws-test"
+  exit 1
+fi
+tmux source-file "$HOME/.tmux.conf" 2>/dev/null || true
+echo "✔ Estación en $ver_remota. Las sesiones de Claude ya abiertas toman hooks y settings al reiniciarse."
+avisar_tg "✅ Estación actualizada a $ver_remota."
