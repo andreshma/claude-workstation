@@ -49,7 +49,7 @@ are written as you type them. The names used before 3.0 are listed in
 | Budgets and prices | `~/.config/ws-telemetry/budgets.conf`, `~/.config/ws-telemetry/prices.json` |
 | Backups on the Windows side | `%UserProfile%\.tmux-resurrect-backup`, `%UserProfile%\.claude-wsl-backup`, `%UserProfile%\WSL-Backups\lite`, `%UserProfile%\WSL-Backups` |
 | Secrets | Windows Credential Manager, entries named `ws/<name>` (`ws-secret`) |
-| Backups of files changed by `install.sh` | Next to each file, as `*.bak.<date>` |
+| Backups of files changed by `install.sh` | `~/.local/share/ws-kit/backup.<date>/<path under $HOME>` (newest 10 kept); copies left next to the files by versions before 3.0: `~/.local/share/ws-kit/backup.legacy/` after `bash install.sh --prune-backups` |
 
 ## 2. Is it healthy?
 
@@ -198,7 +198,12 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
   it to `secrets-allow.txt` with review.
 - **The tag ended up on an earlier commit:** if it is not on GitHub yet, `git tag -f -a vX.Y.Z -m "…"`; if it was
   already pushed, leave it and the fix goes into the next version.
-- **Something stopped working after a patch or `install.sh`:** every changed file has its `*.bak.<date>`.
+- **Something stopped working after `install.sh`:** every file it replaced is in
+  `~/.local/share/ws-kit/backup.<date>/`, under the same path; copy it back.
+- **The running tmux behaves differently from the tests** (a menu says "command not found", tabs are not saved or did
+  not come back): `ws-verify --live` checks the real server (its `PATH`, the save, the tabs in it, leftover finder
+  sessions, scripts the bar, keys and hooks call, stale sockets) and prints the fix under each failure.
+- **Dead sockets pile up in `/tmp/tmux-<uid>/`:** `ws-verify --clean-sockets` deletes the ones no server answers on.
 
 ## 9. WSL and Windows
 
@@ -267,7 +272,8 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
 
 - No new traces: `jq '.hooks.PostToolUse' ~/.claude/settings.json | grep ws-traces` and check that
   `~/.claude/hooks/ws-traces.sh` is executable.
-- Turn off: remove the `ws-traces.sh` entries from `settings.json` (`.bak.*` backup from patch 51).
+- Turn off: remove the `ws-traces.sh` entries from `settings.json` (a copy from before patch 51 is among the
+  `*.bak.*` files, or in `~/.local/share/ws-kit/backup.legacy/` after `install.sh --prune-backups`).
 - Telegram: `weekly_day`, `weekly_hour`, `budgets=on|off` in `~/.config/ws-telegram/settings`.
 
 ## 12. Model routing
@@ -359,13 +365,15 @@ An upgrade from 2.x to 3.0 has extra steps: see [Upgrading from 2.x to 3.0](#upg
 
 1. Run `ws-update` for Claude Code, the tmux plugins and the system packages.
 2. Run `ws-kit-update` for the workstation itself. It pulls with `--ff-only`, runs `install.sh` (every changed file is
-   backed up as `*.bak.<date>`) and then `ws-test`. If the tests fail it goes back to the previous commit and
-   reinstalls. It does nothing when the kit folder has uncommitted changes or unpushed commits.
+   copied to `~/.local/share/ws-kit/backup.<date>/` first) and then `ws-test`. If the tests fail it goes back to the
+   previous commit and reinstalls. It does nothing when the kit folder has uncommitted changes or unpushed commits.
 3. Reload tmux (`Ctrl+b r`) and restart Claude in the idle tabs (`tmux-claude-restart --all`) so they pick up the new
    settings, hooks and telemetry.
 4. If you maintain the kit: `bash export.sh`, review the diff, `ws-verify`, commit.
 
-If something stopped working after the update, every changed file has its `*.bak.<date>` next to it.
+If something stopped working after the update, every file the installer replaced is in
+`~/.local/share/ws-kit/backup.<date>/` under its path in your home (the installer prints the folder). The rollback of
+`ws-kit-update` itself does not use these copies: it goes back in the kit's git history and reinstalls.
 
 ### Upgrading from 2.x to 3.0 (English names)
 
@@ -379,16 +387,16 @@ runs it) migrates the installation before copying the new files. The tables of o
    `moved` (your data, moved to the new name), `shim` (an old command or hook set aside and replaced by a wrapper) or
    `dropped` (an old kit file set aside). A warning `both ~/<old> and ~/<new> exist` means neither was touched: merge
    them by hand and run the preview again.
-3. Install: `bash install.sh`. Note the date in the line `backup: *.bak.<date>`; the files set aside go to
-   `~/.local/share/ws-kit/pre-english.<date>/`.
+3. Install: `bash install.sh`. Note the folder in the line `Files (backup: ~/.local/share/ws-kit/backup.<date>)`;
+   the files set aside go to `~/.local/share/ws-kit/pre-english.<date>/`.
 4. Restart tmux: `tmux kill-server`, then `dev`. The tabs come back. A server that keeps running holds the old option
    names and values, and the state labels, protection icons and menus do not match the new scripts.
 5. Look for `changed Windows handler …` in the output: the migration patches the registered `ws-claude://` handler
-   in place (backup `<file>.bak.<date>`) so that it accepts `ws-claude://focus/N` and calls `tmux-goto`. If the
-   installer warns that it could not update it, make those two changes by hand, following
-   `windows/ws-claude-focus.ps1`.
-6. Check: `ws-check && ws-health`, `ws-test`, `ws-lang` (an installation that came from 2.x is set to `es`),
-   `ws-telegram status` (the old service was stopped and tmux starts the new one within a minute) and
+   in place (backup `<file>.bak.<date>` next to it, on the Windows side) so that it accepts `ws-claude://focus/N`
+   and calls `tmux-goto`. If the installer warns that it could not update it, make those two changes by hand,
+   following `windows/ws-claude-focus.ps1`.
+6. Check: `ws-check && ws-health`, `ws-verify --live`, `ws-test`, `ws-lang` (an installation that came from 2.x is
+   set to `es`), `ws-telegram status` (the old service was stopped and tmux starts the new one within a minute) and
    `ws-telemetry summary` (the history from before the upgrade must still be there).
 7. Replace the old names in your own scripts and configuration. When nothing calls them:
    `bash install.sh --remove-shims`.
@@ -424,13 +432,15 @@ The migration deletes nothing, so it can be undone by hand. Run this in a normal
    mv ~/.local/share/ws-telemetry ~/.local/share/ws-telemetria
    ```
 
-5. Restore the files the installer replaced, from the backup with the date of the upgrade:
+5. Restore the files the installer replaced, from the backup folder with the date of the upgrade (they keep their
+   path under `$HOME`):
 
    ```bash
-   find ~ -maxdepth 4 -name '*.bak.<date>'     # lists them; copy each one over its original
-   cp -p ~/.bashrc.bak.<date> ~/.bashrc
-   cp -p ~/.claude/settings.json.bak.<date> ~/.claude/settings.json
+   (cd ~/.local/share/ws-kit/backup.<date> && find . -type f)     # lists them
+   cp -a ~/.local/share/ws-kit/backup.<date>/. ~/
    ```
+
+   The Windows notification handler is the exception: its copy is next to it, as `<file>.bak.<date>`.
 
 6. Run `bash install.sh` from the 2.x kit, start tmux and run `ws-test`.
 

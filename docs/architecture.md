@@ -154,7 +154,7 @@ that directory. Both scripts read it through `lib.sh`.
 |---|---|---|
 | 1 | Deletes `files/` and copies each manifest path from `$HOME` to `files/home/`, keeping file modes and skipping `*.bak.*`. | Copies `files/` to a temporary directory. |
 | 2 | Writes the user-level MCP servers from `~/.claude.json` to `files/mcp-servers.json` and copies the Windows `.wslconfig` for reference. | Replaces the placeholders with the target machine's values (`render_templates`). |
-| 3 | Replaces personal paths and user names with `@WINHOME@`, `@WIN_USER@`, `@HOME@`, `@LINUX_USER@` (`templatize`). | For each file prints `new`, `same` (identical, untouched) or `changed` (the existing file is copied to `<file>.bak.<timestamp>` first). |
+| 3 | Replaces personal paths and user names with `@WINHOME@`, `@WIN_USER@`, `@HOME@`, `@LINUX_USER@` (`templatize`). | For each file prints `new`, `same` (identical, untouched) or `changed` (the existing file is copied to `~/.local/share/ws-kit/backup.<timestamp>/<path>` first; the newest 10 folders are kept). |
 | 4 | Scans the result for secret patterns; on a hit it deletes `files/` and exits. `secrets-allow.txt` lists files that contain the detection patterns themselves (for example `guard.sh`). | Appends the kit's lines to `~/.bashrc` if they are missing, installs TPM and the tmux plugins, and registers MCP servers whose executable exists. |
 
 `install.sh` deletes none of your files, does not apply `.wslconfig`, and sets git's global hooks path to the kit hooks
@@ -254,10 +254,13 @@ Protection levels are applied by restarting Claude with different arguments, not
 
 | Level | Command `tmux-level` / `tmux-solo` types into the pane |
 |---|---|
-| `normal` | `claude -c` |
-| `full` | `claude -c --setting-sources project,local --settings ~/.config/claude-levels/full-<hash>.json` (one profile per project folder; `full.json` when no folder is given) |
-| `bare` | `claude -c --setting-sources project,local --settings ~/.config/claude-levels/bare.json` |
-| solo mode | `claude -c --permission-mode auto --settings ~/.config/claude-solo/settings.json` |
+| `normal` | `claude-resume` |
+| `full` | `claude-resume --setting-sources project,local --settings ~/.config/claude-levels/full-<hash>.json` (one profile per project folder; `full.json` when no folder is given) |
+| `bare` | `claude-resume --setting-sources project,local --settings ~/.config/claude-levels/bare.json` |
+| solo mode | `claude-resume --permission-mode auto --settings ~/.config/claude-solo/settings.json` |
+
+`claude-resume` runs `claude --continue` with those flags when the folder has a conversation and plain `claude` with
+the same flags when it has none (a tab where Claude never received a message).
 
 The `full` and `bare` profiles are generated from the current `~/.claude/settings.json` on every change (mode
 0600). `full` is the whole file with the sandbox forced on, unsandboxed commands disallowed and the excluded
@@ -340,7 +343,7 @@ Nothing is sent off the machine: the exporter endpoints in `~/.claude/settings.j
 history from `~/.claude`, and copies only the onboarding state, trusted folders and MCP servers into the personal
 `.claude.json`. Credentials and account identity are never copied. Because conversations are shared, switching a tab
 (`claude-account tab`) exits Claude, sets or unsets `CLAUDE_CONFIG_DIR` in the pane's shell, and resumes the same
-conversation with `claude -c`. The switch refuses if both accounts are logged in to the same organization.
+conversation with `claude-resume` (a new one when the tab never had any). The switch refuses if both accounts are logged in to the same organization.
 
 Which account a new shell uses is decided by `accounts.sh`, sourced from `~/.bashrc`:
 

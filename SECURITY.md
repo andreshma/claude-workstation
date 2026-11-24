@@ -7,7 +7,8 @@ This document explains which versions are supported, how to report a vulnerabili
 
 | Version | Security fixes |
 |---|---|
-| 2.x | Yes |
+| 3.x | Yes |
+| 2.x | Security fixes only, until the wrappers for the old command names are removed (the next major version) |
 | < 2.0 | No; upgrade with `ws-kit-update` |
 
 ## Reporting a vulnerability

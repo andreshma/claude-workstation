@@ -79,8 +79,11 @@ On the workstation itself, two things are always up to date because they read wh
 
 4. On Windows, run `windows\install.ps1` from PowerShell to add the terminal profile and shortcuts.
 
-`install.sh` backs up every file it changes as `*.bak.<date>`. It also points git at the kit hooks (commit gate)
-unless you already use another hooks path.
+`install.sh` copies every file it changes to `~/.local/share/ws-kit/backup.<date>/`, under the same path it has in
+your home, before replacing it; the folder is named in the line `Files (backup: …)` and the newest 10 are kept.
+Versions before 3.0 left `<file>.bak.<date>` next to each file instead: `bash install.sh --prune-backups` moves those
+into `~/.local/share/ws-kit/backup.legacy/` (`--dry-run` lists them first). The installer also points git at the kit
+hooks (commit gate) unless you already use another hooks path.
 
 `install.sh` options:
 
@@ -135,7 +138,7 @@ when a tab or pane is created, closed or renamed, and each restored tab resumes 
 | Open with a pane layout (Claude + tests + git) | Menu → "Open a folder with a template (Claude + tests + git)". Templates: `node-api`, `dotnet`, `python`, `terraform`, `qa` |
 | Open a favorite folder | `Ctrl+b F` (the finder on its favorites view). Enter goes to the tab or opens the folder with Claude in its group; `Ctrl+X` removes it from the list |
 | Resume a recent conversation of any project | `Ctrl+b j` (the finder on its recent view). Enter goes to its tab, or opens one in its group and resumes that conversation |
-| Bring recent conversations that have no tab | Menu → "Tabs and session" → "Bring recent conversations into tmux" (`tmux-bring`) |
+| Bring many recent conversations that have no tab, in one go | Menu → "Tabs and session" → "Bring many conversations at once…" (`tmux-bring`) |
 
 The picker lists the folders under the roots in `~/.config/tmux-claude/roots.txt`, one per line as
 `label|depth|path`. The label is also the **group**: each group is its own tmux session, and a new tab is created in
@@ -143,8 +146,9 @@ the session of its group. `Alt+↑/↓` switches group and `Ctrl+b S` lists all 
 in one session, set `groups=off` in `~/.config/tmux-claude/settings`.
 
 `roots.txt` comes from the kit and is replaced on every install. Put your own roots in
-`~/.config/ws-local/roots.txt`, in the same format; the kit never touches that file. A folder outside every root
-opens in the group `other`.
+`~/.config/ws-local/roots.txt`, in the same format; the kit never touches that file, and `ws-personal` versions it
+in your private repository by default (see [Backups and restore](#16-backups-and-restore)). A folder outside every
+root opens in the group `other`.
 
 A tab opens Claude with `claude --continue` when the folder already has conversations, and plain `claude` otherwise.
 
@@ -278,14 +282,16 @@ it. The title shows the group, the tab, Claude's state and the context percentag
 | Key | Label |
 |---|---|
 | `N` | Go by number… |
-| `S` | Groups and tabs |
 | `i` | Summary: what, where and where it left off |
 | `*` | Add to favorites ★ / Remove from favorites ☆ |
 | `E` | Tab label |
 | `r`, `x` | Rename tab; Close tab |
 | `s`, `R` | Save session now; Restore tabs from a save… (`tmux-recover`: lists the saves, the latest first) |
-| `t` | Bring recent conversations into tmux |
+| `t` | Bring many conversations at once… |
 | `G` | Save this tab as a template |
+
+The tree of groups with their tabs is not in this menu: the finder (`Ctrl+b f`) lists every tab, and `Ctrl+b S`
+opens the tree.
 
 ### "Panes, copy and notifications" (`l`)
 
@@ -315,16 +321,22 @@ it. The title shows the group, the tab, Claude's state and the context percentag
 
 | Key | Label | Command |
 |---|---|---|
-| `i` | Full report with Claude findings (usage, agents, MemPalace, recall) | `ws-report --ai --ai-memory --open` |
-| `j` | Quick report, without Claude | `ws-report --open` |
+| `i` | Reports › | submenu, below |
 | `a` | Learn from me: facts for MemPalace (you choose) | `ws-learn facts` |
 | `k` | Create "/" commands from what you repeat | `ws-learn commands` |
 | `c` | Usage dashboard (browser) | `ws-telemetry open` |
 | `r` | Tools: timings, errors and cost (7 days) | `ws-telemetry traces` |
 | `t` | Estimate per ticket (90 days) | `ws-telemetry estimate` |
-| `s` | Report for last week | `ws-telemetry week` |
 | `p` | Budgets for the month | `ws-telemetry budgets` |
 | `x` | Export CSV for Excel or Power BI | `ws-telemetry export` |
+
+"Reports ›" (`i`) opens:
+
+| Key | Label | Command |
+|---|---|---|
+| `i` | Full report with Claude findings (usage, agents, MemPalace, recall) | `ws-report --ai --ai-memory --open` |
+| `j` | Quick report, without Claude | `ws-report --open` |
+| `s` | Report for last week | `ws-telemetry week` |
 
 ### "Workstation" (`e`)
 
@@ -598,7 +610,7 @@ ws-telemetry week                          # last week against the one before, M
 ws-telemetry budgets                       # month to date against ~/.config/ws-telemetry/budgets.conf
 ws-telemetry traces --days 7               # tools: uses, time, errors, approximate cost
 ws-telemetry export                        # CSV of turns, traces and estimation
-ws-telemetry sql                           # DuckDB with the views `turns` and `traces`
+ws-telemetry sql                           # DuckDB with the views `turns` and `traces` (English column names)
 ```
 
 The ticket comes from the branch name (`feature/ABC-123-…`).
@@ -747,10 +759,10 @@ To add a word:
    it after a space.
 3. Save. The next prompt or answer uses it.
 
-The packs are kit files: `install.sh` replaces an edited pack with the kit's version and keeps yours next to it as
-`<file>.bak.<date>`. To keep an addition, make it in the kit (`files/home/.local/lib/ws-lang/`) and send it as a pull
-request, or apply it again after an update. After a change to the routing rules, run `cr --test`: with `ws-lang es` it
-runs the English and the Spanish task sets, and each must stay at 90 % or more.
+The packs are kit files: `install.sh` replaces an edited pack with the kit's version and keeps yours under
+`~/.local/share/ws-kit/backup.<date>/`. To keep an addition, make it in the kit (`files/home/.local/lib/ws-lang/`)
+and send it as a pull request, or apply it again after an update. After a change to the routing rules, run
+`cr --test`: with `ws-lang es` it runs the English and the Spanish task sets, and each must stay at 90 % or more.
 
 ## 16. Backups and restore
 
@@ -763,6 +775,12 @@ Nothing here needs to be run by hand in normal use; these are the commands for c
 | Light backup of Claude data, tmux saves and an inventory for reinstalling; never credentials | `%UserProfile%\WSL-Backups\lite` (14 kept) | `ws-backup-lite` |
 | Encrypted copy of the light backup | OneDrive | `ws-backup-cloud setup` once, then automatic |
 | Personal configuration | Your private repository | `ws-personal sync` |
+
+`ws-personal` versions the paths listed in the `include.txt` of that repository. The default list has
+`~/.config/ws-local/` (status bar segments and your own folder roots, `ws-local/roots.txt`, which is also listed by
+name), your budgets, the routing and Telegram settings, your templates, the kit's `roots.txt` and `~/.claude/CLAUDE.md`;
+`ws-personal add <path>` adds one. `ws-personal restore` copies what it replaces to
+`~/.local/share/ws-kit/backup.<date>/` first.
 
 ```bash
 ws-restore-lite                 # tests the latest backup in a temporary folder; does not touch $HOME
@@ -784,9 +802,9 @@ ws-kit-update        # the workstation itself, from the kit's repository
 ws-kit-update --check   # only says whether there is a new version
 ```
 
-`ws-kit-update` pulls with `--ff-only`, runs `install.sh` (every changed file is backed up as `*.bak.<date>`) and then
-`ws-test`. If the tests fail it goes back to the previous commit and reinstalls. It does nothing when the kit folder
-has uncommitted changes or unpushed commits.
+`ws-kit-update` pulls with `--ff-only`, runs `install.sh` (every changed file is copied to
+`~/.local/share/ws-kit/backup.<date>/` first) and then `ws-test`. If the tests fail it goes back to the previous commit
+and reinstalls. It does nothing when the kit folder has uncommitted changes or unpushed commits.
 
 An update from 2.x to 3.0 also renames commands, folders and settings: follow
 [Upgrading from 2.x names](#18-upgrading-from-2x-names), which ends with a restart of tmux.
@@ -825,10 +843,10 @@ The installer reads `renames.tsv` and treats each old name in one of three ways:
 `pre-english.<date>/.local/bin/tmux-nivel`.
 
 The installer also changes the line of `~/.bashrc` that loads `cuentas.sh` so that it loads `accounts.sh` (backup:
-`~/.bashrc.bak.<date>`), sets aside the generated profiles of `~/.config/claude-niveles`, stops the Telegram service
-and the OpenTelemetry collector of the old version (tmux starts the new ones within a minute), patches the Windows
+`~/.local/share/ws-kit/backup.<date>/.bashrc`), sets aside the generated profiles of `~/.config/claude-niveles`,
+stops the Telegram service and the OpenTelemetry collector of the old version (tmux starts the new ones within a minute), patches the Windows
 notification handler registered for `ws-claude://` so that it accepts `ws-claude://focus/N` and calls `tmux-goto`
-(backup: `<file>.bak.<date>`), and writes `es` to `~/.config/tmux-claude/lang` so that
+(backup: `<file>.bak.<date>` next to it, on the Windows side), and writes `es` to `~/.config/tmux-claude/lang` so that
 prompts typed in Spanish stay recognized (see [Language](#15-language)).
 
 ### Steps
@@ -876,7 +894,7 @@ These live outside what the installer can move, or are values you typed, so the 
 | OneDrive folder of the cloud backup | `Respaldos\estacion-wsl` | `Backups\workstation-wsl` | The old folder stays in use while it exists and the new one does not |
 | Personal repository | `~/code/estacion-personal`, `incluir.txt` | `~/code/workstation-personal`, `include.txt` | The old directory and file are used when only they exist; old paths listed in the file are translated |
 | Light backup archives | `inventario/` | `inventory/` | A restore reads either |
-| Telemetry history (traces, routing, Telegram, OpenTelemetry rows) | Spanish field names and values | English | Old rows are translated when read; the files are never rewritten. `ws-telemetry sql` shows old days with their old column names |
+| Telemetry history (traces, routing, Telegram, OpenTelemetry rows) | Spanish field names and values | English | Old rows are translated when read; the files are never rewritten. `ws-telemetry sql` folds the old column names and values into the English ones in its `traces` view |
 | Keys in files you edit | `tema=`, `protector=`, `escena=`, `minutos=`, `grupos=`, `bajar_max_ctx=`, `destino=`, the Telegram settings keys, the template keywords `principal`, `derecha`, `abajo`, `ventana`, `acomodo` | `theme=`, `saver=`, `scene=`, `minutes=`, `groups=`, `downgrade_max_ctx=`, `dest=`, English keys, `main`, `right`, `below`, `window`, `layout` | Both are read; the English one is written |
 | Typed values | `completo`, `puro`; the Spanish scene names; `ws-cache --tope`; `ws-claude://foco/N`; `WS_OTEL_CONTENIDO`, `WS_OTEL_PUERTO`, `WS_OTEL_RETENCION_DIAS` | `full`, `bare`; English scene names; `--timeout`; `ws-claude://focus/N`; `WS_OTEL_CONTENT`, `WS_OTEL_PORT`, `WS_OTEL_RETENTION_DAYS` | Both are accepted |
 | Account name on disk | `trabajo` | `work` | Anything that is not `personal` is the work account |
@@ -1045,7 +1063,8 @@ The other `WS_*` variables follow the same pattern: the Spanish word became its 
 |---|---|
 | Tabs are missing after a restart | Menu → "Tabs and session" → "Restore tabs from a save…" (`tmux-recover`) |
 | Claude does not resume the conversation | In the tab: `claude -c` or `claude -r` |
-| Something broke after `install.sh` | Restore the file's `*.bak.<date>` |
+| Something broke after `install.sh` | Copy the file back from `~/.local/share/ws-kit/backup.<date>/` (the date is in the installer's `Files (backup: …)` line) |
+| Menus or hooks say "command not found", tabs are not saved or did not come back | `ws-verify --live` checks the running tmux server and prints the fix for each failure |
 | A command prints "was renamed to …" or is not found after upgrading to 3.0 | Use the new name and the new subcommand or option: [Upgrading from 2.x names](#18-upgrading-from-2x-names) |
 | Prompts typed in Spanish are no longer routed or detected | `ws-lang es` ([Language](#15-language)) |
 | `export.sh` refuses because of "possible secrets" | Move the secret to a vault; a detection pattern goes in `secrets-allow.txt` after review |

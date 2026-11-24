@@ -6,8 +6,10 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-The next version is **3.0.0**: this is a breaking release. Commands, options, variables, folders and stored values
-change name; see [Upgrading from 2.x names](docs/USAGE.md#18-upgrading-from-2x-names).
+## [3.0.0] - 2026-11-24
+
+This is a breaking release. Commands, options, variables, folders and stored values change name; see
+[Upgrading from 2.x names](docs/USAGE.md#18-upgrading-from-2x-names).
 
 ### Added
 
@@ -42,6 +44,16 @@ change name; see [Upgrading from 2.x names](docs/USAGE.md#18-upgrading-from-2x-n
   names, and old kit files are set aside in `~/.local/share/ws-kit/pre-english.<date>/`. `install.sh --dry-run`
   previews it; a migrated installation is set to `ws-lang es`.
 - `install.sh --remove-shims` deletes the wrappers left under the old command names.
+- **`ws-verify` checks the running tmux server**, not only isolated ones (`ws-verify --live` runs these checks
+  alone): `~/.local/bin` is in the server's `PATH`, the save was confirmed in the last 5 minutes, the save has the
+  open tabs, no `find-peek-*` session was left without a client, every script the status bar, the key bindings and
+  the hooks call is installed, and no stale tmux sockets remain. Each failure prints its remedy.
+- `ws-verify --clean-sockets` deletes the tmux socket files no server answers on (test servers, old popups); it
+  never touches `default` or a socket with a live server.
+- `install.sh --prune-backups` moves the `<file>.bak.<date>` copies that earlier versions left next to each kit file
+  into `~/.local/share/ws-kit/backup.legacy/` (`--dry-run` shows what it would move).
+- `ws-personal` lists `~/.config/ws-local/roots.txt` (your own folder roots) by name in its default `include.txt`.
+- Menu "Usage and reports" has a submenu "Reports ›" (`menu-usage-reports.tmux`).
 
 ### Changed
 
@@ -57,6 +69,12 @@ change name; see [Upgrading from 2.x names](docs/USAGE.md#18-upgrading-from-2x-n
 - Regular expressions and word lists that match Spanish prompts and answers moved out of the scripts into the Spanish
   language pack; they are active only with `ws-lang es`.
 - After upgrading, restart the tmux server (`tmux kill-server`, then open the session again).
+- **Installer backups moved out of your folders.** `install.sh` (and `ws-personal restore`) copies each file it
+  replaces to `~/.local/share/ws-kit/backup.<date>/<same path>` instead of leaving `<file>.bak.<date>` next to it,
+  prints that folder once, and keeps the newest 10 backup folders. The Windows notification handler keeps its
+  side-by-side backup, because it lives outside WSL.
+- `ws-telemetry sql`: the `traces` view exposes only the English column names and values; the Spanish columns of
+  days recorded before the upgrade are folded into them.
 - CI job names are English: `SAST and secrets (bandit, gitleaks)`, `Kit tests`, `Clean install (Ubuntu 24.04)`.
   Update branch-protection rules that list required checks.
 - The documentation follows a shared structure: the same files, sections and order as the owner's other repositories.
@@ -75,6 +93,13 @@ change name; see [Upgrading from 2.x names](docs/USAGE.md#18-upgrading-from-2x-n
     subagents (`A`) and stop background subagents (`K`); the last three left "More Claude commands" and "Views".
   - "Tabs and session": "Restore saved session" and "Recover tabs from an earlier save" are one entry, "Restore tabs
     from a save…" (`R`), which lists the saves with the latest first (`tmux-recover`).
+  - "Tabs and session": "Bring recent conversations into tmux" is now "Bring many conversations at once…" (the
+    finder's recent view opens one), and "Groups and tabs" left the menu: the finder lists them, and `Ctrl+b S`
+    still opens the tree of groups.
+  - "Usage and reports": the full report, the quick report and the report for last week are behind one entry,
+    "Reports ›" (`i`).
+  - The right-click menu of a tab no longer has "Live subagents", which is not about the clicked tab (`Ctrl+b A`
+    and the Claude menu keep it).
 
 ### Deprecated
 
@@ -93,6 +118,8 @@ change name; see [Upgrading from 2.x names](docs/USAGE.md#18-upgrading-from-2x-n
 
 ### Fixed
 
+- `ws-check` reported a registered MCP server that failed to connect as `MISSING`; it now says "registered, not
+  connected".
 - Restarting Claude from the menus (protection level, solo mode, account switch, restart in all tabs) now clears the
   input box first and falls back to `Ctrl+C` twice when Claude does not exit.
 - `tmux-level` no longer fails when the tmux server's `PATH` lacks `~/.local/bin`, or when error output was captured
@@ -108,6 +135,18 @@ change name; see [Upgrading from 2.x names](docs/USAGE.md#18-upgrading-from-2x-n
   having been marked at this startup, not on its age.
 - A tmux server started without `~/.local/bin` in `PATH` (from Windows Terminal, without a login shell) made scripts
   that call each other by name fail (`ws-redact: command not found`); `.tmux.conf` now adds it to the server.
+- Changing the protection level, solo mode or the account of a tab where Claude never received a message ended
+  with "No conversation found to continue" and left the tab marked while no Claude ran. `tmux-level`, `tmux-solo`
+  and `claude-account` now start Claude through `claude-resume`, which continues the folder's conversation when
+  there is one and starts a new one otherwise, with the same flags.
+- The tmux message log (`tmux show-messages`) filled with `invalid option: @cdet`, `@clast`, `@csub`, `@cts`,
+  `@cmain`, `@cmainc`, `@cpane`, `@cphase`: the state hook and `ws-audit` read unset user options without `-q`.
+- Test servers and popups left dead socket files in `/tmp/tmux-<uid>/`: `ws-verify` and `tmux-popup-run` remove
+  their own socket when their server ends (`ws-test` keeps its sockets in its temporary folder).
+- `ws-health` counted the tabs of linked sessions (monitor 2, the finder's "open here") twice when it compared the
+  save with the open tabs.
+- `ws-telemetry estimate --by` accepts the values from before the rename (`rama`, `proyecto`) and rejects an
+  unknown one instead of grouping by project.
 - The sandbox recreated the pre-3.0 folders it was told to deny; `denyRead` lists only the current paths, and the
   migration removes an empty leftover instead of reporting a conflict.
 

@@ -12,7 +12,8 @@ repository or worktree, per-tab agent state with timing, model routing, local te
 over Telegram, protection levels per tab, two Claude accounts side by side and parallel agents in git worktrees.
 
 The repository **captures the real configuration** of one machine (`export.sh`) and **reinstalls it without
-clobbering** on another (`install.sh`): every file that changes is backed up first as `*.bak.<date>`.
+clobbering** on another (`install.sh`): every file that changes is copied first to
+`~/.local/share/ws-kit/backup.<date>/`.
 
 > **No secrets, no personal data, no company names.** Keys live in the Windows Credential Manager; personal paths are
 > exported as templates; the standards the kit installs are generic. Telemetry stays on your machine. See
@@ -306,7 +307,7 @@ Details in [docs/TESTING.md](docs/TESTING.md).
 | `bash tests/guard.sh` | The PreToolUse guard: bypass variants, false positives and fail-closed behavior |
 | `ws-test` | Behavior of the **installed** workstation, with an isolated home, isolated tmux sockets and a simulated Claude; costs no usage |
 | `ws-test --ai` | The same plus non-deterministic checks against the real Claude |
-| `ws-verify` | Read-only verification before pushing: scripts, tmux, Claude Code settings, the kit and the tests |
+| `ws-verify` | Read-only verification before pushing: scripts, tmux (also the running server: `--live`), Claude Code settings, the kit and the tests |
 
 CI runs lint (shellcheck, Python compile, JSON, tmux syntax), SAST and secret scanning (bandit, gitleaks),
 `tests/run.sh`, and a clean install followed by `ws-test` on every push to `main` and every pull request. CodeQL

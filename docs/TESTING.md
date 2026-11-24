@@ -43,7 +43,7 @@ The script copies `lib.sh`, `migrate.sh`, `renames.tsv`, `export.sh`, `install.s
 | 1) export | Files and directories of the manifest are exported; execute permissions are kept; `*.bak.*` files are skipped; user MCP servers are exported; a file listed in `secrets-allow.txt` does not block the export; personal paths become `@WINHOME@` and `@HOME@`; the Windows user name does not remain in the kit |
 | 2) secret blocking | An export with a storage account key fails and leaves no partial `files/`; a detection pattern in a file that is not in `secrets-allow.txt` also blocks |
 | 3) install on a new machine | `--dry-run` writes nothing and lists what is new; the installed result equals the source; without a Windows user the installer refuses and names `--win-user`; scripts stay executable; the kit's lines are added to `.bashrc`; templates are rendered with the target machine's paths; `REPOS` follows the target user |
-| 4) idempotency and no overwriting | A second install reports nothing new or changed; `.bashrc` has no duplicates; a modified file is reported as `changed` and backed up before being replaced |
+| 4) idempotency and no overwriting | A second install reports nothing new or changed; `.bashrc` has no duplicates; a modified file is reported as `changed` and copied to `~/.local/share/ws-kit/backup.<date>/` before being replaced, with nothing left next to it; the header names the backup folder once; the newest 10 backup folders are kept and `pre-english.<date>` and `backup.legacy` are never deleted; `--prune-backups` moves the `*.bak.<date>` copies of manifest paths, of `.bashrc` and of the pre-3.0 names to `backup.legacy/`, counts them, leaves other files alone and respects `--dry-run` |
 | 6) real export of the repo | `files/home/.claude/settings.json` and `files/mcp-servers.json` are valid JSON; every file under `files/home` with a bash or sh shebang passes `shellcheck -S warning` (skipped when shellcheck is not installed) |
 | 7) PreToolUse guard | Runs `tests/guard.sh` as one check |
 
@@ -58,8 +58,8 @@ out with the old names. The suite puts a silent `reg.exe` first in `PATH`, so th
 | Data | A file or folder of kind `data` ends up under its new name with its content; when the old and the new name both exist, neither is touched and a warning is printed |
 | Wrappers | An old command of kind `shim` is set aside under `~/.local/share/ws-kit/pre-english.<date>/` and replaced by an executable wrapper that runs the new command with the same arguments |
 | Set aside | An old kit file of kind `drop` is moved to the set-aside folder and not deleted |
-| `.bashrc` | The line that loads `cuentas.sh` is rewritten once to `accounts.sh`, with a backup |
-| Windows handler | With a fake `reg.exe` and `wslpath`: the registered `.ps1` then accepts `focus` and `foco`, calls `tmux-goto`, keeps its CRLF line endings and has a `.bak.<date>` copy; `--dry-run` and a second run change nothing; without `reg.exe` nothing fails |
+| `.bashrc` | The line that loads `cuentas.sh` is rewritten once to `accounts.sh`, with a backup in `~/.local/share/ws-kit/backup.<date>/` |
+| Windows handler | With a fake `reg.exe` and `wslpath`: the registered `.ps1` then accepts `focus` and `foco`, calls `tmux-goto`, keeps its CRLF line endings and has a `.bak.<date>` copy next to it (it lives on the Windows side); `--dry-run` and a second run change nothing; without `reg.exe` nothing fails |
 | Language | A migrated home gets `es` in `~/.config/tmux-claude/lang`; a new home gets no file |
 | Idempotency | A second install migrates nothing |
 | `--remove-shims` | Deletes the wrappers and leaves a file with the same name that is not a wrapper |
@@ -102,17 +102,17 @@ The deterministic run costs no Claude usage and exits 1 if any test fails. The s
 
 #### Sections
 
-There are 27 test functions. Each prints a section header, except the usage and telemetry test:
+There are 28 test functions. Each prints a section header, except the usage and telemetry test:
 
 | Section (as printed) | Covers |
 |---|---|
 | tmux configuration and menus | The installed `.tmux.conf` and menus load in a real tmux server |
 | Menus: what they promise exists (without opening tmux) | Every script and shell function a menu calls is installed; every `Ctrl+b X` shortcut a menu announces exists; the help does not announce retired options; each menu pauses the status refresh while open and restores it |
 | Restart Claude in all tabs | `tmux-claude-restart --all`: idle tabs restart, busy ones are left alone |
-| Solo mode | `tmux-solo`: start arguments, the tab flag, returning to normal |
-| Claude accounts | `claude-account`: the personal account shares conversations and not credentials; switching a tab resumes the same conversation; refusal when both accounts are in the same organization; a pinned project (and its worktrees) wins over the default account |
+| Solo mode | `tmux-solo`: start arguments, the tab flag, returning to normal; a tab without a conversation gets a new Claude with the same flags |
+| Claude accounts | `claude-account`: the personal account shares conversations and not credentials; switching a tab resumes the same conversation, or starts a new one when the tab never had any; refusal when both accounts are in the same organization; a pinned project (and its worktrees) wins over the default account |
 | Tab persistence | No save in the first minutes after start; tabs are restored only when the session came back empty |
-| Interactive floating windows | Popups hosted by `tmux-popup-run` |
+| Interactive floating windows | Popups hosted by `tmux-popup-run`; the popup server's socket file is removed when its last window closes |
 | Backup and restore | A backup is created, the restore test passes, and the backup carries no credentials |
 | Screensaver | Every `tmux-art` scene draws, also on a small screen and in 256 colors; the scene menu and `tmux-art` name the same scenes; a retired saved scene falls back to random; the screensaver appears with a tab in "waiting for you" and does not with a permission dialog open; choosing a scene saves it |
 | Terminal: ble.sh, completion and copilot | Shell helpers and the terminal copilot against the fake API |
@@ -124,14 +124,15 @@ There are 27 test functions. Each prints a section header, except the usage and 
 | Menus and UX: active tabs, scenes, monitor, model switch | `tmux-active`, `tmux-scene`, `tmux-hud`, model switching |
 | Finder: tabs, active, favorites and recent conversations in one list (tmux-find) | The four views in one row format; the preview of a tab, a conversation and a folder; quick reply (clears the input, never types into a dialog or a shell); approve and reject only in the permission phase; "open here" creates a grouped session and removes it; the old entry points open the finder |
 | Detailed Claude state (phase, time, what it is doing, without getting stuck) | Phases, elapsed time, detail, "waiting for you", and self-correction so a state does not stay stuck |
-| Versioned personal configuration (ws-personal) | Sync and restore of the personal repository |
+| Versioned personal configuration (ws-personal) | Sync and restore of the personal repository; `ws-local/roots.txt` is versioned by default; a restore copies what it replaces to `~/.local/share/ws-kit/backup.<date>/` |
 | Status bar: personal segments and ws-cache | Personal bar segments and the `ws-cache` behavior |
 | tmux: CI/PR in the status bar, templates, recording, history and swarm | `tmux-branch`, `tmux-template`, `tmux-record`, `tmux-history`, `tmux-swarm` |
 | tmux: pane → Claude, palette, notify me, extract, labels, focus, logs | The `Ctrl+b e`, palette, notify-when-done, extract, label, focus and log features |
-| Traces, estimation, weekly report and budgets | `ws-traces.sh` output and the commands that read it |
+| Traces, estimation, weekly report and budgets | `ws-traces.sh` output and the commands that read it; `estimate --by` with the old values; the `traces` view of `ws-telemetry sql` (simulated DuckDB) |
 | Model routing (cr + hook) | Routing rules, the hook, the confirmation |
 | Telegram: notifications and answering with buttons (simulated API) | Notifications with the dialog's options; buttons from another chat are ignored; one-time codes; running a proposed command and returning its output; dangerous commands arrive without a button; alerts are not repeated; a wrong PIN sends nothing and a correct one delivers the reply |
 | Tab groups and bringing conversations in | Tab groups and `tmux-bring` |
+| ws-verify --live: the running tmux server (PATH, save, tabs, scripts, sockets) | Against a throwaway server: a healthy one passes and a linked session does not count as more tabs; a server without `~/.local/bin` in `PATH`, a tab missing from the save, a leftover `find-peek-*` session, a key bound to a missing script and a dead socket each fail with their remedy; `--clean-sockets` removes only dead sockets |
 | Sandbox placeholders in your repos (read-only) | Read-only check of sandbox placeholder files in your repositories |
 | Language selector (ws-lang) | `ws-lang`: `en` when nothing is set, setting and reading the language, `WS_LANG` overriding the file, and the packs: with `en` a key returns the English value only, with `es` the English and the Spanish values joined |
 
@@ -198,7 +199,7 @@ Dependabot (`.github/dependabot.yml`) updates the GitHub Actions used by the wor
 |---|---|
 | `ws-check` | Read-only status of the installed workstation: tmux, MCP servers, sandbox tools, the kit, the git gate, backups |
 | `ws-health` | Resilience: disk space, distro snapshot, tmux save freshness, kit in sync |
-| `ws-verify [--quick]` | Everything before pushing kit changes: scripts (`bash -n`, shellcheck), tmux, screensaver, Claude Code settings, the workstation, the kit, and the behavior tests. Read-only; exits 1 on any failure |
+| `ws-verify [--quick]` | Everything before pushing kit changes: scripts (`bash -n`, shellcheck), tmux (configuration, and the running server: `ws-verify --live` runs those checks alone), screensaver, Claude Code settings, the workstation, the kit, and the behavior tests. Read-only; exits 1 on any failure |
 | `ws-audit [--ai]` | Read-only audit by pillar (tmux, shortcuts and menus, Claude Code, sandbox, security, resilience, performance, observability) with an HTML and Markdown report |
 | `cr --test` | Runs the 20 labeled tasks of each active language against the routing rules (the English set, plus the Spanish set with `ws-lang es`); exits 1 below 90 percent |
 
