@@ -8,7 +8,7 @@ This document explains which versions are supported, how to report a vulnerabili
 | Version | Security fixes |
 |---|---|
 | 2.x | Yes |
-| < 2.0 | No; upgrade with `ws-actualizar` |
+| < 2.0 | No; upgrade with `ws-kit-update` |
 
 ## Reporting a vulnerability
 
@@ -24,16 +24,19 @@ The full analysis, with residual risks, is in [docs/THREAT_MODEL.md](docs/THREAT
 
 - **Secrets** live only in the Windows Credential Manager (`ws-secret`, DPAPI). Tokens are passed to tools through file
   descriptors, never argv. The repository contains no credentials; exports are scanned before every commit.
-- **Telemetry is local** (`~/.local/share/ws-telemetria`, 0700). Usage data built from transcripts and hooks holds
+- **Telemetry is local** (`~/.local/share/ws-telemetry`, 0700). Usage data built from transcripts and hooks holds
   counts, timings and tool names. The local OpenTelemetry collector (`ws-otel`,
   [ADR 0014](docs/adr/0014-local-opentelemetry-collector.md)) listens only on `127.0.0.1` and also stores the text of
-  prompts, responses and tool calls, with recognizable secrets masked; `WS_OTEL_CONTENIDO=0` turns content off. That
+  prompts, responses and tool calls, with recognizable secrets masked; `WS_OTEL_CONTENT=0` turns content off. That
   folder must stay out of unencrypted backups and cloud sync. What goes to Telegram or into Claude summaries is
-  redacted first (`ws-redactar`).
+  redacted first (`ws-redact`).
 - **Telegram control** answers only the owner's chat, with one-time codes that expire in 10 minutes, closed options,
   no button for dangerous commands, and free-text replies only with a PIN.
 - **Claude Code protection levels** per tab ([ADR 0012](docs/adr/0012-per-tab-protection.md),
   [ADR 0013](docs/adr/0013-minimum-protection-floor.md)): full (sandbox without excluded commands + ask/deny rules +
-  guard hook), normal, and pure (no sandbox and no workstation allow/ask rules). A floor stays on in every level: the
-  deny rules and the guard hook. Organization managed settings still apply.
+  guard hook), normal, and pure (`bare`: no sandbox and no workstation allow/ask rules). A floor stays on in every
+  level: the deny rules and the guard hook. Organization managed settings still apply.
 - **Supply chain**: CI pins no third-party actions; gitleaks is verified by checksum; Dependabot watches workflows.
+- **Upgrades from 2.x**: the installer moves data to the English names without overwriting, and the sandbox deny
+  rules cover the credential and telemetry folders under both their old and their new paths while the old ones may
+  still exist.

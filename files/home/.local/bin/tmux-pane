@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#
+# tmux-pane — sends Claude the output of another pane (tests, build, logs) without copy and paste. Ctrl+b e.
+#
+# Takes the last N lines of the tab's other pane (if there are several, the last one you used; if there is no
+# other, it lets you pick any pane), redacts them (ws-redact) and PASTES them into Claude's prompt inside a
+# code block, without Enter: you type what to do with it and send it.
+#
+# Usage: tmux-pane <claude-pane> [--lines 200]         (Ctrl+b e calls it with the current pane)
+#      tmux-pane --pick <claude-pane> [--lines N]    (internal: pane list with fzf in a popup)
+#      tmux-pane --text <source-pane> [--lines N]     (only prints the block; for tests)
+set -uo pipefail
+TAB=$'\t'
+mode="paste"
+case "${1:-}" in --pick) mode=pick; shift ;; --text) mode=text; shift ;; esac
+target="${1:?pane}"; shift
+lines=200; [[ "${1:-}" == --lines && "${2:-}" =~ ^[0-9]+$ ]] && lines="$2"
+
+block() {   # source-pane → text ready to paste
+  local o="$1" cmd dir txt
+  cmd="$(tmux display -p -t "$o" '#{pane_current_command}' 2>/dev/null)"
+  dir="$(tmux display -p -t "$o" '#{b:pane_current_path}' 2>/dev/null)"
+  txt="$(tmux capture-pane -p -J -t "$o" -S "-$lines" 2>/dev/null | sed -e 's/[[:space:]]*$//' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' | ws-redact)"
+  printf 'Output of the pane next to this one (%s in %s, last %s lines; secrets redacted):\n```\n%s\n```\n' "${cmd:-?}" "${dir:-?}" "$lines" "$txt"
+}
+paste_block() {   # source target
+  local f; f="$(mktemp)"; block "$1" > "$f"
+  tmux load-buffer -b ws-pane "$f" && tmux paste-buffer -p -d -b ws-pane -t "$2"
+  rm -f "$f"; tmux display -d 2500 "Output pasted into Claude's prompt: type what to do and press Enter"
+}
+
+case "$mode" in
+  text) block "$target"; exit 0 ;;
+  pick)
+    sel="$(tmux list-panes -a -F "#{pane_id}${TAB}#{session_name}:#{window_index} #{window_name} · #{pane_current_command} · #{b:pane_current_path}" \
+           | grep -v "^${target}${TAB}" | fzf --delimiter="$TAB" --with-nth=2 --reverse --prompt 'pane> ' \
+               --header 'Pick the pane whose output you want to send to Claude' \
+               --preview 'tmux capture-pane -p -J -t {1} -S -40 | tail -40' --preview-window 'down,50%')" || exit 0
+    paste_block "${sel%%"$TAB"*}" "$target"; exit 0 ;;
+esac
+
+window="$(tmux display -p -t "$target" '#{window_id}')"
+mapfile -t others < <(tmux list-panes -t "$window" -F '#{pane_last} #{pane_id}' | awk -v d="$target" '$2 != d' | sort -r | awk '{print $2}')
+if (( ${#others[@]} >= 1 )); then paste_block "${others[0]}" "$target"
+else tmux display-popup -E -w 85% -h 75% "$HOME/.local/bin/tmux-popup-run $HOME/.local/bin/tmux-pane --pick '$target' --lines $lines"; fi

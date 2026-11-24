@@ -12,12 +12,12 @@
 # Destination: %UserProfile%\WSL-Backups\lite (local disk, not OneDrive). Rotation: WS_BACKUP_KEEP (14).
 # Optional encryption with age if ~/.config/ws-backup/age-recipients exists.
 #
-# Usage: ws-backup-lite [--ahora | --si-toca]
-#   --ahora    (default) back up now
-#   --si-toca  only if the last backup is more than 20 h old (called by tmux-backup)
+# Usage: ws-backup-lite [--now | --if-due]
+#   --now    (default) back up now
+#   --if-due  only if the last backup is more than 20 h old (called by tmux-backup)
 set -euo pipefail
 umask 077
-MODO="${1:---ahora}"
+MODE="${1:---now}"
 KEEP="${WS_BACKUP_KEEP:-14}"
 CONF="$HOME/.config/ws-backup"
 LOG="$HOME/.local/state/ws-backup-lite.log"
@@ -39,29 +39,29 @@ DEST="${WS_BACKUP_DEST:-$(win_home)/WSL-Backups/lite}"
 exec 9>"${WS_BACKUP_LOCK:-/tmp/ws-backup-lite-$UID.lock}"
 flock -n 9 || exit 0
 
-ultimo() { find "$DEST" -maxdepth 1 -name 'claude-lite-*.tar.*' ! -name '*.sha256' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1; }
-if [[ "$MODO" == "--si-toca" ]]; then
-  u="$(ultimo)"; [[ -n "$u" ]] && (( $(date +%s) - ${u%%.*} < 20 * 3600 )) && exit 0
+latest() { find "$DEST" -maxdepth 1 -name 'claude-lite-*.tar.*' ! -name '*.sha256' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1; }
+if [[ "$MODE" == "--if-due" ]]; then
+  u="$(latest)"; [[ -n "$u" ]] && (( $(date +%s) - ${u%%.*} < 20 * 3600 )) && exit 0
 fi
 
 mkdir -p "$DEST"
-libre_gb=$(df -BG --output=avail "$DEST" | tail -1 | tr -dc '0-9')
+free_gb=$(df -BG --output=avail "$DEST" | tail -1 | tr -dc '0-9')
 min_gb="${WS_BACKUP_MIN_GB:-5}"
-(( libre_gb >= min_gb )) || { echo "✖ Only $libre_gb GB free at the destination (minimum $min_gb)" | tee -a "$LOG" >&2; exit 1; }
+(( free_gb >= min_gb )) || { echo "✖ Only $free_gb GB free at the destination (minimum $min_gb)" | tee -a "$LOG" >&2; exit 1; }
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-INV="$TMP/inventario"; mkdir -p "$INV"
+INV="$TMP/inventory"; mkdir -p "$INV"
 
 #######################################
 # What is included (paths relative to $HOME). Only the ones that exist.
 #######################################
-rutas=(.claude .local/share/tmux/resurrect .config/tmux-claude .config/ws-backup .config/starship.toml)
-for m in .mempalace .local/share/mempalace mempalace; do [[ -e "$HOME/$m" ]] && rutas+=("$m"); done
+paths=(.claude .local/share/tmux/resurrect .config/tmux-claude .config/ws-backup .config/starship.toml)
+for m in .mempalace .local/share/mempalace mempalace; do [[ -e "$HOME/$m" ]] && paths+=("$m"); done
 if [[ -f "$CONF/extra.txt" ]]; then
-  while IFS= read -r r; do r="${r%%#*}"; r="${r// /}"; [[ -n "$r" && -e "$HOME/$r" ]] && rutas+=("$r"); done < "$CONF/extra.txt"
+  while IFS= read -r r; do r="${r%%#*}"; r="${r// /}"; [[ -n "$r" && -e "$HOME/$r" ]] && paths+=("$r"); done < "$CONF/extra.txt"
 fi
-existentes=(); for r in "${rutas[@]}"; do [[ -e "$HOME/$r" ]] && existentes+=("$r"); done
-printf '%s\n' "${existentes[@]}" > "$INV/incluido.txt"
+existing=(); for r in "${paths[@]}"; do [[ -e "$HOME/$r" ]] && existing+=("$r"); done
+printf '%s\n' "${existing[@]}" > "$INV/included.txt"
 
 # Credentials and regenerable caches stay out. Credentials are recovered by logging in, never from a backup.
 excl=(--exclude='.claude/.credentials.json' --exclude='.claude/statsig' --exclude='.claude/shell-snapshots'
@@ -78,57 +78,57 @@ inv apt-manual.txt     apt-mark showmanual
 inv pipx.txt           pipx list --short
 inv npm-global.txt     npm ls -g --depth=0
 inv cargo.txt          cargo install --list
-inv az-extensiones.txt az extension list --query '[].name' -o tsv
-inv kube-contextos.txt kubectl config get-contexts -o name
+inv az-extensions.txt az extension list --query '[].name' -o tsv
+inv kube-contexts.txt kubectl config get-contexts -o name
 inv ws-tools.txt       "$HOME/.local/bin/ws-tools"
 {
   echo "date: $(date -Is)"; echo "host: $(hostname)"; echo "user: $(id -un)"
   echo "ubuntu: $(lsb_release -ds 2>/dev/null)"; echo "claude: $(claude --version 2>/dev/null | head -1)"
   echo "node: $(node -v 2>/dev/null)"; echo "tmux: $(tmux -V 2>/dev/null)"
   echo "kit: $(git -C "$HOME/code/claude-workstation" describe --tags --always 2>/dev/null)"
-} > "$INV/versiones.txt"
+} > "$INV/versions.txt"
 
 # Repos inside WSL: they are not copied (they are on GitHub), but it warns about what would be lost.
-pend=0
+pending=0
 while IFS= read -r g; do
   d="${g%/.git}"; s=""
   [[ -n "$(git -C "$d" status --porcelain 2>/dev/null | head -1)" ]] && s+=" uncommitted-changes"
   a="$(git -C "$d" rev-list --count '@{u}..HEAD' 2>/dev/null || echo "no-upstream")"
   [[ "$a" != 0 ]] && s+=" unpushed:$a"
-  [[ -n "$s" ]] && { echo "${d/#"$HOME"/\~}:$s"; pend=$((pend + 1)); }
-done < <(find "$HOME/code" -maxdepth 3 -name .git -type d 2>/dev/null) > "$INV/repos-pendientes.txt"
+  [[ -n "$s" ]] && { echo "${d/#"$HOME"/\~}:$s"; pending=$((pending + 1)); }
+done < <(find "$HOME/code" -maxdepth 3 -name .git -type d 2>/dev/null) > "$INV/repos-pending.txt"
 
 #######################################
 # Pack → verify → publish (atomic) → rotate.
 #######################################
 stamp="$(date +%Y%m%d-%H%M)"
 if command -v zstd >/dev/null; then ext="tar.zst"; comp=(zstd -q -T0 -10); else ext="tar.gz"; comp=(gzip -6); fi
-nombre="claude-lite-$stamp.$ext"
+name="claude-lite-$stamp.$ext"
 age_r="$CONF/age-recipients"
-cifrar=0; [[ -s "$age_r" ]] && command -v age >/dev/null && { cifrar=1; nombre+=".age"; }
-part="$DEST/.$nombre.partial"
+encrypt=0; [[ -s "$age_r" ]] && command -v age >/dev/null && { encrypt=1; name+=".age"; }
+part="$DEST/.$name.partial"
 trap 'rm -rf "$TMP" "$part"' EXIT   # if something fails halfway, no incomplete file is left behind
 
 {
-  nice -n 19 tar -C "$HOME" "${excl[@]}" --warning=no-file-changed --ignore-failed-read -cf - "${existentes[@]}" -C "$TMP" inventario \
+  nice -n 19 tar -C "$HOME" "${excl[@]}" --warning=no-file-changed --ignore-failed-read -cf - "${existing[@]}" -C "$TMP" inventory \
     || [[ $? -eq 1 ]]   # 1 = files that changed during the copy (active conversations): acceptable
-} | "${comp[@]}" | if (( cifrar )); then age -R "$age_r"; else cat; fi > "$part"
+} | "${comp[@]}" | if (( encrypt )); then age -R "$age_r"; else cat; fi > "$part"
 
 # Verification: it reads end to end and contains conversations (unless encrypted: size only).
-if (( ! cifrar )); then
+if (( ! encrypt )); then
   n=$(tar -tf "$part" 2>/dev/null | grep -v '/subagents/' | grep -c '^\.claude/projects/.*\.jsonl$' || true)
   if ! tar -tf "$part" >/dev/null 2>&1; then rm -f "$part"; echo "✖ $(date -Is) unreadable file; nothing was rotated" | tee -a "$LOG" >&2; exit 1; fi
 else n="?"; fi
 [[ -s "$part" ]] || { rm -f "$part"; echo "✖ empty backup" | tee -a "$LOG" >&2; exit 1; }
-mv "$part" "$DEST/$nombre"
-( cd "$DEST" && sha256sum "$nombre" > "$nombre.sha256" )
+mv "$part" "$DEST/$name"
+( cd "$DEST" && sha256sum "$name" > "$name.sha256" )
 
 # Rotation only after a verified backup.
 find "$DEST" -maxdepth 1 -name 'claude-lite-*.tar.*' ! -name '*.sha256' -printf '%T@ %p\n' | sort -rn | tail -n +"$((KEEP + 1))" \
   | cut -d' ' -f2- | while IFS= read -r v; do rm -f "$v" "$v.sha256"; done
 
-tam="$(du -h "$DEST/$nombre" | cut -f1)"
-msg="$(date -Is) ok $nombre ($tam, $n conversations, repos with pending work: $pend)"
+size="$(du -h "$DEST/$name" | cut -f1)"
+msg="$(date -Is) ok $name ($size, $n conversations, repos with pending work: $pending)"
 echo "$msg" >> "$LOG"
-[[ "$MODO" == "--si-toca" ]] || { echo "✔ $DEST/$nombre ($tam) · $n conversations · repos with pending work: $pend"; (( pend )) && sed 's/^/  ⚠ /' "$INV/repos-pendientes.txt"; }
+[[ "$MODE" == "--if-due" ]] || { echo "✔ $DEST/$name ($size) · $n conversations · repos with pending work: $pending"; (( pending )) && sed 's/^/  ⚠ /' "$INV/repos-pending.txt"; }
 exit 0

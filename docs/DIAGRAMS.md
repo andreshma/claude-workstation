@@ -73,7 +73,7 @@ flowchart LR
     hooks["Hooks<br/>state, guard, routing, traces"]
     gate["Git hooks<br/>ws-gate"]
     otel["ws-otel<br/>OTLP collector on 127.0.0.1"]
-    telem[("Local telemetry<br/>~/.local/share/ws-telemetria")]
+    telem[("Local telemetry<br/>~/.local/share/ws-telemetry")]
   end
   api[("Claude API")]
   remote[("Git remote")]
@@ -110,31 +110,31 @@ flowchart TB
   end
 
   subgraph tmuxl["tmux layer"]
-    conf[".tmux.conf<br/>maravillas.tmux, ux.tmux"]
-    menus["menu*.tmux<br/>tmux-paleta"]
+    conf[".tmux.conf<br/>extras.tmux, ux.tmux"]
+    menus["menu*.tmux<br/>tmux-palette"]
     watch["tmux-watch"]
-    fondo["tmux-fondo"]
-    estado["tmux-estado"]
-    views["tmux-dash, tmux-activas<br/>tmux-pick, tmux-agents"]
-    levels["tmux-nivel, tmux-solo<br/>tmux-claude-restart"]
+    bg["tmux-background"]
+    status["tmux-status"]
+    views["tmux-dash, tmux-active<br/>tmux-pick, tmux-agents"]
+    levels["tmux-level, tmux-solo<br/>tmux-claude-restart"]
   end
 
   subgraph claudel["Claude Code layer"]
     settings["settings.json<br/>permissions, sandbox, env"]
     state["tmux-state.sh"]
     guard["audit.sh, guard.sh"]
-    trazas["ws-trazas.sh"]
-    other["ws-ruteo.sh, intent-route.sh<br/>lint-on-edit.sh, read-convert.sh<br/>win-notify.sh, win-hook.sh"]
+    traces["ws-traces.sh"]
+    other["ws-routing.sh, intent-route.sh<br/>lint-on-edit.sh, read-convert.sh<br/>win-notify.sh, win-hook.sh"]
     sl["statusline.sh"]
     agents["agents/*.md"]
   end
 
   subgraph telem["Telemetry"]
     otel["ws-otel"]
-    wst["ws-telemetria"]
-    informe["ws-informe"]
+    wst["ws-telemetry"]
+    report["ws-report"]
     hooksum["ws-hooks"]
-    data[("~/.local/share/ws-telemetria")]
+    data[("~/.local/share/ws-telemetry")]
   end
 
   subgraph gitl["git"]
@@ -143,15 +143,15 @@ flowchart TB
   end
 
   inst --> payload --> tmuxl & claudel & telem & gitl
-  conf --> watch --> fondo --> estado
+  conf --> watch --> bg --> status
   watch --> otel
-  settings --> state & guard & trazas & other
-  state --> estado
+  settings --> state & guard & traces & other
+  state --> status
   sl --> watch
-  trazas --> data
+  traces --> data
   otel --> data
   wst --> data
-  data --> informe & hooksum
+  data --> report & hooksum
   levels --> settings
   chain --> gate
 ```
@@ -164,18 +164,18 @@ The diagram shows which process writes each telemetry source and which commands 
 flowchart LR
   subgraph sources["Sources"]
     tx["Transcripts<br/>~/.claude/projects/**.jsonl"]
-    tz["Hook traces<br/>trazas/YYYY-MM-DD.jsonl"]
-    rs["Resource samples<br/>raw/recursos-YYYY-MM-DD.jsonl"]
+    tr["Hook traces<br/>traces/YYYY-MM-DD.jsonl"]
+    rs["Resource samples<br/>raw/resources-YYYY-MM-DD.jsonl"]
     ot["OpenTelemetry<br/>otel/YYYY-MM-DD.jsonl"]
     ev["Events<br/>routing, Telegram"]
   end
   cc["Claude Code"] -- "OTLP http/json to 127.0.0.1:14318" --> col["ws-otel"] --> ot
-  cc -- "hooks" --> tzs["ws-trazas.sh"] --> tz
-  tx & tz & rs & ot & ev --> wst["ws-telemetria build"]
-  wst --> html["tablero.html"]
-  wst --> turnos[("turnos.jsonl")]
-  wst -. "imported as a module" .-> inf["ws-informe"]
-  inf --> rep["informe-YYYY-MM-DD.html and .md"]
+  cc -- "hooks" --> trs["ws-traces.sh"] --> tr
+  tx & tr & rs & ot & ev --> wst["ws-telemetry build"]
+  wst --> html["dashboard.html"]
+  wst --> turns[("turns.jsonl")]
+  wst -. "imported as a module" .-> inf["ws-report"]
+  inf --> rep["report-YYYY-MM-DD.html and .md"]
   ot --> wh["ws-hooks"]
 ```
 
@@ -192,14 +192,14 @@ sequenceDiagram
   participant ST as tmux-state.sh
   participant AU as audit.sh
   participant G as guard.sh
-  participant TZ as ws-trazas.sh
+  participant TR as ws-traces.sh
   participant T as tmux (window options)
-  participant E as tmux-estado
+  participant E as tmux-status
   participant W as tmux-watch (status refresh)
 
   C->>ST: PreToolUse (JSON on stdin)
-  ST->>T: @cfase=herramienta, @cdet="Bash: npm test", @cdesde, @cmain
-  ST->>E: --pintar window
+  ST->>T: @cphase=tool, @cdet="Bash: npm test", @csince, @cmain
+  ST->>E: --paint window
   E->>T: @cs="🔧 Bash 0s", @csc=color (only if changed)
   C->>AU: PreToolUse
   AU-->>AU: append metadata to ~/.claude/audit
@@ -210,13 +210,13 @@ sequenceDiagram
   else allowed
     G-->>C: exit 0
   end
-  C->>TZ: PreToolUse / PostToolUse
-  TZ-->>TZ: append one line to trazas/YYYY-MM-DD.jsonl
+  C->>TR: PreToolUse / PostToolUse
+  TR-->>TR: append one line to traces/YYYY-MM-DD.jsonl
   C->>ST: PostToolUse
-  ST->>T: @cfase=pensando
+  ST->>T: @cphase=thinking
   loop every status-interval
     W->>T: read @cmain, @cts of every window
-    W-->>W: ⚠ / ⏳ / ◉, reminders, ws-otel asegurar, tmux-fondo
+    W-->>W: ⚠ / ⏳ / ◉, reminders, ws-otel ensure, tmux-background
   end
 ```
 
@@ -254,48 +254,48 @@ The flowchart shows how raw local data becomes the dashboard, the report and the
 
 ```mermaid
 flowchart LR
-  tx["Claude Code transcripts<br/>~/.claude/projects"] --> build["ws-telemetria build<br/>every minute"]
-  tr["Hook traces<br/>ws-trazas.sh, 13 events"] --> build
+  tx["Claude Code transcripts<br/>~/.claude/projects"] --> build["ws-telemetry build<br/>every minute"]
+  tr["Hook traces<br/>ws-traces.sh, 13 events"] --> build
   res["Per-minute samples<br/>CPU, RAM, disk, network"] --> build
   cc["Claude Code<br/>OTLP http/json"] --> otel["ws-otel<br/>127.0.0.1:14318"]
   otel --> ofiles[("otel/YYYY-MM-DD.jsonl<br/>0600, secrets masked")]
   ofiles --> build
   rt["Routing decisions"] --> build
   tg["Telegram events"] --> build
-  build --> dash["Usage dashboard<br/>tablero.html"]
-  build --> turns[("turnos.jsonl<br/>one row per turn")]
-  turns --> report["ws-informe<br/>30-day report, HTML and Markdown"]
+  build --> dash["Usage dashboard<br/>dashboard.html"]
+  build --> turns[("turns.jsonl<br/>one row per turn")]
+  turns --> report["ws-report<br/>30-day report, HTML and Markdown"]
   ofiles --> report
   ofiles --> hk["ws-hooks<br/>hook time per event"]
-  turns --> est["ws-telemetria estimar<br/>hours and cost per ticket"]
+  turns --> est["ws-telemetry estimate<br/>hours and cost per ticket"]
   turns --> csv["CSV export, DuckDB"]
 ```
 
 ### A report is built
 
-The sequence shows what `ws-informe` reads and when it calls Claude.
+The sequence shows what `ws-report` reads and when it calls Claude.
 
 ```mermaid
 sequenceDiagram
   autonumber
   participant U as User
-  participant I as ws-informe
-  participant W as ws-telemetria (module)
-  participant D as ~/.local/share/ws-telemetria
+  participant I as ws-report
+  participant W as ws-telemetry (module)
+  participant D as ~/.local/share/ws-telemetry
   participant X as Other local sources
-  participant C as claude -p (only with --ia)
+  participant C as claude -p (only with --ai)
 
-  U->>I: ws-informe [--dias 30] [--ia]
-  I->>W: load ws-telemetria as a module (one source of truth)
+  U->>I: ws-report [--days 30] [--ai]
+  I->>W: load ws-telemetry as a module (one source of truth)
   W->>D: read transcripts-derived turns, traces, resource samples, otel/*.jsonl
   W-->>I: turns, tool detail, estimation, otel summary, ratios
   I->>X: routing and Telegram events, MemPalace and recall logs if present, Claude memories, commands, skills
   I-->>I: rule-based findings ("what to improve and what to create")
-  opt --ia
+  opt --ai
     I->>C: aggregated metrics only, no tools
     C-->>I: findings and suggested actions
   end
-  I-->>U: informe-YYYY-MM-DD.html and .md (Windows profile and informes/)
+  I-->>U: report-YYYY-MM-DD.html and .md (Windows profile and reports/)
 ```
 
 ## State and lifecycle
@@ -304,24 +304,24 @@ The state diagram shows the phases of a tab and what moves it from one to the ne
 
 ```mermaid
 stateDiagram-v2
-  [*] --> listo: session starts
-  listo --> pensando: prompt sent
-  pensando --> herramienta: tool call
-  herramienta --> pensando: tool result
-  herramienta --> permiso: permission dialog
-  pensando --> pregunta: Claude opens a question dialog
-  permiso --> herramienta: answered
-  pregunta --> pensando: answered
-  pensando --> compactando: compaction
-  compactando --> pensando: automatic compaction ends
-  pensando --> listo: turn ends
-  pensando --> tetoca: turn ends with a question or a request
-  pensando --> error: API error
-  pensando --> interrumpido: Esc (read from the screen)
-  tetoca --> pensando: next prompt
+  [*] --> done: session starts
+  done --> thinking: prompt sent
+  thinking --> tool: tool call
+  tool --> thinking: tool result
+  tool --> permission: permission dialog
+  thinking --> question: Claude opens a question dialog
+  permission --> tool: answered
+  question --> thinking: answered
+  thinking --> compacting: compaction
+  compacting --> thinking: automatic compaction ends
+  thinking --> done: turn ends
+  thinking --> yourturn: turn ends with a question or a request
+  thinking --> error: API error
+  thinking --> interrupted: Esc (read from the screen)
+  yourturn --> thinking: next prompt
 ```
 
-The state names are the values stored in the tmux window option `@cfase`.
+The state names are the values stored in the tmux window option `@cphase`.
 
 ## Trust boundaries
 
@@ -338,7 +338,7 @@ flowchart TB
   claude -- "git commit and push" --> gate{{"ws-gate (git hooks)"}} --> remote[("Git remote")]
   claude -- "OTLP http/json" --> otel["ws-otel<br/>127.0.0.1 only"] --> disk[("otel/*.jsonl, mode 0600")]
   claude <--> api[("Claude API")]
-  hooks["Notification hooks"] -- "ws-redactar" --> tg[("Telegram Bot API")]
+  hooks["Notification hooks"] -- "ws-redact" --> tg[("Telegram Bot API")]
   phone(["Owner's phone"]) --> tg
   tg -- "owner's chat id, one-time code, screen re-read" --> tmux
   cred[("Windows Credential Manager")] -. "ws-secret, on demand" .-> hooks

@@ -5,14 +5,14 @@
 # on the tmux tab (@cctx, @cctxc) so it shows on every tab at once.
 # It also leaves the per-session cost and the usage limits for the watcher (tmux-watch) and ws-telegram in
 # /tmp/claude-burn-<uid>/ (nobody wrote them before: the usage traffic light and the limits notification had no data).
-IFS=$'\t' read -r model pct cost five week dir sesion < <(jq -r '[
+IFS=$'\t' read -r model pct cost five week dir session < <(jq -r '[
   (.model.display_name // "?"),
   ((.context_window.used_percentage // 0) | floor),
   (.cost.total_cost_usd // 0),
   ((.rate_limits.five_hour.used_percentage // -1) | floor),
   ((.rate_limits.seven_day.used_percentage // -1) | floor),
   (.workspace.current_dir // .cwd // ""),
-  (.session_id // "sin-id")
+  (.session_id // "no-id")
 ] | @tsv')
 
 # traffic light: <50 green · 50-79 yellow · >=80 red  (ANSI for Claude, colourN for tmux)
@@ -28,7 +28,7 @@ fi
 # Samples for the watcher and ws-telegram: accumulated session cost (for $/h) and usage limits.
 b="${WS_BURN_DIR:-/tmp/claude-burn-$(id -u)}"
 if mkdir -p "$b" 2>/dev/null && chmod 700 "$b" 2>/dev/null; then
-  l="$b/${sesion//[^A-Za-z0-9-]/}.log"
+  l="$b/${session//[^A-Za-z0-9-]/}.log"
   [[ "$(tail -n 1 "$l" 2>/dev/null | cut -d' ' -f2)" == "$cost" ]] || echo "$(date +%s) $cost" >> "$l"
   (( five >= 0 || week >= 0 )) && echo "$five $week" > "$b/limits"
 fi

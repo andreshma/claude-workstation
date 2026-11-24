@@ -1,2 +1,2 @@
-@~/.claude/estandares.md
+@~/.claude/standards.md
 @@WINHOME@/.claude/CLAUDE.md

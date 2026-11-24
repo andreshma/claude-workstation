@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+#
+# tmux-record — records an ALREADY open pane (no need to start over) as evidence or a demo. Menu → Views → r
+# (again: stops). While recording, the tab shows ⏺ in the status bar.
+# Leaves in %UserProfile%\Videos\Claude:
+#   YYYY-MM-DD_HHMM_<tab>.cast  replayable recording (asciinema play, or the asciinema web player)
+#   YYYY-MM-DD_HHMM_<tab>.txt   the final screen text, clean and redacted (to attach to a bug)
+#   YYYY-MM-DD_HHMM_<tab>.gif   if you have agg installed (ws-tools install agg)
+# Uses pipe-pane: while recording, that pane cannot use another capture (Ctrl+b H or the searchable history).
+# The .cast stores what was on screen as is: do not record panes with secrets in view.
+# Destination: WS_RECORD_DIR if set (tests).
+# Usage: tmux-record <pane>   ·   tmux-record --write <file.cast> <width> <height>  (internal: used by pipe-pane)
+set -uo pipefail
+
+if [[ "${1:-}" == --write ]]; then   # raw pane stdin → asciicast v2 with timings
+  exec python3 -u -c '
+import json, sys, time
+f, w, h = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+t0 = time.time()
+with open(f, "w", encoding="utf-8") as out:
+    out.write(json.dumps({"version": 2, "width": w, "height": h, "timestamp": int(t0), "env": {"TERM": "xterm-256color"}}) + "\n")
+    read = sys.stdin.buffer.raw.read if hasattr(sys.stdin.buffer, "raw") else sys.stdin.buffer.read1
+    while True:
+        b = read(65536)
+        if not b:
+            break
+        out.write(json.dumps([round(time.time() - t0, 4), "o", b.decode("utf-8", "replace")]) + "\n"); out.flush()
+' "$2" "$3" "$4"
+fi
+
+p="${1:?pane}"
+win_profile() { local u; u="$(wslvar USERPROFILE 2>/dev/null)"; [[ -n "$u" ]] && wslpath -u "$u" 2>/dev/null; }
+base="$(win_profile)"; dir="${base:+$base/Videos/Claude}"; dir="${WS_RECORD_DIR:-${dir:-$HOME/recordings}}"; mkdir -p "$dir"
+
+current="$(tmux show -pqv -t "$p" @recording)"
+if [[ -n "$current" ]]; then
+  tmux pipe-pane -t "$p"; tmux set -pu -t "$p" @recording; tmux set -wu -t "$p" @crec 2>/dev/null
+  sleep 0.5
+  txt="${current%.cast}.txt"
+  tmux capture-pane -p -J -t "$p" -S -2000 | sed -e 's/[[:space:]]*$//' | ws-redact > "$txt"
+  if command -v agg >/dev/null; then ( agg --quiet "$current" "${current%.cast}.gif" >/dev/null 2>&1 & ); fi
+  n=$(( $(wc -l < "$current") - 1 ))
+  tmux display -d 4000 "⏹ Recording saved in Videos\\Claude: $(basename "$current") ($n events) + .txt"
+  exit 0
+fi
+[[ -n "$(tmux display -p -t "$p" '#{pane_pipe}')" && "$(tmux display -p -t "$p" '#{pane_pipe}')" != 0 ]] && {
+  tmux display -d 4000 "This pane already has an active capture (Ctrl+b H or history): turn it off first"; exit 1; }
+name="$(tmux display -p -t "$p" '#{window_name}' | tr -c 'A-Za-z0-9_.-' '_' | cut -c1-30)"
+f="$dir/$(date +%F_%H%M)_${name}.cast"
+w="$(tmux display -p -t "$p" '#{pane_width}')"; h="$(tmux display -p -t "$p" '#{pane_height}')"
+tmux set -p -t "$p" @recording "$f"; tmux set -w -t "$p" @crec "⏺"
+tmux pipe-pane -o -t "$p" "exec '$0' --write '$f' $w $h"
+# First frame: what is already on screen, so the recording does not start black.
+tmux send-keys -t "$p" -X cancel 2>/dev/null; tmux refresh-client 2>/dev/null
+tmux display -d 3000 "⏺ Recording this pane (${w}x${h}). Menu → Views → r to stop"

@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+#
+# ws-notify — Windows notification (toast) and, on request, a Telegram one too. Clicking the notification brings
+# Windows Terminal to the front and tmux goes to the pane's tab (ws-claude://focus/N protocol from patch 31).
+#
+# Usage: ws-notify [--pane %N] [--telegram] [--force] "title" "text"
+#   --pane     tmux pane the click leads to
+#   --telegram  also sends the notification over Telegram (ws-telegram send), already redacted
+#   --force    notifies even if Windows notifications are off or you are in focus mode
+# Title and text are redacted (ws-redact) and travel to PowerShell as base64 inside -EncodedCommand: they are
+# never interpreted as code. Log without the text: ~/.local/share/ws-telemetry/notices/YYYY-MM-DD.jsonl.
+# WS_NOTIFY_LOG=file: only logs (tests).
+set -uo pipefail
+pane="" tg=0 force=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --pane) pane="${2#%}"; shift 2 ;;
+    --telegram) tg=1; shift ;;
+    --force) force=1; shift ;;
+    *) break ;;
+  esac
+done
+red() { ws-redact <<<"$1" 2>/dev/null || printf '%s' "$1"; }
+title="$(red "${1:-Workstation}")"; text="$(red "${2:-}")"
+[[ "$pane" =~ ^[0-9]+$ ]] || pane=""
+d="$HOME/.local/share/ws-telemetry/notices"; mkdir -p "$d" && chmod 700 "$d"
+jq -nc --arg t "$title" --arg p "$pane" --argjson tg "$tg" '{ts: (now | todate), title: $t, pane: $p, telegram: ($tg == 1)}' >> "$d/$(date +%F).jsonl" 2>/dev/null
+
+if [[ -n "${WS_NOTIFY_LOG:-}" ]]; then printf '%s\t%s\t%s\t%s\n' "$title" "${text//$'\n'/ ⏎ }" "$pane" "$tg" >> "$WS_NOTIFY_LOG"; exit 0; fi
+
+if (( tg )) && command -v ws-telegram >/dev/null; then ws-telegram send "$title"$'\n'"$text" >/dev/null 2>&1 & fi
+
+if (( !force )); then
+  [[ "$(tmux show -gqv @cnotify 2>/dev/null)" == off || -n "$(tmux show -gqv @focus_end 2>/dev/null)" ]] && exit 0
+fi
+ps="$(command -v powershell.exe || echo /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe)"
+[[ -x "$ps" ]] || exit 0
+b64() { printf '%s' "$1" | head -c 900 | base64 -w0; }
+script="$(cat <<'PS'
+$d = { param($b) [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b)) }
+$t = & $d $args[0]; $m = & $d $args[1]; $l = $args[2]
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null
+$e = [Security.SecurityElement]; $a = ""
+if ($l -match '^[0-9]+$') { $a = " activationType='protocol' launch='ws-claude://focus/$l'" }
+$x = New-Object Windows.Data.Xml.Dom.XmlDocument
+$x.LoadXml("<toast$a><visual><binding template='ToastGeneric'><text>" + $e::Escape($t) + "</text><text>" + $e::Escape($m) + "</text></binding></visual></toast>")
+$app = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($app).Show([Windows.UI.Notifications.ToastNotification]::new($x))
+PS
+)"
+enc="$(printf '& { %s } %s %s %s' "$script" "'$(b64 "$title")'" "'$(b64 "$text")'" "'$pane'" | iconv -t UTF-16LE | base64 -w0)"
+timeout 20 "$ps" -NoProfile -NonInteractive -EncodedCommand "$enc" >/dev/null 2>&1 &
+exit 0

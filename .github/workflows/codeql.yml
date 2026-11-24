@@ -7,7 +7,7 @@ on:
 permissions:
   contents: read
 jobs:
-  analizar:
+  analyze:
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -15,13 +15,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lenguaje: [python, actions]
+        language: [python, actions]
     steps:
       - uses: actions/checkout@v5
       - uses: github/codeql-action/init@v3
         with:
-          languages: ${{ matrix.lenguaje }}
+          languages: ${{ matrix.language }}
           build-mode: none
       - uses: github/codeql-action/analyze@v3
         with:
-          category: "/language:${{ matrix.lenguaje }}"
+          category: "/language:${{ matrix.language }}"

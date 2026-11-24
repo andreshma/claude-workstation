@@ -2,8 +2,8 @@
 """ws-otel — LOCAL OpenTelemetry collector for Claude Code (ADR-014). Nothing leaves the machine.
 
 Claude Code exports metrics, events and traces over OTLP (http/json). This collector listens on 127.0.0.1, flattens
-each signal to one JSON line and stores it in ~/.local/share/ws-telemetria/otel/YYYY-MM-DD.jsonl (folder 0700,
-files 0600). ws-telemetria and ws-informe read those files.
+each signal to one JSON line and stores it in ~/.local/share/ws-telemetry/otel/YYYY-MM-DD.jsonl (folder 0700,
+files 0600). ws-telemetry and ws-report read those files.
 
 What it adds to what the hooks already record:
   · API calls one by one: duration, tokens, cost, model, effort, origin (main thread or subagent)
@@ -16,16 +16,16 @@ What is stored: EVERYTHING Claude Code sends (owner's decision, ADR-014: the dat
 is used to analyze and estimate). That includes the text of prompts and responses, and tool parameters and content
 when those options are turned on in ~/.claude/settings.json. The only thing redacted is secrets that can be
 recognized by their shape (tokens, keys, passwords in key=value form): they add nothing to the analysis and must not
-sit in clear text on disk. With WS_OTEL_CONTENIDO=0 the collector goes back to no-content mode: it drops texts,
+sit in clear text on disk. With WS_OTEL_CONTENT=0 the collector goes back to no-content mode: it drops texts,
 parameters and identity and keeps only counts, times and names.
 
 Usage:
-  ws-otel servir            listens in the foreground (Ctrl+C stops it)
-  ws-otel iniciar|detener   leaves it running in the background / stops it
-  ws-otel asegurar          starts it only if it is not running (called by the tmux watcher)
-  ws-otel estado            whether it is running, port and how many signals are stored today
-  ws-otel resumen [--dias N]   count by signal type and by event
-Variables: WS_OTEL_PUERTO (14318), WS_OTEL_DIR (destination), WS_OTEL_RETENCION_DIAS (395), WS_OTEL_CONTENIDO (1; 0 = no content).
+  ws-otel serve             listens in the foreground (Ctrl+C stops it)
+  ws-otel start|stop        leaves it running in the background / stops it
+  ws-otel ensure            starts it only if it is not running (called by the tmux watcher)
+  ws-otel status            whether it is running, port and how many signals are stored today
+  ws-otel summary [--days N]   count by signal type and by event
+Variables: WS_OTEL_PORT (14318), WS_OTEL_DIR (destination), WS_OTEL_RETENTION_DAYS (395), WS_OTEL_CONTENT (1; 0 = no content).
 """
 from __future__ import annotations
 
@@ -42,17 +42,22 @@ from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-PUERTO = int(os.environ.get("WS_OTEL_PUERTO", "14318"))
-DIR = Path(os.environ.get("WS_OTEL_DIR") or Path(os.environ.get("WS_TELEMETRIA_DIR") or Path.home() / ".local/share/ws-telemetria") / "otel")
+def env(new: str, old: str, default: str) -> str:
+    """Value of a variable; the name it had before the rename still counts if the new one is not set."""
+    return os.environ.get(new) or os.environ.get(old) or default
+
+
+PORT = int(env("WS_OTEL_PORT", "WS_OTEL_PUERTO", "14318"))
+DIR = Path(os.environ.get("WS_OTEL_DIR") or Path(os.environ.get("WS_TELEMETRY_DIR") or Path.home() / ".local/share/ws-telemetry") / "otel")
 RUN = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / f"ws-otel-{os.getuid()}"  # nosec B108 — own folder, 0700
 PID = RUN / "pid"
-RETENCION = int(os.environ.get("WS_OTEL_RETENCION_DIAS", "395"))
-MAX_CUERPO = 16 * 1024 * 1024
+RETENTION = int(env("WS_OTEL_RETENTION_DAYS", "WS_OTEL_RETENCION_DIAS", "395"))
+MAX_BODY = 16 * 1024 * 1024
 
-TODO = os.environ.get("WS_OTEL_CONTENIDO", "1") != "0"
+KEEP_ALL = env("WS_OTEL_CONTENT", "WS_OTEL_CONTENIDO", "1") != "0"
 # Secrets by their shape: always redacted, also in "everything" mode. (The patterns are built in pieces so the
 # kit's secret scanners do not mistake this file for a leak.)
-SECRETOS = re.compile("|".join([
+SECRETS = re.compile("|".join([
     r"gh[pousr]_[A-Za-z0-9]{20,}", r"github_pat_[A-Za-z0-9_]{20,}", r"sk-ant-[A-Za-z0-9_-]{20,}", r"AKIA[0-9A-Z]{16}",
     r"xox[baprs]-[A-Za-z0-9-]{10,}", r"AIza[0-9A-Za-z_-]{30,}", r"(?i:bearer)\s+[A-Za-z0-9._~+/=-]{20,}",
     r"AccountKey=[A-Za-z0-9+/=]{20,}", r"[?&]sig=[A-Za-z0-9%]{20,}", r"\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\b",
@@ -60,26 +65,26 @@ SECRETOS = re.compile("|".join([
     r"((?i:pass(?:word|wd)?|pwd|secret|token|api[_-]?key|client[_-]?secret)\s*[=:]\s*)[^\s\"'&,;]{4,}"]))
 
 
-def tapar(v):
+def redact(v):
     """Redacts the recognizable secrets inside a text (or inside each text of a list)."""
     if isinstance(v, str):
-        return SECRETOS.sub(lambda m: (m.group(1) or "") + "[SECRET]" if m.lastindex else "[SECRET]", v)
+        return SECRETS.sub(lambda m: (m.group(1) or "") + "[SECRET]" if m.lastindex else "[SECRET]", v)
     if isinstance(v, list):
-        return [tapar(x) for x in v]
+        return [redact(x) for x in v]
     return v
 
 
-# Content that is not stored in no-content mode (WS_OTEL_CONTENIDO=0).
-CONTENIDO = {"prompt", "prompt_text", "response", "body", "body_ref", "tool_input", "tool_parameters", "error",
+# Content that is not stored in no-content mode (WS_OTEL_CONTENT=0).
+CONTENT = {"prompt", "prompt_text", "response", "body", "body_ref", "tool_input", "tool_parameters", "error",
              "hook_definitions", "hook_matcher", "classifier_category", "category", "user_prompt", "system_prompt",
              "managed_settings.settings", "workspace.host_paths"}
 # Identity that is not needed to measure.
-IDENTIDAD = {"user.email", "user.account_uuid", "user.account_id", "user.id", "organization.id", "host.name", "host.id"}
+IDENTITY = {"user.email", "user.account_uuid", "user.account_id", "user.id", "organization.id", "host.name", "host.id"}
 # Of a tool's parameters only these names are kept.
-NOMBRES = ("mcp_server_name", "mcp_tool_name", "skill_name", "subagent_type")
+NAMES = ("mcp_server_name", "mcp_tool_name", "skill_name", "subagent_type")
 
 
-def valor(v: dict):
+def value(v: dict):
     """Value of an OTLP attribute (AnyValue) as a native type."""
     if not isinstance(v, dict):
         return v
@@ -94,21 +99,21 @@ def valor(v: dict):
     if "doubleValue" in v:
         return v["doubleValue"]
     if "arrayValue" in v:
-        return [valor(x) for x in v["arrayValue"].get("values", [])]
+        return [value(x) for x in v["arrayValue"].get("values", [])]
     return None
 
 
-def atributos(lista) -> dict:
+def attributes(items) -> dict:
     """OTLP attributes → dict. In "everything" mode everything is stored with secrets redacted; in no-content mode
     texts and identity are removed. From tool_parameters the names and the Bash program are always extracted separately."""
     out = {}
-    for a in lista or []:
-        k, v = a.get("key"), valor(a.get("value"))
+    for a in items or []:
+        k, v = a.get("key"), value(a.get("value"))
         if k is None:
             continue
-        if TODO:
-            out[k] = tapar(v)
-        if k in IDENTIDAD and not TODO:
+        if KEEP_ALL:
+            out[k] = redact(v)
+        if k in IDENTITY and not KEEP_ALL:
             continue
         if k == "tool_parameters" and isinstance(v, str):
             try:
@@ -116,14 +121,14 @@ def atributos(lista) -> dict:
             except ValueError:
                 p = {}
             if isinstance(p, dict):
-                for n in NOMBRES:
+                for n in NAMES:
                     if isinstance(p.get(n), str):
                         out[n] = p[n][:80]
                 cmd = p.get("bash_command") or p.get("command")
                 if isinstance(cmd, str) and cmd.strip():
-                    out["programa"] = cmd.strip().split()[0].split("/")[-1][:40]
+                    out["program"] = cmd.strip().split()[0].split("/")[-1][:40]
             continue
-        if TODO or k in CONTENIDO:
+        if KEEP_ALL or k in CONTENT:
             continue
         if isinstance(v, str) and len(v) > 300:      # a long value is content, not a label
             v = v[:300]
@@ -138,126 +143,157 @@ def iso(nanos) -> str:
         return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
-def aplanar(senal: str, cuerpo: dict) -> list[dict]:
+# The collector's own fields. A Claude Code attribute with one of these names must not replace them (the readers
+# depend on them); it is kept as "attr.<name>".
+OWN = ("signal", "name", "value", "unit", "trace", "parent")
+# Rows stored before these fields were renamed (the files stay as they are; they are read through normalize()).
+LEGACY = {"senal": "signal", "nombre": "name", "valor": "value", "unidad": "unit", "traza": "trace", "padre": "parent",
+          "programa": "program"}
+LEGACY_SIGNAL = {"metrica": "metric", "evento": "event"}
+
+
+def row(fixed: dict, *attrs: dict) -> dict:
+    """One stored row: the fixed fields, then the resource and record attributes (same order as always)."""
+    out = dict(fixed)
+    for a in attrs:
+        out.update(a)
+    for k in OWN:
+        if fixed.get(k) is not None and any(k in a for a in attrs):
+            out["attr." + k], out[k] = out[k], fixed[k]
+    return out
+
+
+def normalize(r: dict) -> dict:
+    """A stored row with the current field names, whichever version of the collector wrote it."""
+    if "senal" not in r:
+        return r
+    new = set(LEGACY.values())
+    out = {("attr." + k if k in new else k): v for k, v in r.items() if k not in LEGACY}
+    out.update({LEGACY[k]: v for k, v in r.items() if k in LEGACY})
+    out["signal"] = LEGACY_SIGNAL.get(out["signal"], out["signal"])
+    return out
+
+
+def flatten(kind: str, body: dict) -> list[dict]:
     """One OTLP export (http/json) → one row per metric point, event or span."""
-    filas = []
-    if senal == "metrics":
-        for rm in cuerpo.get("resourceMetrics", []):
-            rec = atributos((rm.get("resource") or {}).get("attributes"))
+    rows = []
+    if kind == "metrics":
+        for rm in body.get("resourceMetrics", []):
+            rec = attributes((rm.get("resource") or {}).get("attributes"))
             for sm in rm.get("scopeMetrics", []):
                 for m in sm.get("metrics", []):
-                    datos = m.get("sum") or m.get("gauge") or m.get("histogram") or {}
-                    for p in datos.get("dataPoints", []):
+                    data = m.get("sum") or m.get("gauge") or m.get("histogram") or {}
+                    for p in data.get("dataPoints", []):
                         v = p.get("asDouble", p.get("asInt", p.get("sum")))
                         try:
                             v = float(v)
                         except (TypeError, ValueError):
                             continue
-                        filas.append({"ts": iso(p.get("timeUnixNano")), "senal": "metrica", "nombre": m.get("name"), "valor": v,
-                                      "unidad": m.get("unit") or None, **rec, **atributos(p.get("attributes"))})
-    elif senal == "logs":
-        for rl in cuerpo.get("resourceLogs", []):
-            rec = atributos((rl.get("resource") or {}).get("attributes"))
+                        rows.append(row({"ts": iso(p.get("timeUnixNano")), "signal": "metric", "name": m.get("name"), "value": v,
+                                         "unit": m.get("unit") or None}, rec, attributes(p.get("attributes"))))
+    elif kind == "logs":
+        for rl in body.get("resourceLogs", []):
+            rec = attributes((rl.get("resource") or {}).get("attributes"))
             for sl in rl.get("scopeLogs", []):
                 for r in sl.get("logRecords", []):
-                    a = atributos(r.get("attributes"))
-                    nombre = a.pop("event.name", None) or valor(r.get("body")) or r.get("eventName") or "?"
+                    a = attributes(r.get("attributes"))
+                    name = a.pop("event.name", None) or value(r.get("body")) or r.get("eventName") or "?"
                     a.pop("event.timestamp", None)
-                    filas.append({"ts": iso(r.get("timeUnixNano") or r.get("observedTimeUnixNano")), "senal": "evento",
-                                  "nombre": str(nombre)[:80], **rec, **a})
-    elif senal == "traces":
-        for rs in cuerpo.get("resourceSpans", []):
-            rec = atributos((rs.get("resource") or {}).get("attributes"))
+                    rows.append(row({"ts": iso(r.get("timeUnixNano") or r.get("observedTimeUnixNano")), "signal": "event",
+                                     "name": str(name)[:80]}, rec, a))
+    elif kind == "traces":
+        for rs in body.get("resourceSpans", []):
+            rec = attributes((rs.get("resource") or {}).get("attributes"))
             for ss in rs.get("scopeSpans", []):
                 for s in ss.get("spans", []):
                     try:
                         ms = round((int(s["endTimeUnixNano"]) - int(s["startTimeUnixNano"])) / 1e6, 1)
                     except (KeyError, TypeError, ValueError):
                         ms = None
-                    filas.append({"ts": iso(s.get("startTimeUnixNano")), "senal": "span", "nombre": s.get("name"), "dur_ms": ms,
-                                  "traza": s.get("traceId"), "span": s.get("spanId"), "padre": s.get("parentSpanId") or None,
-                                  "error": (s.get("status") or {}).get("code") in (2, "STATUS_CODE_ERROR"),
-                                  **rec, **atributos(s.get("attributes"))})
-    return [{k: v for k, v in f.items() if v is not None} for f in filas]
+                    rows.append(row({"ts": iso(s.get("startTimeUnixNano")), "signal": "span", "name": s.get("name"), "dur_ms": ms,
+                                     "trace": s.get("traceId"), "span": s.get("spanId"), "parent": s.get("parentSpanId") or None,
+                                     "error": (s.get("status") or {}).get("code") in (2, "STATUS_CODE_ERROR")},
+                                    rec, attributes(s.get("attributes"))))
+    return [{k: v for k, v in f.items() if v is not None} for f in rows]
 
 
-def guardar(filas: list[dict]) -> None:
-    if not filas:
+def save(rows: list[dict]) -> None:
+    if not rows:
         return
     DIR.mkdir(parents=True, exist_ok=True)
     os.chmod(DIR, 0o700)
-    por_dia: dict[str, list[str]] = {}
-    for f in filas:
+    by_day: dict[str, list[str]] = {}
+    for f in rows:
         # the file's day is LOCAL, like the rest of the telemetry
         try:
             d = dt.datetime.strptime(f["ts"][:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=dt.timezone.utc).astimezone().date().isoformat()
         except ValueError:
             d = dt.date.today().isoformat()
-        por_dia.setdefault(d, []).append(json.dumps(f, ensure_ascii=False, separators=(",", ":")))
-    for d, lineas in por_dia.items():
-        ruta = DIR / f"{d}.jsonl"
-        fd = os.open(ruta, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        by_day.setdefault(d, []).append(json.dumps(f, ensure_ascii=False, separators=(",", ":")))
+    for d, lines in by_day.items():
+        path = DIR / f"{d}.jsonl"
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as fh:
-            fh.write("\n".join(lineas) + "\n")
+            fh.write("\n".join(lines) + "\n")
 
 
-def limpiar() -> None:
-    """Compresses days older than 35 and deletes those older than RETENCION."""
-    hoy = dt.date.today()
+def cleanup() -> None:
+    """Compresses days older than 35 and deletes those older than RETENTION."""
+    today = dt.date.today()
     for f in DIR.glob("*.jsonl*"):
         try:
-            edad = (hoy - dt.date.fromisoformat(f.name[:10])).days
+            age = (today - dt.date.fromisoformat(f.name[:10])).days
         except ValueError:
             continue
-        if edad > RETENCION:
+        if age > RETENTION:
             f.unlink(missing_ok=True)
-        elif edad > 35 and f.suffix == ".jsonl":
+        elif age > 35 and f.suffix == ".jsonl":
             with open(f, "rb") as a, gzip.open(str(f) + ".gz", "wb") as b:
                 b.write(a.read())
             os.chmod(str(f) + ".gz", 0o600)
             f.unlink()
 
 
-class Receptor(BaseHTTPRequestHandler):
+class Receiver(BaseHTTPRequestHandler):
     server_version = "ws-otel"
 
     def log_message(self, *a):   # silent: does not fill the terminal or store paths
         pass
 
-    def _resp(self, codigo: int, cuerpo: bytes = b"{}") -> None:
-        self.send_response(codigo)
+    def _resp(self, code: int, body: bytes = b"{}") -> None:
+        self.send_response(code)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(cuerpo)))
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(cuerpo)
+        self.wfile.write(body)
 
     def do_GET(self):   # noqa: N802
-        self._resp(200, b'{"servicio":"ws-otel"}') if self.path == "/" else self._resp(404)
+        self._resp(200, b'{"service":"ws-otel"}') if self.path == "/" else self._resp(404)
 
     def do_POST(self):   # noqa: N802
-        senal = self.path.rstrip("/").rsplit("/", 1)[-1]
-        if not self.path.startswith("/v1/") or senal not in ("metrics", "logs", "traces"):
+        kind = self.path.rstrip("/").rsplit("/", 1)[-1]
+        if not self.path.startswith("/v1/") or kind not in ("metrics", "logs", "traces"):
             return self._resp(404)
         try:
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             n = 0
-        if n <= 0 or n > MAX_CUERPO:
-            return self._resp(413 if n > MAX_CUERPO else 400)
-        crudo = self.rfile.read(n)
+        if n <= 0 or n > MAX_BODY:
+            return self._resp(413 if n > MAX_BODY else 400)
+        raw = self.rfile.read(n)
         if "json" not in (self.headers.get("Content-Type") or "").lower():
             # protobuf: accepted so Claude does not retry, but not stored (configure http/json)
             return self._resp(415, b'{"error":"use OTEL_EXPORTER_OTLP_PROTOCOL=http/json"}')
         try:
             if (self.headers.get("Content-Encoding") or "").lower() == "gzip":
-                crudo = gzip.decompress(crudo)
-            guardar(aplanar(senal, json.loads(crudo)))
+                raw = gzip.decompress(raw)
+            save(flatten(kind, json.loads(raw)))
         except (ValueError, OSError, EOFError):
             return self._resp(400)
         self._resp(200)
 
 
-def corre() -> int | None:
+def running() -> int | None:
     """PID of the background collector, if it is still alive."""
     try:
         pid = int(PID.read_text().strip())
@@ -267,18 +303,18 @@ def corre() -> int | None:
         return None
 
 
-def servir() -> int:
+def serve() -> int:
     RUN.mkdir(parents=True, exist_ok=True)
     os.chmod(RUN, 0o700)
     try:
-        srv = ThreadingHTTPServer(("127.0.0.1", PUERTO), Receptor)   # this machine only
+        srv = ThreadingHTTPServer(("127.0.0.1", PORT), Receiver)   # this machine only
     except OSError as e:
-        print(f"ws-otel: could not listen on 127.0.0.1:{PUERTO} ({e})", file=sys.stderr)
+        print(f"ws-otel: could not listen on 127.0.0.1:{PORT} ({e})", file=sys.stderr)
         return 1
     PID.write_text(str(os.getpid()))
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:
-        limpiar()
+        cleanup()
     except OSError:
         pass
     try:
@@ -287,70 +323,70 @@ def servir() -> int:
         pass
     finally:
         srv.server_close()
-        if corre() == os.getpid():
+        if running() == os.getpid():
             PID.unlink(missing_ok=True)
     return 0
 
 
-def iniciar() -> int:
-    if corre():
+def start() -> int:
+    if running():
         return 0
     RUN.mkdir(parents=True, exist_ok=True)
     os.chmod(RUN, 0o700)
-    with open(os.devnull, "rb") as nulo, open(RUN / "salida.log", "ab") as log:
-        subprocess.Popen([sys.executable, os.path.abspath(__file__), "servir"], stdin=nulo, stdout=log, stderr=log,  # nosec B603
+    with open(os.devnull, "rb") as null, open(RUN / "output.log", "ab") as log:
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "serve"], stdin=null, stdout=log, stderr=log,  # nosec B603
                          start_new_session=True, close_fds=True)
     for _ in range(30):
-        if corre():
+        if running():
             return 0
         time.sleep(0.1)
-    print("ws-otel: did not start (check", RUN / "salida.log", ")", file=sys.stderr)
+    print("ws-otel: did not start (check", RUN / "output.log", ")", file=sys.stderr)
     return 1
 
 
-def filas(dias: int):
-    desde = (dt.date.today() - dt.timedelta(days=dias - 1)).isoformat()
+def rows(days: int):
+    since = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
     for f in sorted(DIR.glob("*.jsonl*")):
-        if f.name[:10] < desde:
+        if f.name[:10] < since:
             continue
-        abrir = gzip.open if f.suffix == ".gz" else open
-        with abrir(f, "rt", encoding="utf-8", errors="replace") as fh:
-            for linea in fh:
+        opener = gzip.open if f.suffix == ".gz" else open
+        with opener(f, "rt", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
                 try:
-                    yield json.loads(linea)
+                    yield normalize(json.loads(line))
                 except ValueError:
                     continue
 
 
 def main() -> int:
     a = sys.argv[1:]
-    accion = a[0] if a else ""
-    if accion == "servir":
-        return servir()
-    if accion in ("iniciar", "asegurar"):
-        return iniciar()
-    if accion == "detener":
-        pid = corre()
+    action = a[0] if a else ""
+    if action == "serve":
+        return serve()
+    if action in ("start", "ensure"):
+        return start()
+    if action == "stop":
+        pid = running()
         if pid:
             os.kill(pid, signal.SIGTERM)
         print("ws-otel stopped" if pid else "ws-otel was not running")
         return 0
-    if accion == "estado":
-        pid = corre()
-        hoy = DIR / f"{dt.date.today().isoformat()}.jsonl"
-        n = sum(1 for _ in open(hoy, "rb")) if hoy.exists() else 0
-        print(f"{'running (pid ' + str(pid) + ')' if pid else 'stopped'} · 127.0.0.1:{PUERTO} · today: {n:,} signals · {DIR}")
+    if action == "status":
+        pid = running()
+        today = DIR / f"{dt.date.today().isoformat()}.jsonl"
+        n = sum(1 for _ in open(today, "rb")) if today.exists() else 0
+        print(f"{'running (pid ' + str(pid) + ')' if pid else 'stopped'} · 127.0.0.1:{PORT} · today: {n:,} signals · {DIR}")
         return 0 if pid else 1
-    if accion == "resumen":
-        dias = int(a[a.index("--dias") + 1]) if "--dias" in a else 7
-        c = Counter((f.get("senal"), f.get("nombre")) for f in filas(dias))
+    if action == "summary":
+        days = int(a[a.index("--days") + 1]) if "--days" in a else 7
+        c = Counter((f.get("signal"), f.get("name")) for f in rows(days))
         if not c:
-            print(f"No signals in {dias} days. Did Claude start with telemetry turned on? (ws-otel estado)")
+            print(f"No signals in {days} days. Did Claude start with telemetry turned on? (ws-otel status)")
             return 0
         for (s, n), v in sorted(c.items(), key=lambda x: (x[0][0] or "", -x[1])):
             print(f"{v:8,}  {s:8} {n}")
         return 0
-    print(__doc__.split("Usage:")[1].strip() if "Usage:" in (__doc__ or "") else "ws-otel servir|iniciar|detener|asegurar|estado|resumen")
+    print(__doc__.split("Usage:")[1].strip() if "Usage:" in (__doc__ or "") else "ws-otel serve|start|stop|ensure|status|summary")
     return 2
 
 

@@ -7,40 +7,40 @@
 #   · Nothing saved: runs it now (10 s at most).
 # Also useful for slow SessionStart hooks (e.g. the MemPalace health check): the session gets the
 # last result instantly and the check runs behind it.
-# Usage: ws-cache [--max S] [--tope S] <seconds> <command> [args…]
-#   e.g. #(~/.local/bin/ws-cache 30 ~/bin/mi-segmento.sh)
+# Usage: ws-cache [--max S] [--timeout S] <seconds> <command> [args…]
+#   e.g. #(~/.local/bin/ws-cache 30 ~/bin/my-segment.sh)
 #   --max S    if the saved output is older than S seconds it is no longer trusted: runs now and waits
-#   --tope S   limit for each run (10 s by default)
+#   --timeout S   limit for each run (10 s by default)
 # Cache: ${XDG_RUNTIME_DIR:-/tmp}/ws-cache-<uid>/ (0700), one entry per command+arguments.
 set -uo pipefail
-max=0; tope=10
+max=0; limit=10
 while [[ "${1:-}" == --* ]]; do
   case "$1" in
     --max)  max="${2:-}";  shift 2 ;;
-    --tope) tope="${2:-}"; shift 2 ;;
+    --timeout|--tope) limit="${2:-}"; shift 2 ;;
     *) echo "ws-cache: unknown option: $1" >&2; exit 2 ;;
   esac
 done
-[[ "$max" =~ ^[0-9]+$ && "$tope" =~ ^[0-9]+$ ]] || { echo "ws-cache: --max and --tope take seconds" >&2; exit 2; }
+[[ "$max" =~ ^[0-9]+$ && "$limit" =~ ^[0-9]+$ ]] || { echo "ws-cache: --max and --timeout take seconds" >&2; exit 2; }
 ttl="${1:?seconds}"; shift; [[ "$ttl" =~ ^[0-9]+$ ]] || { echo "ws-cache: invalid seconds" >&2; exit 2; }
 (( $# )) || { echo "ws-cache: missing command" >&2; exit 2; }
 d="${XDG_RUNTIME_DIR:-/tmp}/ws-cache-$(id -u)"; mkdir -p "$d" 2>/dev/null && chmod 700 "$d"
 k="$d/$(printf '%s\0' "$@" | md5sum | cut -c1-16)"
 
-refrescar() {   # runs the command and saves its output atomically (one refresh at a time per command)
+refresh() {   # runs the command and saves its output atomically (one refresh at a time per command)
   exec 9>"$k.lock"; flock -n 9 || return 0
-  timeout "$tope" "$@" > "$k.tmp" 2>/dev/null && mv -f "$k.tmp" "$k" || rm -f "$k.tmp"
+  timeout "$limit" "$@" > "$k.tmp" 2>/dev/null && mv -f "$k.tmp" "$k" || rm -f "$k.tmp"
 }
 
 if [[ -f "$k" ]]; then
-  edad=$(( $(date +%s) - $(stat -c %Y "$k") ))
-  if (( max > 0 && edad >= max )); then
-    refrescar "$@"; cat "$k"
+  age=$(( $(date +%s) - $(stat -c %Y "$k") ))
+  if (( max > 0 && age >= max )); then
+    refresh "$@"; cat "$k"
   else
     cat "$k"
-    (( edad < ttl )) || ( refrescar "$@" & ) </dev/null >/dev/null 2>&1
+    (( age < ttl )) || ( refresh "$@" & ) </dev/null >/dev/null 2>&1
   fi
 else
-  refrescar "$@"; cat "$k" 2>/dev/null
+  refresh "$@"; cat "$k" 2>/dev/null
 fi
 exit 0

@@ -21,6 +21,7 @@ comments and the changelog refer to a record as `ADR-0NN` (for example `ADR-013`
 | [0012](0012-per-tab-protection.md) | Three per-tab protection levels for Claude | Accepted, partly superseded by [0013](0013-minimum-protection-floor.md) |
 | [0013](0013-minimum-protection-floor.md) | A minimum protection floor that no mode turns off | Accepted, implemented in phases |
 | [0014](0014-local-opentelemetry-collector.md) | Local OpenTelemetry collector and full on-machine logging | Accepted |
+| [0015](0015-english-names-and-language-selector.md) | English names and a language selector | Accepted |
 
 Records 0001 to 0007 are not in this repository. Its history mentions 0001 to 0006 only as part of a design
 document that was never part of it, and nothing mentions 0007; the code, the changelog and the other documents do not

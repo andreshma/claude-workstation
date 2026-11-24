@@ -4,6 +4,7 @@
 # every file that changes is backed up first as <file>.bak.<date>; what is already the same is left alone.
 #
 # Usage: bash install.sh [--dry-run] [--no-plugins] [--no-mcp] [--no-git-hooks] [--win-user USER] [--repos PATH]
+#        bash install.sh --remove-shims   deletes the wrappers left under the names used before 3.0
 #   --dry-run          shows what would change (new / changed / same) without writing anything
 #   --no-plugins       does not install TPM or the tmux plugins
 #   --no-mcp           does not register MCP servers
@@ -13,19 +14,22 @@
 # replaced with this machine's values before installing.
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+source "$(dirname -- "${BASH_SOURCE[0]}")/migrate.sh"
 
-DRY=0 PLUGINS=1 MCP=1 GITHOOKS=1 REPOS_DIR=""
+DRY=0 PLUGINS=1 MCP=1 GITHOOKS=1 SHIMS=0 REPOS_DIR=""
 STAMP="$(date +%Y%m%d-%H%M%S)"
 while (( $# )); do
   case "$1" in
     --dry-run) DRY=1 ;; --no-plugins) PLUGINS=0 ;; --no-mcp) MCP=0 ;; --no-git-hooks) GITHOOKS=0 ;;
+    --remove-shims) SHIMS=1 ;;
     --win-user) export WIN_USER="${2:?missing user}"; shift ;;
     --repos) REPOS_DIR="${2:?missing path}"; shift ;;
-    -h|--help) sed -n '3,14p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '3,15p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
   shift
 done
+if (( SHIMS )); then log "Wrappers of the old names"; remove_shims; exit 0; fi
 [[ -d "$FILES" ]] || die "There is no files/: run export.sh first on the source machine"
 
 WU="$(win_user)"
@@ -65,7 +69,7 @@ ensure_bashrc() {
   local -a lines=(
     "export REPOS=$REPOS_DIR"
     '[ -f ~/.config/tmux-claude/functions.sh ] && . ~/.config/tmux-claude/functions.sh'
-    '[ -f ~/.config/tmux-claude/cuentas.sh ] && . ~/.config/tmux-claude/cuentas.sh'
+    '[ -f ~/.config/tmux-claude/accounts.sh ] && . ~/.config/tmux-claude/accounts.sh'
     '[ -f ~/.config/tmux-claude/shell.sh ] && . ~/.config/tmux-claude/shell.sh'
   )
   for line in "${lines[@]}"; do
@@ -74,6 +78,7 @@ ensure_bashrc() {
   done
 }
 
+migrate_names
 log "Files ($([[ $DRY -eq 1 ]] && echo 'dry run' || echo "backup: *.bak.$STAMP"))"
 while IFS= read -r rel; do apply_file "$rel"; done < <(manifest_files "$FILES")
 ensure_bashrc
@@ -82,12 +87,12 @@ ensure_bashrc
 # ~/.config/git/hooks. Set only if there is no other value: it does not override yours. --no-git-hooks skips it.
 if (( GITHOOKS )); then
   log "Git gate"
-  hp_actual="$(git config --global --get core.hooksPath 2>/dev/null || true)"
-  if [[ "$hp_actual" == "$HOME/.config/git/hooks" ]]; then printf '  same    core.hooksPath\n'
-  elif [[ -z "$hp_actual" ]]; then
+  hp_current="$(git config --global --get core.hooksPath 2>/dev/null || true)"
+  if [[ "$hp_current" == "$HOME/.config/git/hooks" ]]; then printf '  same    core.hooksPath\n'
+  elif [[ -z "$hp_current" ]]; then
     printf '  new     core.hooksPath → ~/.config/git/hooks\n'
     (( DRY )) || git config --global core.hooksPath "$HOME/.config/git/hooks"
-  else printf '  skipped core.hooksPath already points to %s (not changed)\n' "$hp_actual"; fi
+  else printf '  skipped core.hooksPath already points to %s (not changed)\n' "$hp_current"; fi
 fi
 
 if (( PLUGINS )); then
@@ -114,4 +119,11 @@ if [[ -f "$KIT/files/windows/.wslconfig" ]]; then
   log "Windows: compare files/windows/.wslconfig with %UserProfile%\\.wslconfig by hand (it is not applied automatically)"
 fi
 if (( DRY )); then log "Dry run: nothing was written."
+elif (( MIGRATED )); then
+  log "Done. Names changed: save your work and restart tmux (tmux kill-server, then open it again); the tabs come back."
+  log "When nothing calls the old names any more: bash install.sh --remove-shims"
+  if (( HANDLER_STALE )); then
+    warn "The Windows handler of ws-claude:// could not be updated: clicking a notification will not jump to its tab."
+    warn "In that .ps1, accept ws-claude://focus/N and call tmux-goto (see windows/ws-claude-focus.ps1)."
+  fi
 else log "Done. Reload: tmux source-file ~/.tmux.conf; in each tab /exit and claude -c"; fi

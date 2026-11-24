@@ -65,7 +65,7 @@ jobs:
           echo "tmux: configuration and $n menus ok"
 
   sast:
-    name: SAST y secretos (bandit, gitleaks)
+    name: SAST and secrets (bandit, gitleaks)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -90,7 +90,7 @@ jobs:
           ./gitleaks dir --config .gitleaks.toml --redact --no-banner .
 
   test:
-    name: Pruebas del kit
+    name: Kit tests
     runs-on: ubuntu-24.04
     needs: [lint, sast]
     timeout-minutes: 15
@@ -103,8 +103,8 @@ jobs:
       - name: tests/run.sh
         run: bash tests/run.sh
 
-  instalacion:
-    name: Instalación limpia (Ubuntu 24.04)
+  install:
+    name: Clean install (Ubuntu 24.04)
     runs-on: ubuntu-24.04
     needs: [lint]
     timeout-minutes: 20

@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+#
+# tmux-favorites — favorite tabs: mark a tab's folder with ★ and get back to it from a list, whether it is
+# open or not. The mark belongs to the folder, not the tab: it survives closing the tab and restarting tmux.
+# Ctrl+b * adds or removes the current tab · Ctrl+b F opens the list.
+#
+# Usage: tmux-favorites                     list (Enter: go or open · Ctrl+X: remove from favorites)
+#      tmux-favorites --toggle [window]   adds or removes that tab's folder (default: the current one)
+#      tmux-favorites --remove <folder>     removes a folder from favorites
+#      tmux-favorites --list               the list as text: folder<TAB>visible row
+#      tmux-favorites --mark              sets or clears the ★ on all open tabs (called by the hooks)
+#      tmux-favorites --bar               adds the ★ to the status bar formats (idempotent)
+# File: ~/.config/tmux-claude/favorites, one folder per line. It can be edited by hand.
+set -uo pipefail
+FAV="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-claude/favorites"
+TAB=$'\t'
+MARK='#{?@fav, ★,}'
+
+favorites() { [[ -f "$FAV" ]] && grep -v '^[[:space:]]*$' "$FAV"; }
+is_favorite() { favorites | grep -qxF -- "$1"; }
+
+#######################################
+# Rewrites the file without one folder (atomic write: never left half-written).
+#######################################
+remove() {
+  local tmp; tmp="$(mktemp "$FAV.XXXXXX")" || return 1
+  favorites | grep -vxF -- "$1" > "$tmp"
+  mv -f "$tmp" "$FAV"
+}
+
+#######################################
+# Syncs the @fav option of every open tab with the file.
+#######################################
+mark() {
+  local w d
+  while IFS="$TAB" read -r w d; do
+    if is_favorite "$d"; then tmux set -w -t "$w" @fav 1; else tmux set -wu -t "$w" @fav 2>/dev/null; fi
+  done < <(tmux list-windows -a -F "#{window_id}${TAB}#{pane_current_path}" 2>/dev/null)
+  return 0
+}
+
+#######################################
+# List rows: folder<TAB>★ name · open or not · short path.
+#######################################
+list_rows() {
+  local d open_tabs where
+  open_tabs="$(tmux list-windows -a -F "#{pane_current_path}${TAB}#{session_name}:#{window_index} #{window_name}" 2>/dev/null)"
+  while IFS= read -r d; do
+    where="$(awk -F "$TAB" -v d="$d" '$1 == d { print $2; exit }' <<<"$open_tabs")"
+    if [[ -n "$where" ]]; then where=$'\e[32m● '"${where:0:26}"$'\e[0m'
+    elif [[ -d "$d" ]]; then where=$'\e[2m○ no tab\e[0m'
+    else where=$'\e[31m✗ no longer exists\e[0m'; fi
+    printf '%s\t\e[33m★\e[0m %-24s %-40s \e[2m%s\e[0m\n' "$d" "$(basename "$d" | cut -c1-24)" "$where" "${d/#"$HOME"/\~}"
+  done < <(favorites)
+}
+
+case "${1:-}" in
+  --bar)
+    for o in window-status-format window-status-current-format; do
+      v="$(tmux show -gv "$o" 2>/dev/null)"
+      [[ "$v" == *"@fav"* ]] || tmux set -ag "$o" "$MARK"
+    done; exit 0 ;;
+  --mark) mark; exit 0 ;;
+  --list) list_rows; exit 0 ;;
+  --remove) remove "${2:?folder}"; mark; exit 0 ;;
+  --toggle)
+    d="$(tmux display -p ${2:+-t "$2"} '#{pane_current_path}')"
+    [[ -n "$d" ]] || exit 1
+    mkdir -p "$(dirname "$FAV")"
+    if is_favorite "$d"; then remove "$d"; msg="☆ Removed from favorites: $(basename "$d")"
+    else printf '%s\n' "$d" >> "$FAV"; msg="★ Favorite: $(basename "$d") · Ctrl+b F opens the list"; fi
+    mark; "$0" --bar
+    tmux display "$msg"; exit 0 ;;
+esac
+
+if [[ -z "$(favorites)" ]]; then
+  echo "No favorites yet. In a tab, Ctrl+b * marks it (or Menu → Tabs and session)."
+  read -rsn1; exit 0
+fi
+command -v fzf >/dev/null || { list_rows | cut -f2; read -rsn1; exit 0; }
+self="$(printf '%q' "$0")"
+sel="$(list_rows | fzf --ansi --reverse --delimiter="$TAB" --with-nth=2 --prompt='favorites> ' \
+  --header 'Enter: go or open · Ctrl+X: remove from favorites' \
+  --bind "ctrl-x:execute-silent($self --remove {1})+reload($self --list)" \
+  --preview 'git -C {1} log --oneline -8 2>/dev/null; echo; ls -p {1} 2>/dev/null | head -40')" || exit 0
+d="${sel%%"$TAB"*}"
+[[ -d "$d" ]] || { echo "That folder no longer exists: $d (Ctrl+X removes it from the list)"; read -rsn1; exit 1; }
+exec "$(dirname "$0")/tmux-open" --dir "$d"

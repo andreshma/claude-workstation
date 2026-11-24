@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+#
+# tmux-template — opens a folder with a ready-made pane layout (Claude + live tests + logs + git…),
+# or saves the current tab as a template. Menu → T (open) · Menu → Session → G (save).
+#
+# Templates: ~/.config/tmux-claude/templates/<name>.conf, one instruction per line:
+#   # description (the first comment line is shown when picking)
+#   claude                      the main pane starts Claude
+#   right 35% <command>         pane on the right with that % of width
+#   below 30% <command>         pane below with that % of height
+#   window <name> <command>     extra tab in the same folder (e.g. window git lazygit)
+#   layout <layout>             exact tmux layout (written by «--save»)
+# The commands are typed into the pane and run with Enter: if they fail, the pane stays at the shell.
+# Usage: tmux-template [name] [folder]    (no name: fzf picker; no folder: the current pane's)
+#      tmux-template --save <name> <window>        saves the tab as a template
+#      tmux-template --list                          names and descriptions
+set -uo pipefail
+D="$HOME/.config/tmux-claude/templates"; mkdir -p "$D"
+TAB=$'\t'
+
+list_templates() { local f; for f in "$D"/*.conf; do [[ -f "$f" ]] || continue
+  printf '%s\t%s\n' "$(basename "$f" .conf)" "$(grep -m1 '^#' "$f" | sed 's/^#[[:space:]]*//')"; done; }
+
+if [[ "${1:-}" == --list ]]; then list_templates; exit 0; fi
+
+if [[ "${1:-}" == --save ]]; then
+  # The menu sends: --save <name as you typed it> <window id>. A name with spaces arrives split into several
+  # words: the window is always the last argument shaped like an id (@N) and the rest is the name.
+  shift; w=""
+  if (( $# )) && [[ "${!#}" == @* ]]; then w="${!#}"; set -- "${@:1:$#-1}"; fi
+  name="$*"; w="${w:-$(tmux display -p '#{window_id}')}"
+  [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]] || { tmux display -d 5000 "Template: the name takes only letters, digits, - and _ (no spaces)"; exit 1; }
+  f="$D/$name.conf"; [[ -f "$f" ]] && cp "$f" "$f.bak.$(date +%Y%m%d-%H%M%S)"
+  {
+    echo "# $name (saved from «$(tmux display -p -t "$w" '#{window_name}')» on $(date +%F))"
+    first=1
+    while IFS="$TAB" read -r pid pc; do
+      args="$(ps -o args= --ppid "$pid" 2>/dev/null | head -1)"; [[ -n "$args" ]] || args="$pc"
+      [[ "$pc" =~ ^(bash|zsh|fish|sh)$ ]] && args=""
+      if (( first )); then [[ "$args" == *claude* ]] && echo "claude" || { [[ -n "$args" ]] && echo "main $args"; }; first=0
+      else echo "right 50% $args"; fi
+    done < <(tmux list-panes -t "$w" -F "#{pane_pid}${TAB}#{pane_current_command}")
+    echo "layout $(tmux display -p -t "$w" '#{window_layout}')"
+  } > "$f"
+  echo "Template saved: $f"; cat "$f"; exit 0
+fi
+
+name="${1:-}"; dir="${2:-$(tmux display -p '#{pane_current_path}' 2>/dev/null || pwd)}"
+if [[ -z "$name" ]]; then
+  sel="$(list_templates | fzf --delimiter="$TAB" --with-nth=1,2 --reverse --prompt 'template> ' --header "Open $(basename "$dir") with…" \
+         --preview "cat '$D'/{1}.conf")" || exit 0
+  name="${sel%%"$TAB"*}"
+fi
+f="$D/$name.conf"; [[ -f "$f" ]] || { echo "Template $name does not exist"; exit 1; }
+
+w="$(tmux new-window -P -F '#{window_id}' -c "$dir" -n "$(basename "$dir")")"
+main_pane="$(tmux display -p -t "$w" '#{pane_id}')"
+run_in() { [[ -n "$2" ]] && tmux send-keys -t "$1" -l -- "$2" && tmux send-keys -t "$1" Enter; }
+layout=""
+# The Spanish instructions of templates saved by earlier versions are still read.
+while IFS= read -r l || [[ -n "$l" ]]; do
+  l="${l%%$'\r'}"; [[ -z "${l// /}" || "$l" == \#* ]] && continue
+  read -r inst rest <<<"$l"
+  case "$inst" in
+    claude) run_in "$main_pane" "claude" ;;
+    main|principal) run_in "$main_pane" "$rest" ;;
+    right|derecha|below|abajo)
+      read -r pct cmd <<<"$rest"; [[ "$pct" =~ ^[0-9]+%$ ]] || { cmd="$rest"; pct=50%; }
+      flag=-h; [[ "$inst" == below || "$inst" == abajo ]] && flag=-v
+      p="$(tmux split-window "$flag" -l "$pct" -t "$main_pane" -c "$dir" -d -P -F '#{pane_id}')"
+      run_in "$p" "$cmd" ;;
+    window|ventana)
+      read -r vn cmd <<<"$rest"
+      v="$(tmux new-window -d -P -F '#{pane_id}' -c "$dir" -n "$vn")"; run_in "$v" "$cmd" ;;
+    layout|acomodo) layout="$rest" ;;
+    *) tmux display "Template $name: unknown instruction «$inst»" ;;
+  esac
+done < "$f"
+[[ -n "$layout" ]] && tmux select-layout -t "$w" "$layout" 2>/dev/null
+tmux select-pane -t "$main_pane"; tmux select-window -t "$w"

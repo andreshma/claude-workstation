@@ -1,0 +1,1556 @@
+#!/usr/bin/env python3
+"""ws-telemetry — Claude usage by session, turn, project and model, and resources by project.
+
+Implements ADR-008 (local telemetry first). Sources, all local and read-only:
+  · Claude Code transcripts (~/.claude/projects/**.jsonl): exact tokens per response
+    (input, output, cache written/read, reasoning), model, session, folder, branch, subagents
+  · terminal copilot usage (raw/YYYY-MM-DD.jsonl, written by ai-shell.sh)
+  · samples of Claude processes (/proc): CPU, memory and disk operations by project
+It never stores the text of prompts or responses: only lengths, counts and tool names.
+The cost is the EQUIVALENT AT API PRICES (your Team plan is not billed per token); the price
+table is in PRICES and can be overridden in ~/.config/ws-telemetry/prices.json.
+
+Usage:
+  ws-telemetry build [--if-due]   processes and regenerates the dashboard (with --if-due: if ≥ 1 min has passed)
+  ws-telemetry open                regenerates and opens the dashboard in the Windows browser
+  ws-telemetry summary             summary in the terminal (today and 7 days, by project)
+  ws-telemetry sql                 queries turns and traces with DuckDB (if installed)
+  ws-telemetry traces [--days 7] [--json]          tools: uses, times, errors, approx. cost, Bash, MCP, files
+  ws-telemetry estimate [--by ticket|branch|project] [--days 90] [--csv|--json] [filter]
+                                                    active hours, turns, cost, model, lines and commits by ticket
+  ws-telemetry week [YYYY-Www] [--current] [--telegram]     weekly report in Markdown (against the previous week)
+  ws-telemetry budgets [--alerts]                 month's spend against ~/.config/ws-telemetry/budgets.conf
+  ws-telemetry export                              CSV of turns, traces and estimation for Excel or Power BI
+"""
+from __future__ import annotations
+
+import datetime as dt
+import glob
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from collections import Counter, defaultdict
+from pathlib import Path
+
+HOME = Path.home()
+CLAUDE = Path(os.environ.get("WS_TELEMETRY_CLAUDE", HOME / ".claude"))
+DATA = Path(os.environ.get("WS_TELEMETRY_DIR", HOME / ".local/share/ws-telemetry"))
+RAW, CACHE = DATA / "raw", DATA / "cache"
+RETENTION_DAYS = 395            # 13 months
+REFRESH_S = 60
+
+
+# ---------------------------------------------------------------------------------------------
+# Legacy vocabulary: files written before the kit moved to English keep their Spanish field names and
+# values (13 months of JSONL). They are never rewritten: every record is normalized as it is loaded and
+# the rest of the script, ws-report and the dashboard only see the English names.
+# ---------------------------------------------------------------------------------------------
+LEGACY_KEYS = {
+    # traces (hooks/ws-traces.sh)
+    "evento": "event", "sesion": "session", "proyecto": "project", "rama": "branch", "permiso": "permission",
+    "subagente": "subagent", "agente_tipo": "agent_type", "tipo": "type", "herramienta": "tool", "mcp_metodo": "mcp_method",
+    "accion": "action", "programas": "programs", "tuberia": "pipeline", "fondo": "background", "lineas_mas": "lines_added",
+    "lineas_menos": "lines_removed", "lineas": "lines", "modelo_pedido": "requested_model", "codigo_salida": "exit_code",
+    "error_tipo": "error_type", "interrumpido": "interrupted", "bytes_entrada": "bytes_in", "bytes_salida": "bytes_out",
+    "palabras": "words", "comando": "command", "pregunta": "question", "con_codigo": "has_code", "fallo": "failed",
+    "motivo": "reason", "continuado": "continued", "aviso": "notice", "fase": "phase", "agente": "agent", "disparo": "trigger",
+    "con_instrucciones": "has_instructions", "espera_ms": "wait_ms", "transcripcion_bytes": "transcript_bytes",
+    "sin_commit": "uncommitted", "archivos": "files", "desde": "since", "origen": "source", "modelo": "model",
+    # routing log (lib/ws-routing.sh)
+    "nivel": "level", "regla": "rule", "actual": "current",
+    # copilot usage (ai-shell.sh) and resource samples in raw/
+    "fuente": "source", "entrada": "input_tokens", "salida": "output_tokens", "carpeta": "folder",
+    "leidos": "read", "escritos": "written",
+    # sandbox log (hooks/ws-sandbox-notice.sh) and Telegram log (ws-telegram)
+    "detalle": "detail", "programa": "program",
+    # OpenTelemetry rows (ws-otel)
+    "senal": "signal", "nombre": "name", "valor": "value", "unidad": "unit", "traza": "trace", "padre": "parent",
+    # turns (turns.jsonl and cache/)
+    "inicio": "start", "fin": "end", "prompt_palabras": "prompt_words", "resp_palabras": "resp_words", "modelos": "models",
+    "herramientas": "tools", "respuestas": "responses",
+}
+LEGACY_VALUES = {   # by (English) field: old value → new value
+    "type": {"herramienta": "tool", "turno": "turn", "aviso": "notice", "denegado": "denied", "subagente": "subagent",
+             "compactacion": "compaction", "sesion": "session", "otro": "other",
+             "red": "network", "lectura": "read", "escritura": "write"},
+    "phase": {"inicio": "start", "fin": "end"},
+    "error_type": {"permiso": "permission", "no_existe": "not_found", "interrumpido": "interrupted", "red": "network",
+                   "sintaxis": "syntax", "salida_no_cero": "nonzero_exit", "edicion": "edit", "otro": "other"},
+    "since": {"conversacion": "conversation"},
+    "decision": {"aceptado": "accepted", "rechazado": "rejected", "editar": "edited", "igual": "same", "silenciado": "muted",
+                 "subagente": "subagent", "simulado": "simulated", "sin_bajar": "no_downgrade"},
+    "rule": {"defecto": "default"},
+    "source": {"copiloto": "copilot"},
+    "signal": {"metrica": "metric", "evento": "event"},
+    "event": {"enviado": "sent", "respuesta": "reply", "respuesta_texto": "text_reply", "resultado": "result",
+              "no_autorizado": "unauthorized", "cambio": "changed", "vencido": "expired", "error_envio": "error_send",
+              "error_semanal": "error_weekly", "mensaje": "message", "aviso": "notice", "pregunta": "ask", "alerta": "alert",
+              "accion": "action", "recordatorio": "reminder", "ejecucion": "run", "resumen": "summary",
+              "resumen_semanal": "weekly_summary", "prueba_recuperacion": "recovery_test", "invalido": "invalid",
+              "servicio": "service", "configurado": "configured", "comando_vencido": "command_expired",
+              "comando_autorizado": "command_authorized", "comando_bloqueado": "command_blocked",
+              "comando_propuesto": "command_proposed", "comando_sin_claude": "command_no_claude",
+              "comando_pide_pin": "command_asks_pin", "pin_incorrecto": "pin_wrong", "texto_rechazado": "text_rejected",
+              "texto_sin_destino": "text_no_target", "texto_apagado": "text_off"},
+}
+
+
+def normalize(rec):
+    """A record loaded from disk, with the English field names and values. An old key wins over a new one with the
+    same meaning (in old OpenTelemetry rows the fixed Spanish fields come before the attributes)."""
+    if not isinstance(rec, dict):
+        return rec
+    if not LEGACY_KEYS.keys().isdisjoint(rec):
+        out = {k: v for k, v in rec.items() if k not in LEGACY_KEYS}
+        out.update((LEGACY_KEYS[k], v) for k, v in rec.items() if k in LEGACY_KEYS)
+        rec = out
+    for k in LEGACY_VALUES.keys() & rec.keys():
+        v = rec[k]
+        if isinstance(v, str) and v in LEGACY_VALUES[k]:
+            rec[k] = LEGACY_VALUES[k][v]
+    return rec
+
+
+def _resource_files() -> list[tuple[str, Path]]:
+    """(day, file) of the resource samples, oldest first; `recursos-` is the prefix used before the rename."""
+    fs = [(f.stem.split("-", 1)[1], f) for pre in ("resources", "recursos") for f in RAW.glob(f"{pre}-20*.jsonl")]
+    return sorted(fs, key=lambda x: x[0])
+
+# USD per million tokens (source: platform.claude.com/docs/en/about-claude/pricing, 2026-11-17).
+# input, output, 5 min cache write, 1 h cache write, cache read.
+PRICES = {
+    "claude-fable-5": (10.0, 50.0, 12.50, 20.0, 0.25),      # Fable 5.x (5.2 has no published price: assumed equal to 5.1)
+    "claude-opus-5-5": (4.0, 20.0, 5.0, 8.0, 0.20),
+    "claude-sonnet-5-5": (2.0, 10.0, 2.50, 4.0, 0.10),
+    "claude-haiku-5-5": (0.10, 0.50, 0.125, 0.20, 0.01),
+    "claude-opus-5": (5.0, 25.0, 6.25, 10.0, 0.50),
+    "claude-opus-4": (5.0, 25.0, 6.25, 10.0, 0.50),
+    "claude-sonnet-4": (3.0, 15.0, 3.75, 6.0, 0.30),
+    "claude-haiku-4": (1.0, 5.0, 1.25, 2.0, 0.10),
+}
+
+
+def prices() -> dict:
+    p = dict(PRICES)
+    extra = HOME / ".config/ws-telemetry/prices.json"
+    if extra.exists():
+        try:
+            p.update({k: tuple(v) for k, v in json.loads(extra.read_text()).items()})
+        except (ValueError, TypeError):
+            pass
+    return p
+
+
+def price_of(model: str, table: dict) -> tuple[tuple, bool]:
+    """Price by longest prefix; returns (price, is_estimated)."""
+    m = (model or "").lower()
+    for k in sorted(table, key=len, reverse=True):
+        if m.startswith(k):
+            return table[k], False
+    return table["claude-opus-5-5"], True
+
+
+def cost(u: dict, model: str, table: dict) -> float:
+    (pin, pout, pw5, pw1, prd), _ = price_of(model, table)
+    w1 = u.get("cw1", 0); w5 = u.get("cw", 0) - w1
+    return (u.get("in", 0) * pin + u.get("out", 0) * pout + w5 * pw5 + w1 * pw1 + u.get("cr", 0) * prd) / 1e6
+
+
+# ---------------------------------------------------------------------------------------------
+# Transcripts → turns
+# ---------------------------------------------------------------------------------------------
+def is_prompt(o: dict) -> bool:
+    """A user message that starts a turn (not a tool result)."""
+    c = (o.get("message") or {}).get("content")
+    if isinstance(c, str):
+        return bool(c.strip())
+    if isinstance(c, list):
+        return any(b.get("type") == "text" for b in c if isinstance(b, dict)) and \
+            not any(b.get("type") == "tool_result" for b in c if isinstance(b, dict))
+    return False
+
+
+# "user" entries you did not write: output of local commands, "/" commands, system notices, the automatic
+# summary when a session is continued and the interruption notice. They neither open a turn nor count as your words.
+NOT_HUMAN = ("<local-command", "<command-name>", "<command-message>", "<system-reminder>", "<task-notification>", "<bash-input>",
+             "<bash-stdout>", "<bash-stderr>", "<user-prompt-submit-hook>", "Caveat: The messages below", "[Request interrupted",
+             "This session is being continued")
+
+
+def is_human(o: dict) -> bool:
+    """Did the person write the prompt? (not meta, not a compaction summary, not text generated by Claude Code)."""
+    if o.get("isMeta") or o.get("isCompactSummary") or o.get("isVisibleInTranscriptOnly"):
+        return False
+    c = (o.get("message") or {}).get("content")
+    text = c if isinstance(c, str) else next((b.get("text", "") for b in c or [] if isinstance(b, dict) and b.get("type") == "text"), "")
+    return not text.lstrip().startswith(NOT_HUMAN)
+
+
+def prompt_len(o: dict) -> int:
+    c = (o.get("message") or {}).get("content")
+    if isinstance(c, str):
+        return len(c)
+    return sum(len(b.get("text", "")) for b in c if isinstance(b, dict) and b.get("type") == "text")
+
+
+WORD = re.compile(r"\w+")
+
+
+def words_in(o: dict) -> int:
+    """Words in a message's text. They are only counted; the text is not stored."""
+    c = (o.get("message") or {}).get("content")
+    if isinstance(c, str):
+        return len(WORD.findall(c))
+    return sum(len(WORD.findall(b.get("text", ""))) for b in c or [] if isinstance(b, dict) and b.get("type") == "text")
+
+
+def process_file(f: Path) -> list[dict]:
+    """Turns in a transcript file. Deduplicates responses by message id."""
+    sub = "/subagents/" in str(f)
+    seen: set[str] = set()
+    texts: set = set()
+    turns: list[dict] = []
+    t = None
+    auto_ts = None
+    with open(f, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            kind = o.get("type")
+            if kind == "user" and is_prompt(o) and not sub:
+                if not is_human(o):
+                    # A background task notice, a meta entry or a compaction summary: if Claude responds,
+                    # that work goes into an automatic turn (its cost counts, but not as a turn of yours).
+                    t, auto_ts = None, o.get("timestamp")
+                    continue
+                auto_ts = None
+                if t is not None and not t["responses"] and not t["subagent"]:
+                    # Another message of yours before Claude responded (you interrupted or corrected): same turn.
+                    # It counts from the last message, which is the one Claude answers.
+                    t["start"] = t["end"] = o.get("timestamp") or t["start"]
+                    t["prompt_chars"] += prompt_len(o); t["prompt_words"] += words_in(o)
+                    continue
+                t = {"session": o.get("sessionId", f.stem), "start": o.get("timestamp"), "end": o.get("timestamp"),
+                     "folder": o.get("cwd", ""), "branch": o.get("gitBranch", ""), "prompt_chars": prompt_len(o), "prompt_words": words_in(o), "resp_words": 0,
+                     "models": defaultdict(lambda: defaultdict(int)), "tools": defaultdict(int),
+                     "responses": 0, "subagent": False}
+                turns.append(t)
+            elif kind == "assistant":
+                m = o.get("message") or {}
+                mid = m.get("id") or o.get("requestId")
+                # If Claude responds again much later (resumed session, background task), it is separate work:
+                # the previous turn is not stretched by hours or days.
+                if t is not None and not sub and t["responses"] and _ts(o.get("timestamp")) - _ts(t["end"]) > 1800:
+                    t, auto_ts = None, None
+                if t is None:   # subagent file, transcript with no visible prompt, or automatic turn
+                    t = {"session": o.get("sessionId", f.parent.parent.name if sub else f.stem), "start": (auto_ts if not sub else None) or o.get("timestamp"),
+                         "end": o.get("timestamp"), "folder": o.get("cwd", ""), "branch": o.get("gitBranch", ""),
+                         "prompt_chars": 0, "prompt_words": 0, "resp_words": 0, "models": defaultdict(lambda: defaultdict(int)),
+                         "tools": defaultdict(int), "responses": 0, "subagent": sub, "auto": not sub}
+                    turns.append(t)
+                t["end"] = o.get("timestamp") or t["end"]
+                for b in m.get("content") or []:
+                    if isinstance(b, dict) and b.get("type") == "tool_use":
+                        t["tools"][b.get("name", "?")] += 1
+                    elif isinstance(b, dict) and b.get("type") == "text":
+                        h = (mid, hash(b.get("text", "")))       # streaming can repeat a block
+                        if h not in texts:
+                            texts.add(h); t["resp_words"] += len(WORD.findall(b.get("text", "")))
+                if not mid or mid in seen:
+                    continue
+                seen.add(mid)
+                u = m.get("usage") or {}
+                cc = u.get("cache_creation") or {}
+                model = m.get("model", "?")
+                if model.startswith("<"):          # synthetic Claude Code messages (errors, notices)
+                    continue
+                d = t["models"][model]
+                d["n"] += 1
+                d["in"] += u.get("input_tokens", 0) or 0
+                d["out"] += u.get("output_tokens", 0) or 0
+                d["cw"] += u.get("cache_creation_input_tokens", 0) or 0
+                d["cw1"] += cc.get("ephemeral_1h_input_tokens", 0) or 0
+                d["cr"] += u.get("cache_read_input_tokens", 0) or 0
+                d["think"] += (u.get("output_tokens_details") or {}).get("thinking_tokens", 0) or 0
+                t["responses"] += 1
+    out = []
+    for t in turns:
+        t["models"] = {k: dict(v) for k, v in t["models"].items()}
+        t["tools"] = dict(t["tools"])
+        # basename of the folder, also for Windows paths (C:\\...\\repo)
+        t["project"] = re.split(r"[\\/]", (t["folder"] or "").rstrip("\\/"))[-1] or "?"
+        t["folder"] = ""                          # the full path is not stored
+        out.append(t)
+    return out
+
+
+def all_turns() -> list[dict]:
+    CACHE.mkdir(parents=True, exist_ok=True)
+    found: list[dict] = []
+    live = set()
+    for f in glob.glob(str(CLAUDE / "projects/**/*.jsonl"), recursive=True):
+        p = Path(f)
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        key = hashlib.sha1(f.encode(), usedforsecurity=False).hexdigest()  # only names the cache file
+        live.add(key)
+        c = CACHE / f"{key}.json"
+        sig = f"v6:{st.st_mtime_ns}:{st.st_size}"   # v4: only your prompts open a turn; the rest goes into automatic turns. v6: English keys
+        if c.exists():
+            try:
+                d = json.loads(c.read_text())
+                if d.get("sig") == sig:
+                    found.extend(d["turns"]); continue
+            except ValueError:
+                pass
+        ts = process_file(p)
+        c.write_text(json.dumps({"sig": sig, "turns": ts}))
+        found.extend(ts)
+    for c in CACHE.glob("*.json"):            # transcripts deleted by Claude: their cache too
+        if c.stem not in live:
+            c.unlink(missing_ok=True)
+    return found
+
+
+# ---------------------------------------------------------------------------------------------
+# Resources: sample of Claude processes
+# ---------------------------------------------------------------------------------------------
+def sample_resources() -> None:
+    RAW.mkdir(parents=True, exist_ok=True)
+    tick = os.sysconf("SC_CLK_TCK")
+    rows = []
+    for d in glob.glob("/proc/[0-9]*"):
+        try:
+            exe = os.readlink(f"{d}/exe")
+            cmd = open(f"{d}/cmdline", "rb").read().split(b"\0")
+            arg0 = cmd[0].decode(errors="replace") if cmd else ""
+            if not ("/claude/versions/" in exe or arg0.endswith("/claude") or arg0 == "claude"):
+                continue
+            stat = open(f"{d}/stat").read().rsplit(")", 1)[1].split()
+            cpu_s = (int(stat[11]) + int(stat[12])) / tick
+            rss = next((int(l.split()[1]) for l in open(f"{d}/status") if l.startswith("VmRSS:")), 0)
+            io = {}
+            try:
+                io = dict((k, int(v)) for k, v in (l.split(":") for l in open(f"{d}/io")))
+            except OSError:
+                pass
+            cwd = os.readlink(f"{d}/cwd")
+            rows.append({"ts": time.time(), "pid": int(Path(d).name), "project": re.split(r"[\\/]", cwd.rstrip("\\/"))[-1],
+                          "cpu_s": cpu_s, "rss_kb": rss, "ops": io.get("syscr", 0) + io.get("syscw", 0),
+                          "read": io.get("read_bytes", 0), "written": io.get("write_bytes", 0)})
+        except (OSError, ValueError, IndexError, StopIteration):
+            continue
+    sample_net()
+    if rows:
+        with open(RAW / f"resources-{dt.date.today()}.jsonl", "a") as fh:
+            for r in rows:
+                fh.write(json.dumps(r) + "\n")
+
+
+def resources_24h() -> dict:
+    """By project: mean CPU %, max RAM, disk operations/s and MB read/written (last 24 h)."""
+    since = time.time() - 86400
+    by_pid: dict[int, list] = defaultdict(list)
+    for _, f in _resource_files()[-2:]:
+        for l in open(f):
+            try:
+                r = normalize(json.loads(l))
+            except ValueError:
+                continue
+            if r["ts"] >= since:
+                by_pid[r["pid"]].append(r)
+    res: dict[str, dict] = defaultdict(lambda: {"cpu_s": 0.0, "secs": 0.0, "rss_max": 0, "ops": 0, "read": 0, "written": 0, "processes": 0})
+    for pid, rs in by_pid.items():
+        rs.sort(key=lambda r: r["ts"])
+        a = res[rs[-1]["project"]]
+        a["processes"] += 1
+        a["rss_max"] = max(a["rss_max"], max(r["rss_kb"] for r in rs))
+        if len(rs) > 1:
+            a["cpu_s"] += max(0.0, rs[-1]["cpu_s"] - rs[0]["cpu_s"]); a["secs"] += rs[-1]["ts"] - rs[0]["ts"]
+            for k in ("ops", "read", "written"):
+                a[k] += max(0, rs[-1][k] - rs[0][k])
+    out = {}
+    for p, a in res.items():
+        secs = a["secs"] or 1
+        out[p] = {"cpu_pct": round(100 * a["cpu_s"] / secs, 1), "ram_mb": round(a["rss_max"] / 1024),
+                     "iops": round(a["ops"] / secs, 1), "read_mb": round(a["read"] / 1e6, 1),
+                     "written_mb": round(a["written"] / 1e6, 1), "processes": a["processes"]}
+    return out
+
+
+def copilot() -> list[dict]:
+    rows = []
+    for f in sorted(RAW.glob("20[0-9][0-9]-*.jsonl")):
+        for l in open(f):
+            try:
+                r = normalize(json.loads(l))
+            except ValueError:
+                continue
+            if r.get("source") == "copilot":
+                rows.append(r)
+    return rows
+
+
+def purge_old() -> None:
+    limit = time.time() - RETENTION_DAYS * 86400
+    for f in RAW.glob("*.jsonl"):
+        if f.stat().st_mtime < limit:
+            f.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------------------------
+# Aggregation and dashboard
+# ---------------------------------------------------------------------------------------------
+def aggregate(turns: list[dict], cop: list[dict], rec: dict) -> dict:
+    table = prices()
+    today = dt.date.today()
+    limit = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=RETENTION_DAYS)).isoformat()
+    days = defaultdict(lambda: {"tokens": 0, "cost": 0.0, "turns": 0})
+    proj = defaultdict(lambda: {"sessions": set(), "turns": 0, "in": 0, "out": 0, "cw": 0, "cr": 0, "cost": 0.0, "last": ""})
+    mods = defaultdict(lambda: {"in": 0, "out": 0, "cw": 0, "cr": 0, "think": 0, "cost": 0.0, "responses": 0, "estimated": False})
+    sessions = defaultdict(lambda: {"project": "", "branch": "", "start": "", "end": "", "turns": 0, "tokens": 0, "cost": 0.0, "sub_tokens": 0})
+    tools = defaultdict(int)
+    tot = {"in": 0, "out": 0, "cw": 0, "cr": 0, "think": 0, "cost": 0.0, "turns": 0, "prompt_chars": 0, "sub_tokens": 0}
+    turn_list = []
+    for t in turns:
+        if not t.get("start") or t["start"] < limit:
+            continue
+        day = local_day(t["start"]) or t["start"][:10]      # LOCAL day: "Today" and the day's bar match your clock
+        tk = sum(m["in"] + m["out"] + m["cw"] + m["cr"] for m in t["models"].values())
+        c = sum(cost(m, k, table) for k, m in t["models"].items())
+        if not t["subagent"] and not t.get("auto"):
+            tot["turns"] += 1; tot["prompt_chars"] += t["prompt_chars"]
+            days[day]["turns"] += 1; proj[t["project"]]["turns"] += 1; sessions[t["session"]]["turns"] += 1
+        elif t["subagent"]:
+            tot["sub_tokens"] += tk; sessions[t["session"]]["sub_tokens"] += tk
+        days[day]["tokens"] += tk; days[day]["cost"] += c
+        P = proj[t["project"]]; P["sessions"].add(t["session"]); P["cost"] += c; P["last"] = max(P["last"], t["end"] or "")
+        S = sessions[t["session"]]; S["tokens"] += tk; S["cost"] += c
+        if not S["project"] and t["project"] != "?":
+            S["project"], S["branch"] = t["project"], t["branch"]
+        S["start"] = min(S["start"] or t["start"], t["start"]); S["end"] = max(S["end"], t["end"] or "")
+        for k, m in t["models"].items():
+            M = mods[k]
+            for f in ("in", "out", "cw", "cr", "think"):
+                M[f] += m.get(f, 0); tot[f] += m.get(f, 0)
+            for f in ("in", "out", "cw", "cr"):
+                P[f] += m.get(f, 0)
+            cc = cost(m, k, table); M["cost"] += cc; tot["cost"] += cc; M["responses"] += m.get("n", 0)
+            M["estimated"] = M["estimated"] or price_of(k, table)[1]
+        for h, n in t["tools"].items():
+            tools[h] += n
+        if not t["subagent"] and not t.get("auto"):
+            turn_list.append({"start": t["start"], "project": t["project"], "prompt_chars": t["prompt_chars"],
+                                 "new": sum(m["in"] + m["cw"] for m in t["models"].values()),
+                                 "context": sum(m["cr"] for m in t["models"].values()),
+                                 "output": sum(m["out"] for m in t["models"].values()), "cost": round(c, 4)})
+    input_total = tot["in"] + tot["cw"] + tot["cr"]
+    cop_tot = {"queries": len(cop), "in": sum(r.get("input_tokens") or 0 for r in cop), "out": sum(r.get("output_tokens") or 0 for r in cop)}
+    cop_tot["cost"] = round(sum(cost({"in": r.get("input_tokens") or 0, "out": r.get("output_tokens") or 0}, r.get("model", ""), table) for r in cop), 4)
+    last30 = [(today - dt.timedelta(days=i)).isoformat() for i in range(29, -1, -1)]
+
+    def window(n):
+        since = (today - dt.timedelta(days=n - 1)).isoformat()
+        return {k: round(sum(days[d][k] for d in days if d >= since), 4) for k in ("tokens", "cost", "turns")}
+
+    return {
+        "generated": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "refresh_s": REFRESH_S,
+        "kpi": {"today": window(1), "7d": window(7), "30d": window(30),
+                "cache_pct": round(100 * tot["cr"] / input_total, 1) if input_total else 0,
+                "output_per_turn": round(tot["out"] / tot["turns"]) if tot["turns"] else 0,
+                "prompt_chars_mean": round(tot["prompt_chars"] / tot["turns"]) if tot["turns"] else 0,
+                "reasoning_pct": round(100 * tot["think"] / tot["out"], 1) if tot["out"] else 0,
+                "subagents_pct": round(100 * tot["sub_tokens"] / max(1, input_total + tot["out"]), 1)},
+        "days": [{"day": d, **{k: round(days[d][k], 4) for k in ("tokens", "cost", "turns")}} for d in last30],
+        "projects": sorted(({"project": p, "sessions": len(v["sessions"]), "turns": v["turns"], "in": v["in"] + v["cw"],
+                              "cr": v["cr"], "out": v["out"], "cost": round(v["cost"], 4), "last": v["last"][:16].replace("T", " ")}
+                             for p, v in proj.items()), key=lambda x: -x["cost"]),
+        "models": sorted(({"model": k, **{f: v[f] for f in ("in", "out", "cw", "cr", "think", "responses")},
+                            "cost": round(v["cost"], 4), "estimated": v["estimated"]} for k, v in mods.items()), key=lambda x: -x["cost"]),
+        "sessions": sorted(({"session": s[:8], **{k: (round(v[k], 4) if k == "cost" else v[k]) for k in v}} for s, v in sessions.items()),
+                           key=lambda x: -x["cost"])[:15],
+        "tools": sorted(({"tool": h, "uses": n} for h, n in tools.items()), key=lambda x: -x["uses"])[:12],
+        "recent_turns": sorted(turn_list, key=lambda x: x["start"], reverse=True)[:25],
+        "copilot": cop_tot, "resources": rec,
+    }
+
+
+def windows_dir() -> Path | None:
+    if os.environ.get("WS_TELEMETRY_WIN"):
+        return Path(os.environ["WS_TELEMETRY_WIN"])
+    for cmd in (["wslvar", "USERPROFILE"], ["cmd.exe", "/c", "echo %USERPROFILE%"]):
+        try:
+            w = subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout.strip()
+            if w:
+                return Path(subprocess.run(["wslpath", "-u", w], capture_output=True, text=True, timeout=10).stdout.strip()) / "ws-telemetry"
+        except (OSError, subprocess.SubprocessError):
+            continue
+    return None
+
+
+def _events(sub: str, days: int = 30) -> list[dict]:
+    """Events from DATA/<sub>/YYYY-MM-DD.jsonl for the last `days` days; deletes those past retention."""
+    d = DATA / sub
+    if not d.is_dir():
+        return []
+    lim = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+    rows = []
+    for f in sorted(d.glob("20[0-9][0-9]-*.jsonl")):
+        if f.stem < lim:
+            if f.stat().st_mtime < time.time() - RETENTION_DAYS * 86400:
+                f.unlink(missing_ok=True)
+            continue
+        for line in open(f, encoding="utf-8"):
+            try:
+                rows.append(normalize(json.loads(line)))
+            except ValueError:
+                continue
+    return rows
+
+
+def extras() -> dict:
+    """Model routing (ADR-009) and Telegram (ADR-010) for the dashboard: counts only, no task text."""
+    from collections import Counter, defaultdict as dd
+    ru = _events("routing")
+    dec = Counter(r.get("decision", "") for r in ru)
+    rules = dd(lambda: {"level": "", "suggested": 0, "accepted": 0, "rejected": 0})
+    for r in ru:
+        if r.get("source") != "hook" or r.get("decision") not in ("accepted", "rejected", "edited"):
+            continue
+        k = rules[r.get("rule", "")]
+        k["level"] = r.get("level", ""); k["suggested"] += 1
+        k["accepted"] += r.get("decision") == "accepted"; k["rejected"] += r.get("decision") == "rejected"
+    sug = dec["accepted"] + dec["rejected"] + dec["edited"]
+    routing = {"suggestions": sug, "accepted": dec["accepted"], "rejected": dec["rejected"], "edited": dec["edited"],
+             "same": dec["same"], "muted": dec["muted"], "manual": dec["manual"],
+             "cr": sum(1 for r in ru if r.get("source") == "cr"),
+             "accept_rate": round(100 * dec["accepted"] / sug) if sug else 0,
+             "rules": sorted(({"rule": k, **v} for k, v in rules.items()), key=lambda x: -x["suggested"])[:12]}
+    tg = _events("telegram")
+    ev = Counter(e.get("event", "") for e in tg)
+    telegram = {"sent": ev["sent"], "responses": ev["reply"], "unauthorized": ev["unauthorized"],
+                "changed": ev["changed"], "expired": ev["expired"],
+                "errors": sum(n for k, n in ev.items() if k.startswith("error")),
+                "recent": [{"ts": e.get("ts", ""), "event": e.get("event", ""), "detail": e.get("detail", "")}
+                              for e in sorted(tg, key=lambda e: e.get("ts", ""), reverse=True)[:10]]}
+    return {"routing": routing if ru else None, "telegram": telegram if tg else None}
+
+
+BYTES_PER_TOKEN = 4   # approximation of the text that travels in each request (full context) and response
+
+
+def sample_net() -> None:
+    """Bytes received and sent by WSL (all interfaces except lo), one sample per minute."""
+    rx = tx = 0
+    try:
+        for line in open("/proc/net/dev").read().splitlines()[2:]:
+            name, figures = line.split(":", 1)
+            if name.strip() == "lo":
+                continue
+            c = figures.split(); rx += int(c[0]); tx += int(c[8])
+    except (OSError, ValueError, IndexError):
+        return
+    with open(RAW / f"net-{dt.date.today()}.jsonl", "a") as fh:
+        fh.write(json.dumps({"ts": time.time(), "rx": rx, "tx": tx}) + "\n")
+
+
+def net_24h(turns: list[dict]) -> dict:
+    """Network over the last 24 h: measured WSL total and Claude's share by project estimated from tokens."""
+    since = time.time() - 86400
+    m = []
+    for f in sorted(RAW.glob("net-*.jsonl"))[-2:]:
+        for line in open(f):
+            try:
+                r = normalize(json.loads(line))
+            except ValueError:
+                continue
+            if r.get("ts", 0) >= since:
+                m.append(r)
+    m.sort(key=lambda r: r["ts"])
+    rx = tx = 0
+    for a, b in zip(m, m[1:]):            # counters go back to 0 when WSL restarts: positive differences only
+        rx += max(0, b["rx"] - a["rx"]); tx += max(0, b["tx"] - a["tx"])
+    lim = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=1)).isoformat()
+    by = defaultdict(lambda: {"up": 0, "down": 0})
+    for t in turns:
+        if (t.get("start") or "") < lim:
+            continue
+        for mm in t["models"].values():
+            by[t["project"]]["up"] += (mm.get("in", 0) + mm.get("cw", 0) + mm.get("cr", 0)) * BYTES_PER_TOKEN
+            by[t["project"]]["down"] += mm.get("out", 0) * BYTES_PER_TOKEN
+    return {"wsl_down_mb": round(rx / 1e6, 1), "wsl_up_mb": round(tx / 1e6, 1), "samples": len(m),
+            "claude": sorted(({"project": p, "up_mb": round(v["up"] / 1e6, 1), "down_mb": round(v["down"] / 1e6, 2)}
+                              for p, v in by.items()), key=lambda x: -x["up_mb"])[:12]}
+
+
+def words_summary(turns: list[dict]) -> dict:
+    """Words written and answered in the last 30 days (main turns, no subagents)."""
+    lim = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)).isoformat()
+    tot = {"turns": 0, "prompt": 0, "resp": 0, "out": 0}
+    by = defaultdict(lambda: {"turns": 0, "prompt": 0, "resp": 0})
+    for t in turns:
+        if t.get("subagent") or t.get("auto") or (t.get("start") or "") < lim or "prompt_words" not in t:
+            continue
+        for d in (tot, by[t["project"]]):
+            d["turns"] += 1; d["prompt"] += t["prompt_words"]; d["resp"] += t["resp_words"]
+        tot["out"] += sum(m.get("out", 0) for m in t["models"].values())
+    n = tot["turns"] or 1
+    return {"turns": tot["turns"], "prompt_total": tot["prompt"], "resp_total": tot["resp"],
+            "prompt_mean": round(tot["prompt"] / n), "resp_mean": round(tot["resp"] / n),
+            "resp_per_prompt": round(tot["resp"] / tot["prompt"], 1) if tot["prompt"] else 0,
+            "output_tokens_per_word": round(tot["out"] / tot["resp"], 1) if tot["resp"] else 0,
+            "projects": sorted(({"project": p, **v} for p, v in by.items()), key=lambda x: -x["prompt"])[:12]}
+
+
+# ---------------------------------------------------------------------------------------------
+# Traces by tool, estimation, weekly report and budgets (patch 51; ADR-008 F2)
+# New source: DATA/traces/YYYY-MM-DD.jsonl(.gz), written by the hook ~/.claude/hooks/ws-traces.sh.
+# ---------------------------------------------------------------------------------------------
+TICKET_RE = re.compile(r"[A-Z][A-Z0-9]+-[0-9]+")
+IDLE_S = 15 * 60          # gaps of more than 15 min between turns do not count as active hours
+COMPRESS_DAYS = 35
+BASH_CATEGORIES = [           # (category, regex over the summarized action "program subcommand")
+    ("tests", r"^(pytest|jest|vitest|mocha|bats|k6|playwright|ws-test|go test|cargo test|dotnet test|mvn test|gradle test"
+                r"|(npm|pnpm|yarn|bun) test|python3? pytest|npx (jest|vitest|playwright))"),
+    ("build", r"^(make|cmake|tsc|dotnet build|mvn|gradle|go build|cargo build|(npm|pnpm|yarn|bun) run|npx tsc|webpack|vite)"),
+    ("lint", r"^(eslint|ruff|flake8|pylint|black|prettier|shellcheck|bandit|semgrep|gitleaks|tflint|checkov|trivy|npx (eslint|prettier))"),
+    ("git", r"^(git|gh)\b"),
+    ("infra", r"^(terraform|tofu|pulumi|az|aws|gcloud|kubectl|helm|azd|ansible|bicep|kustomize|argocd|flux)\b"),
+    ("containers", r"^(docker|podman|compose|docker-compose)\b"),
+    ("packages", r"^((npm|pnpm|yarn|bun) (install|add|ci|update)|pip3?|uv|poetry|dotnet (add|restore)|apt|apt-get|brew|cargo add)"),
+    ("data", r"^(psql|mysql|sqlcmd|duckdb|sqlite3|jq|yq|python3?|node)\b"),
+    ("explore", r"^(ls|cat|head|tail|grep|rg|find|fd|tree|wc|sed|awk|less|stat|file|du|df|echo|pwd|which)\b"),
+]
+
+
+def bash_category(action: str) -> str:
+    for cat, rx in BASH_CATEGORIES:
+        if re.match(rx, action or ""):
+            return cat
+    return "other"
+
+
+def _ts(s: str | None) -> float:
+    """ISO 8601 (with Z) → epoch; 0 if it cannot be parsed."""
+    try:
+        return dt.datetime.fromisoformat((s or "").replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def local_day(s) -> str:
+    """LOCAL date (YYYY-MM-DD) of an ISO instant in UTC: per-day windows use your time, not UTC
+    (at 18:00 in a UTC-6 zone it is already "tomorrow" in UTC and today's data was left out)."""
+    e = _ts(s)
+    return dt.datetime.fromtimestamp(e).date().isoformat() if e else ""
+
+
+def _pct(vals: list, p: float):
+    v = sorted(x for x in vals if x is not None)
+    if not v:
+        return None
+    return v[min(len(v) - 1, int(round(p / 100 * (len(v) - 1))))]
+
+
+MAX_TURN_S = 3600            # a turn counts for at most 1 h of activity (99 % last less than 45 min)
+
+
+def _hours(intervals: list[tuple[float, float]]) -> float:
+    """Active hours: merges (start, end) intervals when the gap between them is ≤ IDLE_S. Each interval is
+    clipped to MAX_TURN_S: a turn left open (a tab resumed days later) does not count as days of work."""
+    total, start, end = 0.0, None, None
+    for a, b in sorted(intervals):
+        b = min(b, a + MAX_TURN_S)
+        if start is None:
+            start, end = a, b
+        elif a - end <= IDLE_S:
+            end = max(end, b)
+        else:
+            total += end - start; start, end = a, b
+    if start is not None:
+        total += end - start
+    return round(total / 3600, 2)
+
+
+def maintain_traces() -> None:
+    """Compresses (gzip) days older than COMPRESS_DAYS and deletes those past retention."""
+    import gzip
+    d = DATA / "traces"
+    if not d.is_dir():
+        return
+    today = dt.date.today()
+    for f in d.glob("20[0-9][0-9]-*.jsonl*"):
+        day = f.name[:10]
+        if day < (today - dt.timedelta(days=RETENTION_DAYS)).isoformat():
+            f.unlink(missing_ok=True)
+        elif f.suffix == ".jsonl" and day < (today - dt.timedelta(days=COMPRESS_DAYS)).isoformat():
+            with open(f, "rb") as a, gzip.open(f"{f}.gz", "wb") as b:
+                shutil.copyfileobj(a, b)
+            os.chmod(f"{f}.gz", 0o600); f.unlink()
+
+
+def traces(since: dt.date, until: dt.date | None = None) -> list[dict]:
+    """Traces between `since` and `until` (inclusive, local dates from the file name)."""
+    import gzip
+    d = DATA / "traces"
+    until = until or dt.date.today()
+    rows: list[dict] = []
+    if not d.is_dir():
+        return rows
+    for f in sorted(d.glob("20[0-9][0-9]-*.jsonl*")):
+        if not (since.isoformat() <= f.name[:10] <= until.isoformat()):
+            continue
+        opener = gzip.open if f.suffix == ".gz" else open
+        with opener(f, "rt", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    rows.append(normalize(json.loads(line)))
+                except ValueError:
+                    continue
+    return rows
+
+
+def tool_detail(tr: list[dict], turns: list[dict] | None = None) -> dict:
+    """Usage, duration (without your wait), errors and approximate cost by tool; Bash by action and category;
+    MCP; files and languages; skills; subagents; human wait; denials; compactions; prompts."""
+    from collections import Counter
+    H = [t for t in tr if t.get("type") == "tool"]
+    net = lambda t: None if t.get("dur_ms") is None else max(0, t["dur_ms"] - (t.get("wait_ms") or 0))  # noqa: E731
+    by = defaultdict(list)
+    for t in H:
+        by[t.get("tool", "?")].append(t)
+
+    def row(name, ts):
+        d = [net(t) for t in ts]
+        return {"name": name, "uses": len(ts), "errors": sum(1 for t in ts if not t.get("ok", True)),
+                "med_ms": _pct(d, 50), "p95_ms": _pct(d, 95), "total_min": round(sum(x or 0 for x in d) / 60000, 1)}
+
+    tools = sorted((row(k, v) for k, v in by.items()), key=lambda x: -x["uses"])
+    tool_cost = cost_by_tool(turns or [], H)
+    for f in tools:
+        f["cost"] = round(tool_cost.get(f["name"], 0.0), 4)
+    bash = defaultdict(list); cats = defaultdict(list)
+    for t in by.get("Bash", []):
+        bash[t.get("action") or "?"].append(t); cats[bash_category(t.get("action", ""))].append(t)
+    actions = sorted((dict(row(k, v), category=bash_category(k)) for k, v in bash.items()), key=lambda x: -x["uses"])[:20]
+    categories = sorted((row(k, v) for k, v in cats.items()), key=lambda x: -x["total_min"])
+    mcp = defaultdict(list)
+    for t in H:
+        if t.get("mcp"):
+            mcp[t["mcp"]].append(t)
+    servers = []
+    for k, v in mcp.items():
+        f = row(k, v); f["methods"] = [m for m, _ in Counter(t.get("mcp_method", "") for t in v).most_common(3)]
+        servers.append(f)
+    edits = [t for t in H if t.get("tool") in ("Edit", "MultiEdit", "Write", "NotebookEdit")]
+    by_file = defaultdict(lambda: {"edits": 0, "lines_added": 0, "lines_removed": 0})
+    by_lang = defaultdict(lambda: {"edits": 0, "lines_added": 0, "lines_removed": 0})
+    for t in edits:
+        for d, key in ((by_file, f"{t.get('project', '')}/{t.get('action', '')}"), (by_lang, t.get("ext") or "(no ext)")):
+            d[key]["edits"] += 1
+            d[key]["lines_added"] += t.get("lines_added") or 0; d[key]["lines_removed"] += t.get("lines_removed") or 0
+    waits = [t["wait_ms"] for t in H if t.get("wait_ms")]
+    wait_by_tool = defaultdict(list)
+    for t in H:
+        if t.get("wait_ms"):
+            wait_by_tool[t.get("tool", "?")].append(t["wait_ms"])
+    subs = defaultdict(list)
+    for t in tr:
+        if t.get("type") == "subagent" and t.get("phase") == "end":
+            subs[t.get("agent") or "?"].append(t.get("dur_ms"))
+    for t in H:
+        if t.get("tool") in ("Task", "Agent") and not subs.get(t.get("action")):
+            subs.setdefault("(per call) " + (t.get("action") or "?"), []).append(net(t))
+    pr = [t for t in tr if t.get("type") == "prompt"]
+    ended = [t for t in tr if t.get("type") == "session" and t.get("phase") == "end"]
+    return {
+        "calls": len(H), "errors": sum(1 for t in H if not t.get("ok", True)),
+        "error_pct": round(100 * sum(1 for t in H if not t.get("ok", True)) / len(H), 1) if H else 0,
+        "tools": tools[:15], "bash": actions, "bash_categories": categories,
+        "mcp": sorted(servers, key=lambda x: -x["uses"])[:10],
+        "files": sorted(({"file": k, **v} for k, v in by_file.items()), key=lambda x: -x["edits"])[:15],
+        "languages": sorted(({"ext": k, **v} for k, v in by_lang.items()), key=lambda x: -(x["lines_added"] + x["lines_removed"]))[:12],
+        "skills": [{"name": k, "uses": n} for k, n in Counter(t.get("action") for t in H if t.get("tool") == "Skill").most_common(10)],
+        "subagents": sorted(({"name": k, "uses": len(v), "med_ms": _pct(v, 50)} for k, v in subs.items()), key=lambda x: -x["uses"])[:10],
+        "errors_by_type": [{"type": k, "n": n} for k, n in Counter(t.get("error_type") or "no_detail" for t in H if not t.get("ok", True)).most_common()],
+        "wait": {"n": len(waits), "med_s": round((_pct(waits, 50) or 0) / 1000, 1), "p95_s": round((_pct(waits, 95) or 0) / 1000, 1),
+                   "total_min": round(sum(waits) / 60000, 1),
+                   "by_tool": sorted(({"name": k, "n": len(v), "med_s": round(_pct(v, 50) / 1000, 1)} for k, v in wait_by_tool.items()), key=lambda x: -x["n"])[:8]},
+        "denied": [{"action": f"{h} {a}".strip(), "n": n} for (h, a), n in Counter((t.get("tool", ""), t.get("action", "")) for t in tr if t.get("type") == "denied").most_common(10)],
+        "compactions": dict(Counter(t.get("trigger") or "?" for t in tr if t.get("type") == "compaction")),
+        "prompts": {"n": len(pr), "questions_pct": round(100 * sum(1 for t in pr if t.get("question")) / len(pr)) if pr else 0,
+                    "with_code_pct": round(100 * sum(1 for t in pr if t.get("has_code")) / len(pr)) if pr else 0,
+                    "commands": [{"command": k, "n": n} for k, n in Counter(t["command"] for t in pr if t.get("command")).most_common(10)]},
+        "sessions": {"closed": len(ended), "commits": sum(t.get("commits", 0) for t in ended),
+                     "lines_added": sum(t.get("lines_added", 0) for t in ended), "lines_removed": sum(t.get("lines_removed", 0) for t in ended)},
+    }
+
+
+def cost_by_tool(turns: list[dict], H: list[dict]) -> dict:
+    """Splits the cost of each turn among the tools it used (in equal parts). Approximate: the real cost
+    belongs to the turn's tokens, not the tool; it shows which kind of work consumes the most."""
+    if not turns or not H:
+        return {}
+    table = prices()
+    by_session = defaultdict(list)
+    for t in H:
+        by_session[t.get("session", "")].append((_ts(t.get("ts")), t.get("tool", "?")))
+    for v in by_session.values():
+        v.sort()
+    out = defaultdict(float)
+    import bisect
+    for t in turns:
+        if t.get("subagent"):
+            continue
+        c = sum(cost(m, k, table) for k, m in t["models"].items())
+        lst = by_session.get(t["session"])
+        if not lst or not c:
+            continue
+        a, b = _ts(t["start"]), _ts(t["end"]) + 5
+        i, j = bisect.bisect_left(lst, (a, "")), bisect.bisect_right(lst, (b, "￿"))
+        inside = [h for _, h in lst[i:j]]
+        if not inside:
+            out["(no tools)"] += c; continue
+        for h in inside:
+            out[h] += c / len(inside)
+    return dict(out)
+
+
+def _key(t: dict, by: str) -> str:
+    branch = t.get("branch") or ""
+    if by == "ticket":
+        m = TICKET_RE.search(branch)
+        return m.group(0) if m else f"{t.get('project', '?')} · {branch or 'no branch'}"
+    if by == "branch":
+        return f"{t.get('project', '?')} · {branch or 'no branch'}"
+    return t.get("project", "?")
+
+
+def estimate(turns: list[dict], tr: list[dict], by: str = "ticket", since: dt.date | None = None,
+               until: dt.date | None = None) -> list[dict]:
+    """Data for estimating: by ticket (from the branch), branch or project. Active hours = turns merged if the gap
+    is ≤ 15 min (your time in front of Claude); Claude hours = sum of the turns' durations."""
+    table = prices()
+    d0 = (since or dt.date.today() - dt.timedelta(days=90)).isoformat()
+    d1 = (until or dt.date.today()).isoformat()
+    g = defaultdict(lambda: {"projects": set(), "branches": set(), "turns": 0, "cost": 0.0, "tokens": 0, "iv": [], "claude_s": 0.0,
+                             "days": set(), "start": "", "end": "", "models": defaultdict(float)})
+    for t in turns:
+        if not t.get("start") or not (d0 <= local_day(t["start"]) <= d1):
+            continue
+        G = g[_key(t, by)]
+        c = 0.0
+        for k, m in t["models"].items():
+            cc = cost(m, k, table); c += cc; G["models"][k] += cc
+            G["tokens"] += m["in"] + m["out"] + m["cw"] + m["cr"]
+        G["cost"] += c; G["projects"].add(t.get("project", "?")); G["branches"].add(t.get("branch") or "")
+        if not t.get("subagent") and not t.get("auto"):
+            a, b = _ts(t["start"]), _ts(t.get("end") or t["start"])
+            G["turns"] += 1; G["iv"].append((a, b)); G["claude_s"] += max(0.0, b - a); G["days"].add(local_day(t["start"]))
+            G["start"] = min(G["start"] or t["start"], t["start"]); G["end"] = max(G["end"], t.get("end") or "")
+    x = defaultdict(lambda: {"tools": 0, "errors": 0, "lines_added": 0, "lines_removed": 0, "files": set(),
+                             "commits": 0, "commits_cmd": 0, "wait_ms": 0, "compactions": 0})
+    for t in tr:
+        if not (d0 <= local_day(t.get("ts")) <= d1):
+            continue
+        X = x[_key(t, by)]
+        kind = t.get("type")
+        if kind == "tool":
+            X["tools"] += 1; X["errors"] += not t.get("ok", True); X["wait_ms"] += t.get("wait_ms") or 0
+            X["commits_cmd"] += (t.get("commits") or 0) if t.get("ok", True) else 0
+            if t.get("tool") in ("Edit", "MultiEdit", "Write", "NotebookEdit"):
+                X["lines_added"] += t.get("lines_added") or 0; X["lines_removed"] += t.get("lines_removed") or 0
+                X["files"].add(t.get("action"))
+        elif kind == "session" and t.get("phase") == "end":
+            X["commits"] += t.get("commits") or 0
+        elif kind == "compaction":
+            X["compactions"] += 1
+    rows = []
+    for k, G in g.items():
+        X = x.get(k) or x[k]
+        mix = {m: round(100 * c / G["cost"]) for m, c in sorted(G["models"].items(), key=lambda i: -i[1]) if G["cost"] and c / G["cost"] >= 0.01}
+        rows.append({"key": k, "project": ", ".join(sorted(G["projects"]))[:60], "branches": len(G["branches"]),
+                      "turns": G["turns"], "active_hours": _hours(G["iv"]), "claude_hours": round(G["claude_s"] / 3600, 2),
+                      "days": len(G["days"]), "start": G["start"][:10], "end": G["end"][:10],
+                      "cost": round(G["cost"], 2), "tokens": G["tokens"],
+                      "model": next(iter(mix), ""), "mix": mix,
+                      "tools": X["tools"], "errors": X["errors"],
+                      "lines_added": X["lines_added"], "lines_removed": X["lines_removed"], "files": len(X["files"]),
+                      # those Claude made (git commit commands) or those seen when the session closes: the larger, not counted twice
+                      "commits": max(X["commits"], X["commits_cmd"]), "wait_min": round(X["wait_ms"] / 60000, 1), "compactions": X["compactions"]})
+    return sorted(rows, key=lambda f: -f["cost"])
+
+
+def budgets(turns: list[dict]) -> list[dict]:
+    """~/.config/ws-telemetry/budgets.conf: lines "project=usd_per_month" (API equivalent); "*=usd" = total.
+    Current month's spend, % used and linear projection to the end of the month."""
+    conf = HOME / ".config/ws-telemetry/budgets.conf"
+    if not conf.exists():
+        return []
+    limits = {}
+    for line in conf.read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if "=" in line:
+            k, v = line.split("=", 1)
+            try:
+                limits[k.strip()] = float(v)
+            except ValueError:
+                continue
+    today = dt.date.today()
+    start = today.replace(day=1).isoformat()
+    month_days = ((today.replace(day=28) + dt.timedelta(days=4)).replace(day=1) - dt.timedelta(days=1)).day
+    table = prices()
+    spend = defaultdict(float)
+    for t in turns:
+        if (t.get("start") or "") >= start:
+            c = sum(cost(m, k, table) for k, m in t["models"].items())
+            spend[t.get("project", "?")] += c; spend["*"] += c
+    rows = []
+    for k, lim in limits.items():
+        g = spend.get(k, 0.0)
+        rows.append({"project": "(total)" if k == "*" else k, "key": k, "spent": round(g, 2), "budget": lim,
+                      "pct": round(100 * g / lim) if lim else 0, "projection": round(g / today.day * month_days, 2)})
+    return sorted(rows, key=lambda f: -f["pct"])
+
+
+def _week_range(iso: str | None, current: bool = False) -> tuple[dt.date, dt.date, str]:
+    """(monday, sunday, "YYYY-Www"). No argument: the last full week (or the current one with current=True)."""
+    if iso:
+        a, w = iso.upper().split("-W")
+        monday = dt.date.fromisocalendar(int(a), int(w), 1)
+    else:
+        today = dt.date.today()
+        monday = today - dt.timedelta(days=today.weekday()) - (dt.timedelta(0) if current else dt.timedelta(days=7))
+    y, w, _ = monday.isocalendar()
+    return monday, monday + dt.timedelta(days=6), f"{y}-W{w:02d}"
+
+
+def _totals(turns: list[dict], tr: list[dict], a: dt.date, b: dt.date) -> dict:
+    table = prices()
+    d0, d1 = a.isoformat(), b.isoformat()
+    ts = [t for t in turns if t.get("start") and d0 <= local_day(t["start"]) <= d1]
+    main_turns = [t for t in ts if not t.get("subagent") and not t.get("auto")]
+    inp = sum(m["in"] + m["cw"] + m["cr"] for t in ts for m in t["models"].values())
+    H = [t for t in tr if t.get("type") == "tool"]
+    ended = [t for t in tr if t.get("type") == "session" and t.get("phase") == "end"]
+    return {"cost": round(sum(cost(m, k, table) for t in ts for k, m in t["models"].items()), 2),
+            "tokens": sum(m["in"] + m["out"] + m["cw"] + m["cr"] for t in ts for m in t["models"].values()),
+            "turns": len(main_turns), "sessions": len({t["session"] for t in main_turns}),
+            "hours": _hours([(_ts(t["start"]), _ts(t.get("end") or t["start"])) for t in main_turns]),
+            "cache_pct": round(100 * sum(m["cr"] for t in ts for m in t["models"].values()) / inp, 1) if inp else 0,
+            "tools": len(H), "error_pct": round(100 * sum(1 for t in H if not t.get("ok", True)) / len(H), 1) if H else 0,
+            "wait_min": round(sum(t.get("wait_ms") or 0 for t in H) / 60000, 1),
+            "commits": sum(t.get("commits") or 0 for t in ended),
+            "lines": sum((t.get("lines_added") or 0) + (t.get("lines_removed") or 0) for t in ended)}
+
+
+def week(iso: str | None = None, current: bool = False) -> tuple[str, str, Path]:
+    """Weekly report in Markdown (compared against the previous week). Returns (markdown, short text
+    for Telegram, path). It is saved in DATA/weekly/ and in %UserProfile%\\ws-telemetry\\."""
+    a, b, name = _week_range(iso, current)
+    pa, pb = a - dt.timedelta(days=7), b - dt.timedelta(days=7)
+    turns = all_turns()
+    tr = traces(pa, b)
+    tr_s = [t for t in tr if a.isoformat() <= local_day(t.get("ts")) <= b.isoformat()]
+    tr_p = [t for t in tr if pa.isoformat() <= local_day(t.get("ts")) <= pb.isoformat()]
+    S, P = _totals(turns, tr_s, a, b), _totals(turns, tr_p, pa, pb)
+
+    def delta(k, fmt="{:,.0f}"):
+        v, w = S[k], P[k]
+        d = "" if not w else f" ({'+' if v >= w else ''}{round(100 * (v - w) / w)} %)"
+        return fmt.format(v) + d
+
+    est_p = estimate(turns, tr_s, "project", a, b)
+    est_t = [e for e in estimate(turns, tr_s, "ticket", a, b) if TICKET_RE.fullmatch(e["key"])]
+    det = tool_detail(tr_s, [t for t in turns if a.isoformat() <= local_day(t.get("start")) <= b.isoformat()])
+    md = [f"# Week {name} ({a:%d/%m} – {b:%d/%m/%Y})", "",
+          "Cost = equivalent at API prices (the Team plan is not billed per token). In parentheses: against the previous week.", "",
+          "| Indicator | Week | Previous |", "|---|---:|---:|",
+          f"| Equivalent cost | ${delta('cost', '{:,.2f}')} | ${P['cost']:,.2f} |",
+          f"| Active hours | {delta('hours', '{:,.1f}')} | {P['hours']:,.1f} |",
+          f"| Turns | {delta('turns')} | {P['turns']:,} |", f"| Sessions | {delta('sessions')} | {P['sessions']:,} |",
+          f"| Tokens | {delta('tokens')} | {P['tokens']:,} |", f"| Cache | {S['cache_pct']} % | {P['cache_pct']} % |",
+          f"| Tool calls | {delta('tools')} | {P['tools']:,} |",
+          f"| Tool errors | {S['error_pct']} % | {P['error_pct']} % |",
+          f"| Your wait to approve | {S['wait_min']} min | {P['wait_min']} min |",
+          f"| Commits in sessions | {delta('commits')} | {P['commits']:,} |",
+          f"| Lines changed (+/−) | {delta('lines')} | {P['lines']:,} |", ""]
+    md += ["## By project", "", "| Project | Cost | Active hours | Turns | Main model | Lines +/− | Commits |", "|---|---:|---:|---:|---|---:|---:|"]
+    md += [f"| {e['key']} | ${e['cost']:,.2f} | {e['active_hours']} | {e['turns']} | {e['model']} | +{e['lines_added']}/−{e['lines_removed']} | {e['commits']} |" for e in est_p[:12]] or ["| (no data) | | | | | | |"]
+    md += ["", "## By ticket (from the branch)", "", "| Ticket | Project | Cost | Active hours | Days | Turns |", "|---|---|---:|---:|---:|---:|"]
+    md += [f"| {e['key']} | {e['project']} | ${e['cost']:,.2f} | {e['active_hours']} | {e['days']} | {e['turns']} |" for e in est_t[:15]] or ["| (no branch with a ticket) | | | | | |"]
+    md += ["", "## Tools", "", "| Tool | Uses | Errors | Median | p95 | Approx. cost |", "|---|---:|---:|---:|---:|---:|"]
+    md += [f"| {h['name']} | {h['uses']} | {h['errors']} | {(h['med_ms'] or 0) / 1000:.1f} s | {(h['p95_ms'] or 0) / 1000:.1f} s | ${h['cost']:,.2f} |" for h in det["tools"][:10]] or ["| (no traces) | | | | | |"]
+    md += ["", "## Bash time by type of work", "", "| Type | Uses | Minutes | Errors |", "|---|---:|---:|---:|"]
+    md += [f"| {c['name']} | {c['uses']} | {c['total_min']} | {c['errors']} |" for c in det["bash_categories"]] or ["| (no traces) | | | |"]
+    if det["errors_by_type"]:
+        md += ["", "## Errors by type", "", *[f"- {e['type']}: {e['n']}" for e in det["errors_by_type"]]]
+    if det["denied"]:
+        md += ["", "## Denied permissions", "", *[f"- `{d['action']}`: {d['n']}" for d in det["denied"]]]
+    md += ["", f"_Generated {dt.datetime.now():%Y-%m-%d %H:%M} by `ws-telemetry week`. Local data; no conversation text._", ""]
+    text = "\n".join(md)
+    top = ", ".join(f"{e['key']} ${e['cost']:,.0f}" for e in est_p[:3]) or "no activity"
+    short = (f"📊 Week {name}: ${delta('cost', '{:,.2f}')} equivalent · {delta('hours', '{:,.1f}')} active h · "
+             f"{delta('turns')} turns · {S['commits']} commits\nTop: {top}\n"
+             f"Tools: {S['tools']:,} calls, {S['error_pct']} % with errors · your wait to approve: {S['wait_min']} min")
+    out = DATA / "weekly"; out.mkdir(parents=True, exist_ok=True)
+    path = out / f"week-{name}.md"; path.write_text(text, encoding="utf-8")
+    w = windows_dir()
+    if w:
+        try:
+            w.mkdir(parents=True, exist_ok=True); shutil.copyfile(path, w / path.name); path = w / path.name
+        except OSError:
+            pass
+    return text, short, path
+
+
+def export() -> Path:
+    """CSV for Excel / Power BI: turns, traces (90 days), estimation by ticket and by project."""
+    import csv
+    w = windows_dir() or DATA
+    d = w / "data"; d.mkdir(parents=True, exist_ok=True)
+    turns = all_turns(); table = prices()
+    tr = traces(dt.date.today() - dt.timedelta(days=90))
+
+    def write_csv(name, rows, fields):
+        with open(d / name, "w", newline="", encoding="utf-8-sig") as fh:
+            cw = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore"); cw.writeheader()
+            for f in rows:
+                cw.writerow({k: (json.dumps(v, ensure_ascii=False) if isinstance(v, (list, dict)) else v) for k, v in f.items()})
+
+    write_csv("turns.csv", ({**{k: t.get(k) for k in ("session", "start", "end", "project", "branch", "prompt_chars", "prompt_words", "resp_words", "responses", "subagent")},
+                             "ticket": m.group(0) if (m := TICKET_RE.search(t.get("branch") or "")) else "",
+                             "cost": round(sum(cost(m, k, table) for k, m in t["models"].items()), 5),
+                             "tokens": sum(m["in"] + m["out"] + m["cw"] + m["cr"] for m in t["models"].values()),
+                             "models": ",".join(t["models"]), "tools": t["tools"]} for t in turns),
+             ["session", "start", "end", "project", "branch", "ticket", "cost", "tokens", "models", "prompt_chars", "prompt_words",
+              "resp_words", "responses", "subagent", "tools"])
+    trace_fields = sorted({k for t in tr for k in t}, key=lambda k: (k not in ("ts", "event", "type", "session", "project", "branch", "ticket"), k))
+    write_csv("traces.csv", tr, trace_fields or ["ts"])
+    for by in ("ticket", "project"):
+        rows = estimate(turns, tr, by, dt.date.today() - dt.timedelta(days=365))
+        write_csv(f"estimate-{by}.csv", rows, list(rows[0]) if rows else ["key"])
+    return d
+
+
+# ---------------------------------------------------------------------------------------------
+# Trends: the same the dashboard already adds up, but over time (LOCAL weeks, days and hours)
+# ---------------------------------------------------------------------------------------------
+FAMILIES = ("fable", "mythos", "opus", "sonnet", "haiku")
+
+
+def family(model: str) -> str:
+    """claude-opus-5-5 → opus; anything not recognized falls under "other"."""
+    m = (model or "").lower()
+    return next((f for f in FAMILIES if f in m), "other")
+
+
+def _quantile(v: list[float], q: float) -> float:
+    """Nearest-rank percentile (enough for medians and p90 of durations)."""
+    if not v:
+        return 0.0
+    v = sorted(v)
+    return v[min(len(v) - 1, int(len(v) * q))]
+
+
+def _period(ts: list[dict], table: dict) -> dict:
+    """Metrics for a set of turns (a week, a day or a window): cost, volume, cache, reasoning and duration."""
+    r = {"cost": 0.0, "turns": 0, "sessions": set(), "in": 0, "cr": 0, "cw": 0, "out": 0, "think": 0, "sub": 0.0, "auto": 0.0, "autos": 0}
+    dur = []
+    for t in ts:
+        c = sum(cost(m, k, table) for k, m in t["models"].items())
+        r["cost"] += c
+        for m in t["models"].values():
+            for f in ("in", "cr", "cw", "out", "think"):
+                r[f] += m.get(f, 0)
+        if t.get("subagent"):
+            r["sub"] += c
+            continue
+        if t.get("auto"):
+            r["auto"] += c; r["autos"] += 1
+            continue
+        r["turns"] += 1; r["sessions"].add(t["session"])
+        d = _ts(t.get("end")) - _ts(t.get("start"))
+        if t.get("end") and 0 < d < 6 * 3600 and t["models"]:      # no end, negative or hung ones do not count
+            dur.append(d)
+    inp = r["in"] + r["cr"] + r["cw"]
+    return {"cost": round(r["cost"], 2), "turns": r["turns"], "sessions": len(r["sessions"]),
+            "cache_pct": round(100 * r["cr"] / inp, 1) if inp else 0,
+            "reasoning_pct": round(100 * r["think"] / r["out"], 1) if r["out"] else 0,
+            "output_per_turn": round(r["out"] / r["turns"]) if r["turns"] else 0,
+            "sub_pct": round(100 * r["sub"] / r["cost"], 1) if r["cost"] else 0,
+            "auto_pct": round(100 * r["auto"] / r["cost"], 1) if r["cost"] else 0, "auto_turns": r["autos"],
+            "dur_p50": round(_quantile(dur, 0.5)), "dur_p90": round(_quantile(dur, 0.9)), "dur_n": len(dur)}
+
+
+def trends(turns: list[dict], weeks: int = 12, top: int = 5) -> dict:
+    """Dashboard series: 7 days against the previous 7, weekly cost by project and by model family,
+    turn duration (p50/p90) by week, cache and reasoning by day, hour map and the projects that changed the most.
+    All in local time and only with aggregated fields: no prompts or responses."""
+    table = prices()
+    today = dt.date.today()
+    monday = today - dt.timedelta(days=today.weekday())
+    starts = [monday - dt.timedelta(weeks=i) for i in range(weeks - 1, -1, -1)]
+    by_week: dict[str, list] = {d.isoformat(): [] for d in starts}
+    by_day: dict[str, list] = defaultdict(list)
+    for t in turns:
+        d = local_day(t.get("start"))
+        if not d:
+            continue
+        by_day[d].append(t)
+        f = dt.date.fromisoformat(d)
+        k = (f - dt.timedelta(days=f.weekday())).isoformat()
+        if k in by_week:
+            by_week[k].append(t)
+
+    def turn_cost(t):
+        return sum(cost(m, k, table) for k, m in t["models"].items())
+
+    # Projects that weigh the most in the weeks shown; the rest is grouped under "others".
+    weight = defaultdict(float)
+    for ts in by_week.values():
+        for t in ts:
+            weight[t["project"]] += turn_cost(t)
+    leaders = [p for p, _ in sorted(weight.items(), key=lambda x: -x[1])[:top]]
+    fams = []
+    rows = []
+    for start in starts:
+        ts = by_week[start.isoformat()]
+        pr = defaultdict(float); fm = defaultdict(float)
+        for t in ts:
+            pr[t["project"] if t["project"] in leaders else "others"] += turn_cost(t)
+            for k, m in t["models"].items():
+                fm[family(k)] += cost(m, k, table)
+        fams += [f for f in fm if f not in fams]
+        rows.append({"week": f"{start.isocalendar()[0]}-W{start.isocalendar()[1]:02d}", "start": start.isoformat(),
+                      "partial": start == monday, **_period(ts, table),
+                      "projects": {k: round(v, 2) for k, v in pr.items()}, "models": {k: round(v, 2) for k, v in fm.items()}})
+
+    def window(since: int, until: int) -> list[dict]:
+        """Turns from `since`..`until` days ago (0 = today), both inclusive."""
+        return [t for i in range(until, since + 1) for t in by_day.get((today - dt.timedelta(days=i)).isoformat(), [])]
+
+    cur, prev = window(6, 0), window(13, 7)
+    pa, pb = defaultdict(float), defaultdict(float)
+    for t in cur:
+        pa[t["project"]] += turn_cost(t)
+    for t in prev:
+        pb[t["project"]] += turn_cost(t)
+    movers = sorted(({"project": p, "current": round(pa[p], 2), "previous": round(pb[p], 2), "change": round(pa[p] - pb[p], 2)}
+                  for p in set(pa) | set(pb)), key=lambda x: -abs(x["change"]))[:8]
+
+    heat = [[0] * 24 for _ in range(7)]            # [day of the week, monday = 0][local hour]
+    for i in range(30):
+        for t in by_day.get((today - dt.timedelta(days=i)).isoformat(), []):
+            e = _ts(t.get("start"))
+            if e and not t.get("subagent") and not t.get("auto"):
+                h = dt.datetime.fromtimestamp(e)
+                heat[h.weekday()][h.hour] += 1
+    days = []
+    for i in range(29, -1, -1):
+        d = (today - dt.timedelta(days=i)).isoformat()
+        m = _period(by_day.get(d, []), table)
+        days.append({"day": d, "turns": m["turns"], "cache_pct": m["cache_pct"], "reasoning_pct": m["reasoning_pct"],
+                     "dur_p50": m["dur_p50"], "output_per_turn": m["output_per_turn"]})
+    dates = sorted(by_day)
+    return {"weeks": rows, "leaders": leaders + (["others"] if len(weight) > len(leaders) else []),
+            "families": [f for f in (*FAMILIES, "other") if f in fams],
+            "current": _period(cur, table), "previous": _period(prev, table), "movers": movers,
+            "heat": heat, "days": days, "since": dates[0] if dates else "", "days_with_data": len(dates)}
+
+
+# ---------------------------------------------------------------------------------------------
+# OpenTelemetry: what Claude Code emits and the local collector stores (ws-otel, ADR-014)
+# ---------------------------------------------------------------------------------------------
+OTEL = Path(os.environ.get("WS_OTEL_DIR") or DATA / "otel")
+
+
+def otel_rows(days: int):
+    """Signals stored by ws-otel in the last `days` days (one file per local day, .jsonl or .jsonl.gz)."""
+    import gzip
+    since = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
+    for f in sorted(OTEL.glob("*.jsonl*")):
+        if f.name[:10] < since:
+            continue
+        with (gzip.open if f.suffix == ".gz" else open)(f, "rt", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    yield normalize(json.loads(line))
+                except ValueError:
+                    continue
+
+
+def otel_summary(days: int = 30) -> dict | None:
+    """API calls (latency, errors, retries), permission decisions, active time, hooks, compactions,
+    subagents, MCP and skills, from the OpenTelemetry signals. None if the collector has not stored anything yet."""
+    if not OTEL.is_dir():
+        return None
+    def num(x):
+        """Number from an attribute: Claude Code sends several as text ("10657")."""
+        if isinstance(x, bool):
+            return None
+        if isinstance(x, (int, float)):
+            return x
+        try:
+            return float(x) if isinstance(x, str) and x.strip() else None
+        except ValueError:
+            return None
+
+    api, err, dec, hooks, comp, subs, ttft, wait = [], [], [], defaultdict(list), [], defaultdict(list), [], []
+    active = defaultdict(lambda: {"user": 0.0, "cli": 0.0})
+    code = Counter(); mcp = Counter(); skills = Counter(); signals = Counter(); exhausted = 0; first = ""
+    for f in otel_rows(days):
+        s, n, day = f.get("signal"), f.get("name") or "", local_day(f.get("ts")) or (f.get("ts") or "")[:10]
+        if s == "event":
+            n = "claude_code." + n.removeprefix("claude_code.")      # events arrive without the prefix; metrics, with it
+        signals[s] += 1
+        first = min(first or day, day)
+        if s == "metric":
+            v = num(f.get("value")) or 0
+            if n == "claude_code.active_time.total":
+                active[day][f.get("type") if f.get("type") in ("user", "cli") else "cli"] += v
+            elif n == "claude_code.lines_of_code.count":
+                code["lines_added" if f.get("type") == "added" else "lines_removed"] += v
+            elif n == "claude_code.commit.count":
+                code["commits"] += v
+            elif n == "claude_code.pull_request.count":
+                code["prs"] += v
+            elif n == "claude_code.session.count":
+                code["sessions"] += v
+        elif s == "event":
+            if n == "claude_code.api_request":
+                api.append((day, f.get("model") or "?", num(f.get("duration_ms")), num(f.get("cost_usd")) or 0, f.get("query_source") or "main"))
+                if num(f.get("ttft_ms")) is not None:
+                    ttft.append(num(f["ttft_ms"]))
+            elif n == "claude_code.api_error":
+                err.append((day, str(f.get("status_code") or "no code"), num(f.get("attempt")) or 1))
+            elif n == "claude_code.api_retries_exhausted":
+                exhausted += 1
+            elif n == "claude_code.tool_decision":
+                tname = f.get("tool_name") or "?"
+                if tname == "mcp_tool" and f.get("mcp_server_name"):
+                    tname = f"mcp:{f['mcp_server_name']}"
+                dec.append((f.get("source") or "?", f.get("decision") or "?", tname))
+            elif n == "claude_code.hook_execution_complete":
+                hooks[f.get("hook_event") or "?"].append(num(f.get("total_duration_ms")))
+            elif n == "claude_code.compaction":
+                comp.append((f.get("trigger") or "?", num(f.get("pre_tokens")), num(f.get("post_tokens")), num(f.get("duration_ms"))))
+            elif n == "claude_code.subagent_completed":
+                subs[f.get("agent_type") or "?"].append((num(f.get("duration_ms")), num(f.get("total_tokens")) or 0, num(f.get("total_tool_uses")) or 0))
+            elif n == "claude_code.mcp_server_connection":
+                mcp[(f.get("server_name") or f.get("server_scope") or "?", f.get("status") or "?")] += 1
+            elif n == "claude_code.skill_activated":
+                skills[(f.get("skill.name") or "?", f.get("invocation_trigger") or "?")] += 1
+        elif s == "span" and n == "claude_code.tool.blocked_on_user" and num(f.get("dur_ms")) is not None:
+            wait.append(num(f["dur_ms"]))
+    if not signals:
+        return None
+    d_api = [a[2] for a in api]
+    by_day = defaultdict(lambda: {"dur": [], "err": 0})
+    for a in api:
+        by_day[a[0]]["dur"].append(a[2])
+    for e in err:
+        by_day[e[0]]["err"] += 1
+    by_model = defaultdict(lambda: {"dur": [], "cost": 0.0})
+    by_source = defaultdict(lambda: {"n": 0, "cost": 0.0})
+    for _, m, du, c, o in api:
+        by_model[m]["dur"].append(du); by_model[m]["cost"] += c
+        by_source[o]["n"] += 1; by_source[o]["cost"] += c
+    sources = defaultdict(lambda: {"accepts": 0, "rejects": 0})
+    rejected = Counter()
+    for src, de, tool in dec:
+        sources[src]["accepts" if de == "accept" else "rejects"] += 1
+        if de != "accept":
+            rejected[tool] += 1
+    med = lambda v: _pct(v, 50)  # noqa: E731
+    return {
+        "days": days, "since": first, "signals": dict(signals),
+        "api": {"calls": len(api), "med_ms": med(d_api), "p95_ms": _pct(d_api, 95), "errors": len(err),
+                "error_pct": round(100 * len(err) / (len(api) + len(err)), 1) if api or err else 0, "exhausted": exhausted,
+                "cost": round(sum(a[3] for a in api), 2), "ttft_med_ms": med(ttft), "ttft_p95_ms": _pct(ttft, 95),
+                "wait_n": len(wait), "wait_med_ms": med(wait), "wait_total_min": round(sum(wait) / 60000, 1)},
+        "api_days": [{"day": k, "calls": len(v["dur"]), "med_ms": med(v["dur"]), "p95_ms": _pct(v["dur"], 95), "errors": v["err"]}
+                     for k, v in sorted(by_day.items())],
+        "api_models": sorted(({"model": k, "calls": len(v["dur"]), "med_ms": med(v["dur"]), "p95_ms": _pct(v["dur"], 95), "cost": round(v["cost"], 2)}
+                               for k, v in by_model.items()), key=lambda x: -x["calls"])[:8],
+        "api_origin": sorted(({"source": k, **{a: (round(b, 2) if a == "cost" else b) for a, b in v.items()}} for k, v in by_source.items()), key=lambda x: -x["cost"])[:8],
+        "errors": [{"code": k, "n": n} for k, n in Counter(e[1] for e in err).most_common(8)],
+        "permissions": sorted(({"source": k, **v} for k, v in sources.items()), key=lambda x: -(x["accepts"] + x["rejects"])),
+        "rejections": [{"tool": k, "n": n} for k, n in rejected.most_common(6)],
+        "active": [{"day": k, "user_min": round(v["user"] / 60, 1), "claude_min": round(v["cli"] / 60, 1)} for k, v in sorted(active.items())],
+        "code": {k: round(code.get(k, 0)) for k in ("lines_added", "lines_removed", "commits", "prs", "sessions")},
+        "hooks": sorted(({"event": k, "n": len(v), "med_ms": med(v), "p95_ms": _pct(v, 95), "total_s": round(sum(x or 0 for x in v) / 1000, 1)}
+                         for k, v in hooks.items()), key=lambda x: -x["total_s"])[:12],
+        "compactions": {"n": len(comp), "auto": sum(1 for c in comp if c[0] == "auto"), "before_med": med([c[1] for c in comp]),
+                           "after_med": med([c[2] for c in comp]), "med_ms": med([c[3] for c in comp])},
+        "subagents": sorted(({"type": k, "n": len(v), "med_ms": med([x[0] for x in v]), "tokens": sum(x[1] for x in v), "tools": sum(x[2] for x in v)}
+                              for k, v in subs.items()), key=lambda x: -x["tokens"])[:10],
+        "mcp": [{"server": k[0], "status": k[1], "n": n} for k, n in mcp.most_common(12)],
+        "skills": [{"skill": k[0], "source": k[1], "n": n} for k, n in skills.most_common(12)],
+    }
+
+
+# ---------------------------------------------------------------------------------------------
+# Ratios for estimating: how much model, text and machine each unit of work costs
+# ---------------------------------------------------------------------------------------------
+def resources_by_day(days: int) -> dict[str, dict]:
+    """CPU (s), disk operations, bytes read/written and peak RAM (kB, sum of processes per minute) of the Claude
+    processes, by day. Counters are cumulative per process: the difference between its first and last sample is added."""
+    since = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
+    out = {}
+    for day, f in _resource_files():
+        if day < since:
+            continue
+        by_pid = defaultdict(list)
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    r = normalize(json.loads(line)); by_pid[r["pid"]].append(r)
+                except (ValueError, KeyError, TypeError):
+                    continue
+        t = {"cpu_s": 0.0, "ops": 0, "read": 0, "written": 0, "processes": len(by_pid)}
+        ram = defaultdict(int)
+        for rs in by_pid.values():
+            rs.sort(key=lambda r: r["ts"])
+            for r in rs:
+                ram[int(r["ts"] // 60)] += r.get("rss_kb", 0)
+            if len(rs) > 1:
+                t["cpu_s"] += max(0.0, rs[-1]["cpu_s"] - rs[0]["cpu_s"])
+                for k in ("ops", "read", "written"):
+                    t[k] += max(0, rs[-1].get(k, 0) - rs[0].get(k, 0))
+        t["ram_peak_kb"] = max(ram.values(), default=0)
+        t["ram_process_kb"] = max((r.get("rss_kb", 0) for rs in by_pid.values() for r in rs), default=0)
+        out[day] = t
+    return out
+
+
+def ratios(turns: list[dict], days: int = 30) -> dict:
+    """Unit ratios for the last `days` days, to project and estimate: text (words), model (tokens, calls, cost)
+    and machine (CPU, RAM, disk) per turn, per word and per token. Each ratio says how much data it was computed from."""
+    table = prices()
+    since = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
+    ts = [t for t in turns if (local_day(t.get("start")) or "") >= since]
+    mine = [t for t in ts if not t.get("subagent") and not t.get("auto")]
+    conv = [t for t in ts if not t.get("subagent")]                 # your conversation: your turns and automatic ones
+    tok = lambda t, *ks: sum(m.get(k, 0) for m in t["models"].values() for k in ks)  # noqa: E731
+    cst = lambda t: sum(cost(m, k, table) for k, m in t["models"].items())           # noqa: E731
+    S = lambda xs: sum(xs)                                                              # noqa: E731
+    out_conv, claude_words = S(tok(t, "out") for t in conv), S(t.get("resp_words") or 0 for t in conv)
+    your_words = S(t.get("prompt_words") or 0 for t in mine)
+    total = S(tok(t, "in", "cw", "cr", "out") for t in ts); out = S(tok(t, "out") for t in ts)
+    fresh = S(tok(t, "in", "cw") for t in ts); cached = S(tok(t, "cr") for t in ts); thinking = S(tok(t, "think") for t in ts)
+    total_cost = S(cst(t) for t in ts)
+    resp = [t["responses"] for t in mine if t.get("responses")]
+    tools = [sum(t["tools"].values()) for t in mine if t.get("responses")]
+    durs = [(_ts(t["end"]) - _ts(t["start"]), tok(t, "out")) for t in mine if t.get("end") and t.get("responses") and 0 < _ts(t["end"]) - _ts(t["start"]) < 6 * 3600]
+    hours = _hours([(_ts(t["start"]), _ts(t.get("end") or t["start"])) for t in mine])
+    R = []
+
+    def r(group, name, num, den, unit, base, dec=1, scale=1.0):
+        if den:
+            R.append({"group": group, "name": name, "value": round(scale * num / den, dec), "unit": unit, "base": base})
+
+    n = len(mine)
+    r("Text", "Your words per turn", your_words, n, "words", f"{n:,} turns of yours")
+    r("Text", "Claude's words per turn", claude_words, n, "words", f"{n:,} turns of yours")
+    r("Text", "Claude's words per word of yours", claude_words, your_words, "×", f"{your_words:,} words of yours", 2)
+    r("Model", "Output tokens per visible word from Claude", out_conv, claude_words, "tokens/word", f"{claude_words:,} words from Claude (includes reasoning and tool calls)", 2)
+    r("Model", "Tokens processed per word of yours", total, your_words, "tokens/word", "input, cache and output for the whole period", 0)
+    r("Model", "Output tokens per turn", out, n, "tokens", f"{n:,} turns of yours (includes subagents and automatic work)", 0)
+    r("Model", "Tokens read from cache per output token", cached, out, "×", "context that is re-read on each call", 1)
+    r("Model", "New input tokens per output token", fresh, out, "×", "uncached input plus cache written", 2)
+    r("Model", "Reasoning over output", thinking, out, "%", f"{out:,} output tokens", 1, 100)
+    if resp:
+        R.append({"group": "Model", "name": "Model calls per turn (median)", "value": _pct(resp, 50), "unit": "calls", "base": f"p90: {_pct(resp, 90)} · {len(resp):,} turns with a response"})
+        R.append({"group": "Model", "name": "Tools per turn (median)", "value": _pct(tools, 50), "unit": "uses", "base": f"p90: {_pct(tools, 90)}"})
+    r("Model", "Output speed within the turn", S(d[1] for d in durs), S(d[0] for d in durs), "tokens/s", f"{len(durs):,} turns with a duration", 1)
+    r("Cost", "Cost per turn of yours", total_cost, n, "USD", "API equivalent, with subagents and automatic work", 2)
+    r("Cost", "Cost per thousand words from Claude", total_cost, claude_words, "USD", "API equivalent", 2, 1000)
+    r("Cost", "Cost per million tokens processed", total_cost, total, "USD", "real mix of input, cache and output", 2, 1e6)
+    r("Cost", "Cost per active hour", total_cost, hours, "USD/h", f"{hours} active hours", 2)
+    r("Cost", "Turns per active hour", n, hours, "turns/h", f"{hours} active hours", 1)
+    # Machine: only the days that have both resource samples and turns.
+    rec = resources_by_day(days)
+    rec_days = [d for d in rec if any(local_day(t.get("start")) == d for t in ts)]
+    if rec_days:
+        tsr = [t for t in ts if local_day(t.get("start")) in rec_days]
+        tot_r, out_r = S(tok(t, "in", "cw", "cr", "out") for t in tsr), S(tok(t, "out") for t in tsr)
+        n_r = len([t for t in tsr if not t.get("subagent") and not t.get("auto")])
+        cpu, ops = S(rec[d]["cpu_s"] for d in rec_days), S(rec[d]["ops"] for d in rec_days)
+        wr, rd = S(rec[d]["written"] for d in rec_days), S(rec[d]["read"] for d in rec_days)
+        base = f"{len(rec_days)} days with resource samples"
+        r("Machine", "CPU per million tokens processed", cpu, tot_r, "CPU s", base, 1, 1e6)
+        r("Machine", "CPU per thousand output tokens", cpu, out_r, "CPU s", base, 2, 1000)
+        r("Machine", "CPU per turn of yours", cpu, n_r, "CPU s", base, 1)
+        r("Machine", "Disk operations per thousand output tokens", ops, out_r, "operations", base, 0, 1000)
+        r("Machine", "Disk operations per turn of yours", ops, n_r, "operations", base, 0)
+        r("Machine", "Disk written per thousand output tokens", wr / 1e6, out_r, "MB", base, 2, 1000)
+        r("Machine", "Disk read per thousand output tokens", rd / 1e6, out_r, "MB", base, 2, 1000)
+        R.append({"group": "Machine", "name": "RAM of one Claude process (maximum)", "value": round(max(rec[d]["ram_process_kb"] for d in rec_days) / 1024), "unit": "MB", "base": base})
+        R.append({"group": "Machine", "name": "Peak RAM of all processes at once", "value": round(max(rec[d]["ram_peak_kb"] for d in rec_days) / 1024), "unit": "MB", "base": base})
+    return {"days": days, "since": since, "turns": n, "ratios": R}
+
+
+def dashboard_analysis(turns: list[dict]) -> dict:
+    """New dashboard blocks: traces (30 days), estimation by ticket (90 days) and budgets."""
+    maintain_traces()
+    today = dt.date.today()
+    tr30 = traces(today - dt.timedelta(days=30))
+    lim = (today - dt.timedelta(days=30)).isoformat()
+    det = tool_detail(tr30, [t for t in turns if (t.get("start") or "") >= lim]) if tr30 else None
+    est = estimate(turns, traces(today - dt.timedelta(days=90)), "ticket")[:15]
+    return {"traces": det, "estimate": est, "budgets": budgets(turns)}
+
+
+def _print_table(rows: list[dict], cols: list[tuple[str, str, int]]) -> None:
+    print("  ".join(f"{t:>{w}}" if i else f"{t:<{w}}" for i, (t, _, w) in enumerate(cols)))
+    for f in rows:
+        v = [("—" if f.get(k) is None else str(f.get(k)))[:w] for _, k, w in cols]
+        print("  ".join((f"{x:>{w}}" if i else f"{x:<{w}}") for i, (x, (_, _, w)) in enumerate(zip(v, cols))))
+
+
+def cli_51(action: str, args: list[str]) -> int | None:
+    """Subcommands from patch 51; None if `action` is not handled here."""
+    def opt(name, default=None):
+        return args[args.index(name) + 1] if name in args and args.index(name) + 1 < len(args) else default
+    if action == "traces":
+        days = int(opt("--days", "7"))
+        tr = traces(dt.date.today() - dt.timedelta(days=days))
+        if not tr:
+            print(f"No traces in {DATA / 'traces'} (the hook ~/.claude/hooks/ws-traces.sh writes them when tools are used)."); return 0
+        lim = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+        d = tool_detail(tr, [t for t in all_turns() if (t.get("start") or "") >= lim])
+        if "--json" in args:
+            print(json.dumps(d, ensure_ascii=False, indent=1)); return 0
+        print(f"Last {days} days: {d['calls']:,} calls · {d['error_pct']} % with errors · "
+              f"your wait to approve: {d['wait']['n']} times, median {d['wait']['med_s']} s, total {d['wait']['total_min']} min\n")
+        _print_table(d["tools"], [("Tool", "name", 28), ("Uses", "uses", 6), ("Err", "errors", 4), ("Med ms", "med_ms", 7), ("p95 ms", "p95_ms", 7), ("Min", "total_min", 6), ("$ approx", "cost", 8)])
+        print(); _print_table(d["bash"][:12], [("Bash", "name", 28), ("Uses", "uses", 6), ("Err", "errors", 4), ("Med ms", "med_ms", 7), ("Type", "category", 12)])
+        print(); _print_table(d["bash_categories"], [("Type of work", "name", 28), ("Uses", "uses", 6), ("Min", "total_min", 7), ("Err", "errors", 4)])
+        if d["mcp"]:
+            print(); _print_table(d["mcp"], [("MCP", "name", 28), ("Uses", "uses", 6), ("Err", "errors", 4), ("Med ms", "med_ms", 7)])
+        print(); _print_table(d["files"][:10], [("Most edited file", "file", 44), ("Ed", "edits", 4), ("+", "lines_added", 6), ("−", "lines_removed", 6)])
+        return 0
+    if action == "estimate":
+        by = opt("--by", "ticket"); days = int(opt("--days", "90"))
+        needle = next((a for a in args if not a.startswith("--") and a not in (by, str(days))), None)
+        rows = estimate(all_turns(), traces(dt.date.today() - dt.timedelta(days=days)), by, dt.date.today() - dt.timedelta(days=days))
+        if needle:
+            rows = [f for f in rows if needle.lower() in f["key"].lower() or needle.lower() in f["project"].lower()]
+        if "--json" in args:
+            print(json.dumps(rows, ensure_ascii=False, indent=1)); return 0
+        if "--csv" in args:
+            import csv
+            cw = csv.DictWriter(sys.stdout, fieldnames=list(rows[0]) if rows else ["key"]); cw.writeheader()
+            for f in rows:
+                cw.writerow({**f, "mix": json.dumps(f["mix"])})
+            return 0
+        print(f"Estimation by {by} (last {days} days; active hours = turns with gaps ≤ 15 min)\n")
+        _print_table(rows[:25], [(by.capitalize(), "key", 30), ("Hours", "active_hours", 6), ("Days", "days", 4), ("Turns", "turns", 6),
+                                     ("$ equiv", "cost", 8), ("Model", "model", 18), ("+lines", "lines_added", 6), ("−lines", "lines_removed", 6), ("Commits", "commits", 7)])
+        return 0
+    if action == "week":
+        iso = next((a for a in args if re.fullmatch(r"\d{4}-[Ww]\d{2}", a)), None)
+        text, short, path = week(iso, "--current" in args)
+        if "--telegram" in args:
+            print(f"{short}\nFull report: {path.name} (ws-telemetry folder of your Windows user)")
+        else:
+            print(f"{text}\nSaved to: {path}")
+        return 0
+    if action == "budgets":
+        rows = budgets(all_turns())
+        if "--alerts" in args:   # project<TAB>pct<TAB>spent<TAB>budget<TAB>projection (only ≥ 80 %)
+            for f in rows:
+                if f["pct"] >= 80:
+                    print(f"{f['project']}\t{f['pct']}\t{f['spent']}\t{f['budget']}\t{f['projection']}")
+            return 0
+        if not rows:
+            print("No budgets. Create ~/.config/ws-telemetry/budgets.conf with lines \"project=usd_per_month\" (\"*=…\" for the total)."); return 0
+        _print_table(rows, [("Project", "project", 28), ("Spent", "spent", 9), ("Budget", "budget", 9), ("%", "pct", 5), ("Projection", "projection", 10)])
+        return 0
+    if action == "export":
+        print(f"CSV in: {export()}"); return 0
+    return None
+
+
+def build(if_due: bool = False) -> Path:
+    DATA.mkdir(parents=True, exist_ok=True); os.chmod(DATA, 0o700)
+    stamp = DATA / ".last"
+    html = DATA / "dashboard.html"
+    if if_due and stamp.exists() and time.time() - stamp.stat().st_mtime < REFRESH_S - 5 and html.exists():
+        return html
+    stamp.touch()
+    sample_resources()
+    purge_old()
+    turns = all_turns()
+    data = aggregate(turns, copilot(), resources_24h())
+    data.update(extras())
+    data["words"] = words_summary(turns)
+    data["net"] = net_24h(turns)
+    data.update(dashboard_analysis(turns))
+    data["trends"] = trends(turns)
+    data["otel"] = otel_summary(30)
+    data["ratios"] = ratios(turns, 30)
+    template = Path(os.environ.get("WS_TELEMETRY_TEMPLATE", HOME / ".config/ws-telemetry/dashboard.template.html"))
+    content = template.read_text(encoding="utf-8").replace("/*__DATA__*/null", json.dumps(data, ensure_ascii=False).replace("</", "<\\/"))   # a branch or file name with </script> does not close the block
+    tmp = html.with_suffix(".tmp"); tmp.write_text(content, encoding="utf-8"); tmp.replace(html)
+    with open(DATA / "turns.jsonl", "w") as fh:      # for DuckDB / your own analysis
+        for t in turns:
+            fh.write(json.dumps(t, ensure_ascii=False) + "\n")
+    w = windows_dir()
+    if w:
+        try:
+            w.mkdir(parents=True, exist_ok=True); shutil.copyfile(html, w / "dashboard.html")
+        except OSError:
+            pass
+    return html
+
+
+def main() -> int:
+    action = sys.argv[1] if len(sys.argv) > 1 else "build"
+    if action == "build":
+        build("--if-due" in sys.argv); return 0
+    if action == "open":
+        build(); w = windows_dir()
+        target = (w / "dashboard.html") if w and (w / "dashboard.html").exists() else DATA / "dashboard.html"
+        for c in (["wslview", str(target)], ["explorer.exe", subprocess.run(["wslpath", "-w", str(target)], capture_output=True, text=True).stdout.strip()]):
+            try:
+                subprocess.run(c, timeout=15); break
+            except (OSError, subprocess.SubprocessError):
+                continue
+        print(f"Dashboard: {target}"); return 0
+    if action == "rate":   # equivalent $/h over the last 10 min (used by the ws-telegram usage alert)
+        table = prices()
+        lim = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)).isoformat()
+        c = sum(cost(m, k, table) for t in all_turns() if (t.get("end") or "") >= lim for k, m in t["models"].items())
+        print(json.dumps({"usd_h": round(c * 6, 2)})); return 0
+    r51 = cli_51(action, sys.argv[2:])
+    if r51 is not None:
+        return r51
+    if action == "summary":
+        d = aggregate(all_turns(), copilot(), resources_24h())
+        k = d["kpi"]
+        print(f"Today: {k['today']['tokens']:,} tokens · ${k['today']['cost']:.2f} API equivalent · {k['today']['turns']} turns")
+        print(f"7 days: {k['7d']['tokens']:,} tokens · ${k['7d']['cost']:.2f} · cache {k['cache_pct']} %")
+        for p in d["projects"][:10]:
+            print(f"  {p['project'][:28]:28} {p['turns']:5} turns   ${p['cost']:9.2f}  last {p['last']}")
+        return 0
+    if action == "sql":
+        if not shutil.which("duckdb"):
+            print("DuckDB is not installed (ws-tools install duckdb). Turns file:", DATA / "turns.jsonl"); return 1
+        os.execvp("duckdb", ["duckdb", "-cmd", f"CREATE VIEW turns AS SELECT * FROM read_json_auto('{DATA / 'turns.jsonl'}'); "
+                                         f"CREATE VIEW traces AS SELECT * FROM read_json_auto('{DATA / 'traces'}/*.jsonl*', union_by_name=true, ignore_errors=true);"])  # nosec B608
+    print(__doc__); return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

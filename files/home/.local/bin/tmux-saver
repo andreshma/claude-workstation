@@ -4,90 +4,104 @@
 # any key dismisses it; your tabs and your Claudes keep working behind it. It does not appear in presentation mode
 # or while a permission dialog is open.
 #
-# The scenes are drawn by tmux-arte (animated ASCII art, all original designs); this script picks which one and
+# The scenes are drawn by tmux-art (animated ASCII art, all original designs); this script picks which one and
 # saves your preferences. The shading-engine scenes need python3-numpy; without it the others are shown.
 #
 # Usage: tmux-saver                     scene from your preferences (random by default)
-#        tmux-saver --escena <name>      a specific scene (tmux-arte --todas lists them) or «galeria»
-#                                        galeria: your images and animated GIFs turned into characters with chafa
-#                                          (sudo apt install chafa). Put them in ~/.config/tmux-claude/galeria
-#                                          (or point WS_GALERIA at another folder). WS_GALERIA_SEG = seconds per
-#                                          image (25); WS_GALERIA_SIMBOLOS=ascii to use only letters and signs.
-#        tmux-saver --siguiente-escena   switches the saved scene to the next one (used by the menu)
-#        tmux-saver --fijar <name>       saves that scene («aleatoria» = a different one each time)
+#        tmux-saver --scene <name>      a specific scene (tmux-art --all lists them) or «gallery»
+#                                        gallery: your images and animated GIFs turned into characters with chafa
+#                                          (sudo apt install chafa). Put them in ~/.config/tmux-claude/gallery
+#                                          (or point WS_GALLERY at another folder). WS_GALLERY_SEC = seconds per
+#                                          image (25); WS_GALLERY_SYMBOLS=ascii to use only letters and signs.
+#        tmux-saver --next-scene   switches the saved scene to the next one (used by the menu)
+#        tmux-saver --pin <name>       saves that scene («random» = a different one each time)
 #        tmux-saver --toggle             turns the screensaver on / off (used by the menu)
 #        tmux-saver --test <scene> <n>   draws n frames without waiting for keys (tests)
+#        tmux-saver --saved-scene        prints the saved scene (used by tmux-theme)
 set -uo pipefail
 export LC_ALL=C.UTF-8
-cfg="$HOME/.config/tmux-claude/apariencia"
-ESCENAS=(aleatoria galeria oceano boreal nubes planeta agujero vuelo estanque fuego lava tunel fractal dona cumbres aurora nevada velero peces tuberias batalla fogata cerezo lluvia galaxia nebulosa hiperespacio)
-get() { sed -n "s/^$1=//p" "$cfg" 2>/dev/null | tail -1; }
+cfg="$HOME/.config/tmux-claude/appearance"
+SCENES=(random gallery ocean boreal clouds planet blackhole flight pond fire lava tunnel fractal donut peaks aurora snowfall sailboat fish pipes battle campfire cherry rain galaxy nebula hyperspace)
+# get <key> [old key] — the preference; the Spanish key of earlier versions is read when the new one is missing.
+get() { local v; v="$(sed -n "s/^$1=//p" "$cfg" 2>/dev/null | tail -1)"; [[ -n "$v" || -z "${2:-}" ]] || v="$(sed -n "s/^$2=//p" "$cfg" 2>/dev/null | tail -1)"; echo "$v"; }
+# scene_name <name> — scene names saved or typed with the Spanish names of earlier versions.
+scene_name() {
+  case "$1" in
+    aleatoria) echo random ;; galeria) echo gallery ;; oceano) echo ocean ;; nubes) echo clouds ;; planeta) echo planet ;;
+    agujero) echo blackhole ;; vuelo) echo flight ;; estanque) echo pond ;; fuego) echo fire ;; tunel) echo tunnel ;;
+    dona) echo donut ;; cumbres) echo peaks ;; nevada) echo snowfall ;; velero) echo sailboat ;; peces) echo fish ;;
+    tuberias) echo pipes ;; batalla) echo battle ;; fogata) echo campfire ;; cerezo) echo cherry ;; lluvia) echo rain ;;
+    galaxia) echo galaxy ;; nebulosa) echo nebula ;; hiperespacio) echo hyperspace ;; *) echo "$1" ;;
+  esac
+}
+saved_scene() { scene_name "$(get scene escena)"; }
 put() { mkdir -p "${cfg%/*}"; touch "$cfg"; if grep -q "^$1=" "$cfg"; then sed -i "s/^$1=.*/$1=$2/" "$cfg"; else echo "$1=$2" >> "$cfg"; fi; }
 
 case "${1:-}" in
   --toggle)
-    if [[ "$(get protector)" == off ]]; then put protector on; else put protector off; fi
+    if [[ "$(get saver protector)" == off ]]; then put saver on; else put saver off; fi
     "$HOME/.local/bin/tmux-theme" apply
-    tmux display "Screensaver: $([[ "$(get protector)" == off ]] && echo off || echo on)"
+    tmux display "Screensaver: $([[ "$(get saver protector)" == off ]] && echo off || echo on)"
     exit 0 ;;
-  --fijar)
-    e="${2:-aleatoria}"
-    [[ " ${ESCENAS[*]} " == *" $e "* ]] || { echo "tmux-saver: unknown scene «$e» (available: ${ESCENAS[*]})" >&2; exit 2; }
-    put escena "$e"
-    if [[ "$e" == aleatoria ]]; then tmux set -gu @saver_scene 2>/dev/null; else tmux set -g @saver_scene "$e" 2>/dev/null; fi
+  --saved-scene) saved_scene; exit 0 ;;
+  --pin)
+    e="$(scene_name "${2:-random}")"
+    [[ " ${SCENES[*]} " == *" $e "* ]] || { echo "tmux-saver: unknown scene «$e» (available: ${SCENES[*]})" >&2; exit 2; }
+    put scene "$e"
+    if [[ "$e" == random ]]; then tmux set -gu @saver_scene 2>/dev/null; else tmux set -g @saver_scene "$e" 2>/dev/null; fi
     echo "Screensaver scene: $e"; exit 0 ;;
-  --siguiente-escena)
-    cur="$(get escena)"; cur="${cur:-aleatoria}"; next=aleatoria
-    for i in "${!ESCENAS[@]}"; do [[ "${ESCENAS[$i]}" == "$cur" ]] && next="${ESCENAS[$(( (i + 1) % ${#ESCENAS[@]} ))]}"; done
-    put escena "$next"; tmux set -g @saver_scene "$next"; tmux display "Screensaver scene: $next"; exit 0 ;;
+  --next-scene)
+    cur="$(saved_scene)"; cur="${cur:-random}"; next=random
+    for i in "${!SCENES[@]}"; do [[ "${SCENES[$i]}" == "$cur" ]] && next="${SCENES[$(( (i + 1) % ${#SCENES[@]} ))]}"; done
+    put scene "$next"; tmux set -g @saver_scene "$next"; tmux display "Screensaver scene: $next"; exit 0 ;;
 esac
 
 TEST=0; FRAMES=0; scene=""
 case "${1:-}" in
-  --escena) scene="${2:-aleatoria}" ;;
-  --test)   TEST=1; scene="${2:-aurora}"; FRAMES="${3:-5}" ;;
+  --scene) scene="$(scene_name "${2:-random}")" ;;
+  --test)   TEST=1; scene="$(scene_name "${2:-aurora}")"; FRAMES="${3:-5}" ;;
   *)
     [[ "$(tmux show -gqv @present 2>/dev/null)" == on ]] && exit 0
-    # Only an open permission dialog holds the screensaver back. «te toca» (Claude ended with a question) does
+    # Only an open permission dialog holds the screensaver back. «your turn» (Claude ended with a question) does
     # not: it is the normal state of almost any idle tab, and with it the screensaver never appeared.
-    tmux list-windows -a -F '#{@cmain}' 2>/dev/null | grep -qx 'te necesita' && exit 0
-    scene="$(get escena)" ;;
+    tmux list-windows -a -F '#{@cmain}' 2>/dev/null | grep -qx 'needs you' && exit 0
+    scene="$(saved_scene)" ;;
 esac
-scene="${scene:-aleatoria}"
+scene="${scene:-random}"
 
 # ── Gallery: images and GIFs with chafa ───────────────────────────────────────
-GAL="${WS_GALERIA:-$HOME/.config/tmux-claude/galeria}"
-galeria_archivos() {
+GAL="${WS_GALLERY:-$HOME/.config/tmux-claude/gallery}"
+gallery_files() {
   command -v chafa >/dev/null || return 0
   find -L "$GAL" -maxdepth 2 -type f \( -iname '*.png' -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.gif' -o -iname '*.webp' \) 2>/dev/null
 }
-galeria() {
-  local imgs f pid n=0 seg="${WS_GALERIA_SEG:-25}" simb="${WS_GALERIA_SIMBOLOS:-}" c r
-  mapfile -t imgs < <(galeria_archivos | shuf)
+gallery() {
+  local imgs f pid n=0 secs="${WS_GALLERY_SEC:-25}" symbols="${WS_GALLERY_SYMBOLS:-}" c r
+  mapfile -t imgs < <(gallery_files | shuf)
   (( ${#imgs[@]} )) || return 1
   c="${COLUMNS:-$(tput cols 2>/dev/null || echo 100)}"; r="${LINES:-$(tput lines 2>/dev/null || echo 30)}"
-  (( TEST )) && seg=0
+  (( TEST )) && secs=0
   printf '\033[?25l'; trap 'printf "\033[0m\033[2J\033[H\033[?25h"' EXIT
   while :; do
     for f in "${imgs[@]}"; do
       printf '\033[0m\033[2J\033[H'
-      chafa --format symbols ${simb:+--symbols "$simb"} --size "${c}x$(( r - 1 ))" --duration "$seg" -- "$f" </dev/null 2>/dev/null &
+      chafa --format symbols ${symbols:+--symbols "$symbols"} --size "${c}x$(( r - 1 ))" --duration "$secs" -- "$f" </dev/null 2>/dev/null &
       pid=$!
       if (( TEST )); then wait "$pid"; n=$(( n + 1 )); (( n >= FRAMES )) && exit 0; continue; fi
-      if read -rsn1 -t "$seg"; then kill "$pid" 2>/dev/null; exit 0; fi
+      if read -rsn1 -t "$secs"; then kill "$pid" 2>/dev/null; exit 0; fi
       kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
     done
   done
 }
-if [[ "$scene" == galeria ]]; then galeria || scene=aleatoria; fi   # no chafa or no images: an art scene
-ARTE="$HOME/.local/bin/tmux-arte"
-# A saved scene that no longer exists (the pixel art ones were retired) falls back to aleatoria.
-[[ " ${ESCENAS[*]} " == *" $scene "* ]] || scene=aleatoria
-if [[ "$scene" == aleatoria ]]; then
-  # tmux-arte --lista only names the ones it can draw (the shading-engine ones need numpy).
-  mapfile -t pool < <("$ARTE" --lista 2>/dev/null); (( ${#pool[@]} )) || pool=(aurora)
-  [[ -n "$(galeria_archivos | head -1)" ]] && pool+=(galeria)   # with images and chafa, the gallery joins the pool too
+if [[ "$scene" == gallery ]]; then gallery || scene=random; fi   # no chafa or no images: an art scene
+ART="$HOME/.local/bin/tmux-art"
+# A saved scene that no longer exists (the pixel art ones were retired) falls back to random.
+[[ " ${SCENES[*]} " == *" $scene "* ]] || scene=random
+if [[ "$scene" == random ]]; then
+  # tmux-art --list only names the ones it can draw (the shading-engine ones need numpy).
+  mapfile -t pool < <("$ART" --list 2>/dev/null); (( ${#pool[@]} )) || pool=(aurora)
+  [[ -n "$(gallery_files | head -1)" ]] && pool+=(gallery)   # with images and chafa, the gallery joins the pool too
   scene="${pool[RANDOM % ${#pool[@]}]}"
 fi
-[[ "$scene" == galeria ]] && { galeria || scene=aurora; }
-if (( TEST )); then exec "$ARTE" "$scene" --test "$FRAMES"; else exec "$ARTE" "$scene"; fi
+[[ "$scene" == gallery ]] && { gallery || scene=aurora; }
+if (( TEST )); then exec "$ART" "$scene" --test "$FRAMES"; else exec "$ART" "$scene"; fi

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+#
+# tmux-label — per-tab status label (blocked, in review, ready…) visible in the status bar and in the
+# dashboard (Ctrl+b D). Ctrl+b E opens the picker.
+# Usage: tmux-label --menu <window>     picker (used by Ctrl+b E)
+#      tmux-label <window> <text>       sets the label · tmux-label <window> remove
+#      tmux-label --bar               adds the label to the status bar formats (idempotent; called by
+#                                          .tmux.conf on load and by tmux-theme on theme change)
+set -uo pipefail
+LABEL='#{?@label, #{@label},}'
+case "${1:-}" in
+  --bar)
+    for o in window-status-format window-status-current-format; do
+      v="$(tmux show -gv "$o" 2>/dev/null)"
+      [[ "$v" == *"@label"* ]] || tmux set -ag "$o" "$LABEL"
+    done; exit 0 ;;
+  --menu)
+    w="${2:?window}"; m="$0"
+    tmux display-menu -T "#[align=centre] Tab label " -x W -y S \
+      "🔴 Blocked"              b "run-shell \"'$m' '$w' '🔴block'\"" \
+      "🟡 In review"            r "run-shell \"'$m' '$w' '🟡rev'\"" \
+      "🔵 Waiting on someone"   e "run-shell \"'$m' '$w' '🔵wait'\"" \
+      "🧪 Testing"              p "run-shell \"'$m' '$w' '🧪test'\"" \
+      "🟢 Ready"                l "run-shell \"'$m' '$w' '🟢ready'\"" \
+      "" \
+      "Remove label"            q "run-shell \"'$m' '$w' remove\""
+    exit 0 ;;
+esac
+w="${1:?window}"; t="${2:?text}"
+if [[ "$t" == remove ]]; then tmux set -wu -t "$w" @label
+else tmux set -w -t "$w" @label "${t:0:16}"; fi
+"$0" --bar

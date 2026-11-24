@@ -6,28 +6,46 @@
 # Usage:
 #   cr "task"                  classifies, asks [Y/n] and sends it
 #   cr -t sonnet "task"        forces the level (fable · opus · sonnet · haiku)
-#   cr --explica "task"        also shows the rule and the model
+#   cr --explain "task"        also shows the rule and the model
 #   cr --dry-run "task"        only classifies; sends nothing
-#   cr --sin-ia "task"         no matching rule → opus, without asking Haiku
-#   cr --cambiar <level>       changes the model of the Claude on this tab (used by the menu)
-#   cr --probar                runs the 20 labelled tasks against the rules (no AI); exit 1 if < 90 %
-# With no matching rule and the copilot configured (ws-copiloto), it asks Haiku:
-# {nivel, confianza}; with confianza < 0.7 it goes up one level. The text is sent redacted (no secrets).
+#   cr --no-ai "task"         no matching rule → opus, without asking Haiku
+#   cr --switch <level>       changes the model of the Claude on this tab (used by the menu)
+#   cr --test                runs the 20 labelled tasks of each active language (ws-lang) against the rules; exit 1 if < 90 %
+# With no matching rule and the copilot configured (ws-copilot), it asks Haiku:
+# {level, confidence}; with confidence < 0.7 it goes up one level. The text is sent redacted (no secrets).
 set -uo pipefail
 # shellcheck source=/dev/null
-source "$HOME/.local/lib/ws-ruteo.sh" || { echo "✖ ~/.local/lib/ws-ruteo.sh is missing" >&2; exit 1; }
+source "$HOME/.local/lib/ws-routing.sh" || { echo "✖ ~/.local/lib/ws-routing.sh is missing" >&2; exit 1; }
 
-forzado="" explica=0 seco=0 ia=1
-uso() { sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+forced="" explain=0 dry=0 ai=1
+usage() { sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
-# Spanish on purpose: the labelled tasks are fixtures for rules that match prompts typed in Spanish.
-probar() {
-  local ok=0 total=0 esperado tarea obtenido
-  while IFS='|' read -r esperado tarea; do
-    [[ -z "$esperado" ]] && continue
-    total=$((total + 1)); obtenido="$(ruteo_clasificar "$tarea" | cut -d' ' -f1)"
-    if [[ "$obtenido" == "$esperado" ]]; then ok=$((ok + 1)); else printf '  ✖ %-7s→ %-7s %s\n' "$esperado" "$obtenido" "$tarea"; fi
-  done <<'EOF'
+# Labelled tasks of `cr --test`, one set per language (same 20 tasks, same expected levels).
+fixtures_en() { cat <<'EOF'
+fable|design the architecture of the payments platform with C4
+fable|write an ADR to choose between Kafka and Service Bus
+fable|do a threat model of the customers API
+fable|global refactor of the whole repo to hexagonal architecture
+opus|debug why the login fails with 500
+opus|review this NullReferenceException stack trace
+opus|there is a memory leak in the queue worker
+opus|prepare release 2.3 with a rollback plan
+opus|review OWASP vulnerabilities of the payments endpoint
+opus|implement the invoices endpoint with its tests
+sonnet|write a SQL query that sums sales by month
+sonnet|optimize this SELECT with a slow JOIN over orders
+sonnet|create the stored procedure for customer sign-up
+sonnet|fix the typo in the README
+sonnet|write the commit message for these changes
+sonnet|translate this one-pager to Spanish
+haiku|find where UserService is defined
+haiku|where is the Redis configuration
+haiku|list the test files of the payments module
+haiku|how many endpoints does the orders controller have
+EOF
+}
+# The Spanish set is DATA for the Spanish rules (rules.es.conf): prompts as they are typed in Spanish.
+fixtures_es() { cat <<'EOF'
 fable|diseña la arquitectura de la plataforma de pagos con C4
 fable|escribe un ADR para elegir entre Kafka y Service Bus
 fable|haz un threat model del API de clientes
@@ -49,72 +67,85 @@ haiku|dónde está la configuración de Redis
 haiku|lista los archivos de pruebas del módulo de pagos
 haiku|cuántos endpoints tiene el controlador de órdenes
 EOF
+}
+
+# run_tests — runs the set of the current language (ws-lang); with es, both (Spanish mode keeps the English rules).
+run_tests() {
+  local ok=0 total=0 expected task got fx sets=(en)
+  [[ "$(ws_lang)" == es ]] && sets+=(es)
+  for fx in "${sets[@]}"; do
+    while IFS='|' read -r expected task; do
+      [[ -z "$expected" ]] && continue
+      total=$((total + 1)); got="$(routing_classify "$task" | cut -d' ' -f1)"
+      if [[ "$got" == "$expected" ]]; then ok=$((ok + 1)); else printf '  ✖ [%s] %-7s→ %-7s %s\n' "$fx" "$expected" "$got" "$task"; fi
+    done < <("fixtures_$fx")
+  done
   local pct=$(( ok * 100 / total ))
-  echo "Rules: $ok/$total labelled tasks at their level ($pct %)"
+  echo "Rules (${sets[*]}): $ok/$total labelled tasks at their level ($pct %)"
   (( pct >= 90 ))
 }
 
-clasificar_ia() {   # $1 task → "nivel confianza" or nothing
+classify_ai() {   # $1 task → "level confidence" or nothing
   local f="$HOME/.config/tmux-claude/ai-shell.sh" r
   [[ -f "$f" ]] || return 1
   r="$( (
     # shellcheck source=/dev/null
-    source "$f" 2>/dev/null; _ai_cargar_llave 2>/dev/null || exit 1
-    printf '%s' "$1" | _ai_redact | _ai_api 'Classify the programming task into a model level: fable (architecture, ADR, exhaustive analysis, changes across many files), opus (daily development, debugging, security, releases), sonnet (SQL, narrowly scoped changes, short texts), haiku (searches and simple questions). Answer ONLY with JSON: {"nivel":"...","confianza":0.0}' 60 8
+    source "$f" 2>/dev/null; _ai_load_key 2>/dev/null || exit 1
+    printf '%s' "$1" | _ai_redact | _ai_api 'Classify the programming task into a model level: fable (architecture, ADR, exhaustive analysis, changes across many files), opus (daily development, debugging, security, releases), sonnet (SQL, narrowly scoped changes, short texts), haiku (searches and simple questions). Answer ONLY with JSON: {"level":"...","confidence":0.0}' 60 8
   ) 2>/dev/null)" || return 1
   r="$(grep -o '{[^}]*}' <<<"$r" | head -1)"
-  jq -r 'select(.nivel|test("^(fable|opus|sonnet|haiku)$")) | "\(.nivel) \(.confianza // 0)"' <<<"$r" 2>/dev/null
+  jq -r 'select(.level|test("^(fable|opus|sonnet|haiku)$")) | "\(.level) \(.confidence // 0)"' <<<"$r" 2>/dev/null
 }
 
 while (( $# )); do
   case "$1" in
-    -t|--tier) forzado="${2:-}"; shift 2 ;;
-    --explica) explica=1; shift ;;
-    --dry-run) seco=1; shift ;;
-    --sin-ia) ia=0; shift ;;
-    --probar) probar; exit $? ;;
-    --cambiar)
-      nv="${2:-}"; ruteo_modelo "$nv" >/dev/null || { echo "✖ invalid level: $nv" >&2; exit 2; }
-      pc="$(ruteo_panel_claude "$(tmux display -p '#{window_id}')")"
+    -t|--tier) forced="${2:-}"; shift 2 ;;
+    --explain) explain=1; shift ;;
+    --dry-run) dry=1; shift ;;
+    --no-ai) ai=0; shift ;;
+    --test) run_tests; exit $? ;;
+    --switch)
+      nv="${2:-}"; routing_model "$nv" >/dev/null || { echo "✖ invalid level: $nv" >&2; exit 2; }
+      pc="$(routing_claude_pane "$(tmux display -p '#{window_id}')")"
       [[ -n "$pc" ]] || { tmux display-message "There is no Claude on this tab"; exit 1; }
-      ruteo_cambiar "$pc" "$nv"; ruteo_registrar menu "$nv" manual "" manual 0
-      tmux display-message "Model of this tab: $(ruteo_modelo "$nv")"; exit 0 ;;
-    -h|--help) uso ;;
+      routing_switch "$pc" "$nv"; routing_log menu "$nv" manual "" manual 0
+      tmux display-message "Model of this tab: $(routing_model "$nv")"; exit 0 ;;
+    -h|--help) usage ;;
     --) shift; break ;;
-    -*) echo "✖ unknown option: $1" >&2; uso 2 ;;
+    -*) echo "✖ unknown option: $1" >&2; usage 2 ;;
     *) break ;;
   esac
 done
-tarea="$*"; [[ -n "$tarea" ]] || { [[ -t 0 ]] && uso 2; tarea="$(cat)"; }
-[[ -n "$tarea" ]] || uso 2
+task="$*"; [[ -n "$task" ]] || { [[ -t 0 ]] && usage 2; task="$(cat)"; }
+[[ -n "$task" ]] || usage 2
 
-if [[ -n "$forzado" ]]; then
-  ruteo_modelo "$forzado" >/dev/null || { echo "✖ invalid level: $forzado" >&2; exit 2; }
-  nivel="$forzado" regla="manual"
+if [[ -n "$forced" ]]; then
+  routing_model "$forced" >/dev/null || { echo "✖ invalid level: $forced" >&2; exit 2; }
+  level="$forced" rule="manual"
 else
-  read -r nivel regla <<<"$(ruteo_clasificar "$tarea")"
-  if [[ "$regla" == defecto && $ia -eq 1 ]] && r="$(clasificar_ia "$tarea")" && [[ -n "$r" ]]; then
-    read -r nivel conf <<<"$r"; regla="haiku:$conf"
-    awk -v c="$conf" 'BEGIN { exit !(c < 0.7) }' && { nivel="$(ruteo_subir "$nivel")"; regla="$regla→sube"; }
+  read -r level rule <<<"$(routing_classify "$task")"
+  if [[ "$rule" == default && $ai -eq 1 ]] && r="$(classify_ai "$task")" && [[ -n "$r" ]]; then
+    read -r level conf <<<"$r"; rule="haiku:$conf"
+    awk -v c="$conf" 'BEGIN { exit !(c < 0.7) }' && { level="$(routing_up "$level")"; rule="$rule→up"; }
   fi
 fi
-id="$(ruteo_modelo "$nivel")"
-printf 'Level: \e[1m%s\e[0m → %s' "$nivel" "$id"; (( explica )) && printf '   (rule: %s)' "$regla"; echo
-(( seco )) && { ruteo_registrar cr "$nivel" "$regla" "" simulado "${#tarea}"; exit 0; }
+id="$(routing_model "$level")"
+printf 'Level: \e[1m%s\e[0m → %s' "$level" "$id"; (( explain )) && printf '   (rule: %s)' "$rule"; echo
+(( dry )) && { routing_log cr "$level" "$rule" "" simulated "${#task}"; exit 0; }
 
-pc=""; [[ -n "${TMUX_PANE:-}" ]] && pc="$(ruteo_panel_claude "$(tmux display -p -t "$TMUX_PANE" '#{window_id}')")"
+pc=""; [[ -n "${TMUX_PANE:-}" ]] && pc="$(routing_claude_pane "$(tmux display -p -t "$TMUX_PANE" '#{window_id}')")"
 if [[ -n "$pc" ]]; then
-  actual="$(ruteo_nivel_de "$(tmux show -wqv -t "$pc" @cmodel)")"
-  read -rp "Send to the Claude on this tab${actual:+ (now $actual)} with $nivel? [Y/n] " r
-  [[ "$r" =~ ^[nN]$ ]] && { ruteo_registrar cr "$nivel" "$regla" "$actual" rechazado "${#tarea}"; exit 0; }
-  [[ "$actual" != "$nivel" ]] && ruteo_cambiar "$pc" "$nivel"
-  f="$(umask 077; mkdir -p "$WS_RUTEO_RUN"; mktemp "$WS_RUTEO_RUN/cr-XXXXXX")"; printf '%s' "$tarea" > "$f"
-  ruteo_pegar "$pc" "$f" enviar; tmux select-pane -t "$pc"
-  ruteo_registrar cr "$nivel" "$regla" "$actual" aceptado "${#tarea}"
+  current="$(routing_level_of "$(tmux show -wqv -t "$pc" @cmodel)")"
+  read -rp "Send to the Claude on this tab${current:+ (now $current)} with $level? [Y/n] " r
+  [[ "$r" =~ ^[nN]$ ]] && { routing_log cr "$level" "$rule" "$current" rejected "${#task}"; exit 0; }
+  [[ "$current" != "$level" ]] && routing_switch "$pc" "$level"
+  f="$(umask 077; mkdir -p "$WS_ROUTING_RUN"; mktemp "$WS_ROUTING_RUN/cr-XXXXXX")"; printf '%s' "$task" > "$f"
+  routing_paste "$pc" "$f" send; tmux select-pane -t "$pc"
+  routing_log cr "$level" "$rule" "$current" accepted "${#task}"
 else
-  read -rp "Open Claude here with $nivel ($id)? [Y/n] " r
-  [[ "$r" =~ ^[nN]$ ]] && { ruteo_registrar cr "$nivel" "$regla" "" rechazado "${#tarea}"; exit 0; }
-  ruteo_registrar cr "$nivel" "$regla" "" aceptado "${#tarea}"
+  read -rp "Open Claude here with $level ($id)? [Y/n] " r
+  [[ "$r" =~ ^[nN]$ ]] && { routing_log cr "$level" "$rule" "" rejected "${#task}"; exit 0; }
+  routing_log cr "$level" "$rule" "" accepted "${#task}"
   # --model applies to this session only: it does not change your default model.
-  exec claude --model "$id" "$tarea"
+  exec claude --model "$id" "$task"
 fi

@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+#
+# tmux-focus — focus mode: minimal status bar with a countdown and no Windows notifications for N minutes
+# (Telegram stays on: urgent things reach your phone). When it ends, everything goes back and you get notified.
+# Menu → Views → f.
+# Usage: tmux-focus 25|50|90   starts (minutes)
+#      tmux-focus off          ends early             · tmux-focus remaining   mm:ss (used by the status bar)
+#      tmux-focus --menu       picker                  · tmux-focus status
+# Log: ~/.local/share/ws-telemetry/focus/YYYY-MM-DD.jsonl (planned vs actual, whether you ended it early).
+set -uo pipefail
+D="$HOME/.local/share/ws-telemetry/focus"
+end_ts() { tmux show -gqv @focus_end; }
+log_block() { mkdir -p "$D" && chmod 700 "$D"
+  jq -nc --argjson i "$1" --argjson p "$2" --arg c "$3" '{ts: (now | todate), start: ($i | todate), planned_min: $p,
+    actual_min: (((now - $i) / 60) | floor), completed: ($c == "yes")}' >> "$D/$(date +%F).jsonl" 2>/dev/null; }
+
+case "${1:-status}" in
+  --menu)
+    m="$0"
+    tmux display-menu -T "#[align=centre] Focus mode " -x C -y C \
+      "25 minutes" 2 "run-shell -b \"'$m' 25\"" "50 minutes" 5 "run-shell -b \"'$m' 50\"" \
+      "90 minutes" 9 "run-shell -b \"'$m' 90\"" "" "#{?@focus_end,,-}End now" t "run-shell -b \"'$m' off\""
+    ;;
+  remaining)
+    f="$(end_ts)"; [[ -n "$f" ]] || exit 0
+    r=$(( f - $(date +%s) )); (( r < 0 )) && r=0; printf '%02d:%02d' $((r / 60)) $((r % 60)) ;;
+  status)
+    if [[ -n "$(end_ts)" ]]; then echo "Focus: $("$0" remaining) left"; else echo "Focus: off"; fi ;;
+  off|--end)
+    f="$(end_ts)"; [[ -n "$f" ]] || { tmux display "You are not in focus mode"; exit 0; }
+    i="$(tmux show -gqv @focus_start)"; p="$(tmux show -gqv @focus_plan)"
+    tmux set -g status-right "$(tmux show -gqv @focus_prev_right)"
+    tmux set -g status-interval "$(tmux show -gqv @focus_prev_int)"
+    tmux set -gu @focus_end; tmux set -gu @focus_start; tmux set -gu @focus_plan
+    if [[ "$1" == --end ]]; then
+      log_block "${i:-0}" "${p:-0}" yes
+      ws-notify --force "🎯 Your focus block is over (${p} min)" "Check the tabs waiting for you: Ctrl+b m → a"
+    else log_block "${i:-0}" "${p:-0}" no; tmux display "Focus mode ended"; fi ;;
+  *)
+    [[ "$1" =~ ^[0-9]+$ ]] || { sed -n '2,12p' "$0"; exit 2; }
+    [[ -n "$(end_ts)" ]] && "$0" off >/dev/null
+    start=$(date +%s); f=$(( start + $1 * 60 ))
+    tmux set -g @focus_prev_right "$(tmux show -gv status-right)"
+    tmux set -g @focus_prev_int "$(tmux show -gv status-interval)"
+    tmux set -g @focus_end "$f"; tmux set -g @focus_start "$start"; tmux set -g @focus_plan "$1"
+    tmux set -g status-interval 5
+    tmux set -g status-right "#[bold] 🎯 focus #(~/.local/bin/tmux-focus remaining) #[default]"
+    tmux run-shell -b "sleep $(( $1 * 60 )); [ \"\$(tmux show -gqv @focus_end)\" = '$f' ] && '$0' --end"
+    tmux display -d 2500 "🎯 Focus $1 min: no Windows notifications (Telegram stays on). Menu → Views → f to end" ;;
+esac

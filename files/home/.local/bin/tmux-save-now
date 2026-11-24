@@ -7,8 +7,8 @@
 set -uo pipefail
 # Right after the server starts, tmux is still restoring: saving now would overwrite the last good
 # save with an empty session (it happened on 2026-11-14). continuum takes over afterwards.
-inicio="$(tmux display -p '#{start_time}' 2>/dev/null || echo 0)"
-(( $(date +%s) - inicio >= 180 )) || exit 0
+started="$(tmux display -p '#{start_time}' 2>/dev/null || echo 0)"
+(( $(date +%s) - started >= 180 )) || exit 0
 stamp="/tmp/tmux-save-now-$(id -u)"
 now="$(date +%s)"; last="$(cat "$stamp" 2>/dev/null || echo 0)"
 (( now - last >= 10 )) || exit 0

@@ -68,19 +68,29 @@ Definition of done:
 ## Commits
 
 [Conventional Commits](https://www.conventionalcommits.org/), imperative, one logical change per commit:
-`feat(tmux): …`, `fix(ruteo): …`, `docs: …`. Types: feat, fix, chore, docs, refactor, test, ci, perf, style, build.
+`feat(tmux): …`, `fix(routing): …`, `docs: …`. Types: feat, fix, chore, docs, refactor, test, ci, perf, style, build.
 **Do not add `Co-authored-by` trailers.**
 
 ## Language
 
-English for code, comments, messages, interface labels, documentation, commits, issues and pull requests.
+English for code, comments, messages, interface labels, documentation, commits, issues and pull requests. That
+includes every identifier: command and file names, subcommands, options, environment variables, tmux options, config
+keys, JSON fields and stored values ([ADR 0015](docs/adr/0015-english-names-and-language-selector.md)).
 
-Two exceptions exist today:
+Spanish appears in three places only, each marked with a comment:
 
-- Command names, flags and some stored values are still Spanish words (`tmux-nivel`, `--todas`, `completo`), pending a
-  rename. Do not translate them one by one; write them as they are in the code.
-- Regular expressions and keyword lists that match prompts typed in Spanish (model routing, intent detection) stay in
-  Spanish on purpose, with a comment that says so.
+- **Language packs.** Words and expressions that match prompts and answers typed in another language are data, and
+  they live in the pack of that language (`files/home/.local/lib/ws-lang/es.conf`,
+  `files/home/.config/ws-routing/rules.es.conf`), never in a script. A new pattern goes into `en.conf` and, when it
+  has a Spanish form, into `es.conf` under the same key. The user picks the packs with `ws-lang`.
+- **Fixtures of the `es` pack** in `ws-test` and `cr --test`.
+- **Compatibility with the names used before 3.0**: the old names in `renames.tsv`, and the tables that read old
+  data and settings (`LEGACY…` in the Python scripts, `(.new // .old)` in jq). Do not add new ones, and do not remove
+  them before the next major version.
+
+A rename of anything the user can see or has on disk needs a row in `renames.tsv` (kind `data`, `shim` or `drop`),
+a line in the rename tables of [docs/USAGE.md](docs/USAGE.md#18-upgrading-from-2x-names) and a `Changed` entry in the
+changelog.
 
 ## Documentation
 
@@ -88,10 +98,11 @@ Public scripts start with a header comment (what it does, usage, side effects).
 
 | Change | Update |
 |---|---|
-| A key binding, menu label, status label or command | [docs/USAGE.md](docs/USAGE.md); the generated manual (`ws-menus --ver`) follows the installed menus |
+| A key binding, menu label, status label or command | [docs/USAGE.md](docs/USAGE.md); the generated manual (`ws-menus --show`) follows the installed menus |
 | A component, hook, flow or stored state | [docs/architecture.md](docs/architecture.md), and [docs/DIAGRAMS.md](docs/DIAGRAMS.md) when a diagram changes |
 | A permission rule, the sandbox, the guard, the gate, Telegram, telemetry content or backups | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) and [SECURITY.md](SECURITY.md) |
 | A test suite, a static check or a CI job | [docs/TESTING.md](docs/TESTING.md) |
+| A language pack key or a new language | [docs/USAGE.md](docs/USAGE.md#15-language) and [docs/architecture.md](docs/architecture.md#language-packs) |
 | A failure mode, an operational step, upgrading or recovery | [docs/runbook.md](docs/runbook.md) |
 | Anything a user notices | [CHANGELOG.md](CHANGELOG.md), under `[Unreleased]` |
 

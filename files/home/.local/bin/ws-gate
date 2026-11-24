@@ -37,11 +37,11 @@ lint_file() {
     *.sh|*.bash) has shellcheck && run shellcheck -S warning "$f" ;;
     *.py)        has ruff && { run ruff check --quiet "$f"; run ruff format --check --quiet "$f"; } ;;
     *.js|*.jsx|*.ts|*.tsx|*.mjs|*.cjs|*.vue)
-      [[ -n "${WS_GATE_SIN_CODIGO_REPO:-}" ]] && return 0   # from the edit hook: nothing that runs code from the repo
+      [[ -n "${WS_GATE_NO_REPO_CODE:-}" ]] && return 0   # from the edit hook: nothing that runs code from the repo
       [[ -x "$r/node_modules/.bin/eslint" ]] && run "$r/node_modules/.bin/eslint" --no-warn-ignored "$f"
       [[ -x "$r/node_modules/.bin/prettier" ]] && run "$r/node_modules/.bin/prettier" --check --log-level warn "$f" ;;
     *.css|*.scss|*.html)
-      [[ -n "${WS_GATE_SIN_CODIGO_REPO:-}" ]] && return 0
+      [[ -n "${WS_GATE_NO_REPO_CODE:-}" ]] && return 0
       [[ -x "$r/node_modules/.bin/prettier" ]] && run "$r/node_modules/.bin/prettier" --check --log-level warn "$f" ;;
     *.rs)        has rustfmt && run rustfmt --check --edition 2021 "$f" ;;
     *.tf)        has terraform && run terraform fmt -check -diff "$f" ;;
@@ -165,8 +165,8 @@ pre_push() {
 repo_report() {
   local r="${1:-$PWD}" out ts name f
   r="$(git -C "$r" rev-parse --show-toplevel 2>/dev/null)" || { echo "Not a git repo: ${1:-$PWD}"; return 1; }
-  name="${r##*/}"; ts="$(date +%Y%m%d-%H%M)"; mkdir -p "$HOME/reportes-calidad"
-  out="$HOME/reportes-calidad/$name-$ts.md"
+  name="${r##*/}"; ts="$(date +%Y%m%d-%H%M)"; mkdir -p "$HOME/quality-reports"
+  out="$HOME/quality-reports/$name-$ts.md"
   {
     printf '# Quality and security review — %s\n\n%s · branch `%s` · commit `%s`\n\n' "$name" "$(date '+%F %H:%M')" \
       "$(git -C "$r" branch --show-current)" "$(git -C "$r" rev-parse --short HEAD)"
@@ -194,7 +194,7 @@ case "${1:-}" in
   repo)       repo_report "${2:-}"; exit $? ;;
   repo-view)  echo "Reviewing $(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")…"
               f="$(repo_report "${2:-}")" || { read -rsn1; exit 1; }; less -R "$f"; exit 0 ;;
-  *) sed -n '3,22p' "$0"; exit 2 ;;
+  *) sed -n '3,19p' "$0"; exit 2 ;;
 esac
 if (( fail )); then printf '%sGate: blocked. Fix what is marked with ✖ (or git config ws.gate.skip …).%s\n' "$RED" "$RST" >&2; exit 1; fi
 (( warn )) && printf '%sGate: passes with warnings.%s\n' "$YEL" "$RST" >&2

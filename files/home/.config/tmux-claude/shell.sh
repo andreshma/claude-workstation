@@ -3,13 +3,13 @@
 #
 # shell.sh — comfortable terminal: Tab completion, fzf, gray suggestions (ble.sh) and the AI
 # copilot. Loaded by functions.sh in interactive shells only. To turn ble.sh off for one session:
-# `ble-detach`; for good: `touch ~/.config/tmux-claude/sin-ble`.
+# `ble-detach`; for good: `touch ~/.config/tmux-claude/no-ble`.
 [[ $- == *i* ]] || return 0
 
 # 1) ble.sh first (not attached yet): it replaces the line editor and brings
 #    autosuggestions from history and syntax colors.
 _ble="$HOME/.local/share/blesh/ble.sh"
-if [[ -f "$_ble" && ! -f "$HOME/.config/tmux-claude/sin-ble" && -z "${BLE_VERSION-}" ]]; then
+if [[ -f "$_ble" && ! -f "$HOME/.config/tmux-claude/no-ble" && -z "${BLE_VERSION-}" ]]; then
   source "$_ble" --attach=none
 fi
 unset _ble
@@ -20,11 +20,11 @@ if ! declare -F _init_completion >/dev/null && [[ -f /usr/share/bash-completion/
   source /usr/share/bash-completion/bash_completion
 fi
 # Completion for the workstation's own commands.
-complete -W "esta normal nueva worktree" tmux-solo
+complete -W "this normal new worktree" tmux-solo
 complete -W "install groups" ws-tools
-complete -W "--ahora --si-toca" ws-backup-lite
-complete -W "--probar --restaurar" ws-restore-lite
-complete -W "--rapido" ws-verify
+complete -W "--now --if-due" ws-backup-lite
+complete -W "--test --restore" ws-restore-lite
+complete -W "--quick" ws-verify
 complete -d tw twt two
 
 # 3) fzf: Ctrl+R history, Ctrl+T file, Alt+C folder, **<Tab> paths.

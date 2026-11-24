@@ -6,14 +6,14 @@
 set -uo pipefail
 while IFS='|' read -r o v; do
   [[ -n "$o" ]] && tmux set -g "$o" "$v" 2>/dev/null
-done <<'OPC'
+done <<'OPTS'
 menu-style|bg=colour236,fg=colour252
 menu-selected-style|bg=colour31,fg=colour231,bold
 menu-border-style|fg=colour31
 menu-border-lines|rounded
 popup-border-style|fg=colour31
 popup-border-lines|rounded
-OPC
+OPTS
 tmux set -g status-format[1] '#[align=left] #(~/.local/bin/tmux-hud)' 2>/dev/null
 [[ "$(tmux show -gqv @hud)" == off ]] || tmux set -g status 2
 exit 0

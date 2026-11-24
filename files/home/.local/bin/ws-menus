@@ -6,12 +6,12 @@ Check (no arguments or --md file): in ~/.config/tmux-claude/menu*.tmux it report
   · the same action in several menus (duplicate: decide which one keeps it)
   · the same label in several menus
   · scripts in ~/.local/bin that the menu calls and do not exist
-Manual (--manual [file] · --ver): Markdown generated from what is ACTUALLY installed, so it never goes stale:
+Manual (--manual [file] · --show): Markdown generated from what is ACTUALLY installed, so it never goes stale:
   direct keys from ~/.tmux.conf, every menu with its key path (Ctrl+b m → s → u), the commands in
-  ~/.local/bin with their description and the subcommands of ws-telegram and ws-telemetria. It is saved to
-  ~/.local/share/ws-manual/manual.md and copied to %UserProfile%\\ws-telemetria\\manual-estacion.md.
-  --ver generates it and opens it on screen (glow if installed; otherwise less).
-Usage: ws-menus [--md file] | --manual [file] | --ver   (the check exits with 1 if there are repeated keys or missing scripts)
+  ~/.local/bin with their description and the subcommands of ws-telegram and ws-telemetry. It is saved to
+  ~/.local/share/ws-manual/manual.md and copied to %UserProfile%\\ws-telemetry\\workstation-manual.md.
+  --show generates it and opens it on screen (glow if installed; otherwise less).
+Usage: ws-menus [--md file] | --manual [file] | --show   (the check exits with 1 if there are repeated keys or missing scripts)
 """
 import os
 import re
@@ -28,117 +28,117 @@ ITEM = re.compile(r'''^\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')\s+(\S+)\s+
 
 
 def items(f: Path):
-    for n, linea in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
-        m = ITEM.match(linea)
+    for n, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
+        m = ITEM.match(line)
         if not m:
             continue
-        etiqueta = m.group(1) if m.group(1) is not None else m.group(2)
+        label = m.group(1) if m.group(1) is not None else m.group(2)
         cmd = m.group(4) if m.group(4) is not None else m.group(5)
-        if not etiqueta or etiqueta.startswith("-"):
+        if not label or label.startswith("-"):
             continue
-        yield n, etiqueta, m.group(3), cmd
+        yield n, label, m.group(3), cmd
 
 
 def normal(cmd: str) -> str:
-    """Comparable action: each own script with its arguments (without tmux-flot-run or popup options);
+    """Comparable action: each own script with its arguments (without tmux-popup-run or popup options);
     if it calls no scripts, the tmux command with uniform spacing. The same script with other arguments (light
     vs dark theme, cr fable vs opus) counts as different actions."""
     c = cmd.replace("\\\"", "").replace('"', "").replace("'", "")
-    partes = re.findall(r"(?:~|\$HOME)/\.local/bin/([\w.-]+)((?:\s+(?!(?:~|\$HOME)/)[^\s;]+)*)", c)
-    partes = [(n, a.strip()) for n, a in partes if n not in ("tmux-flot-run", "tmux-pause")]
-    if partes:
-        return "script: " + " | ".join(f"{n} {a}".strip() for n, a in partes)
+    parts = re.findall(r"(?:~|\$HOME)/\.local/bin/([\w.-]+)((?:\s+(?!(?:~|\$HOME)/)[^\s;]+)*)", c)
+    parts = [(n, a.strip()) for n, a in parts if n not in ("tmux-popup-run", "tmux-pause")]
+    if parts:
+        return "script: " + " | ".join(f"{n} {a}".strip() for n, a in parts)
     return re.sub(r"\s+", " ", c).strip()
 
 
-def revisar() -> int:
+def check() -> int:
     menus = sorted(DIR.glob("menu*.tmux"))
-    teclas_dup, faltan, por_accion, por_etiqueta = [], [], defaultdict(list), defaultdict(list)
+    dup_keys, missing, by_action, by_label = [], [], defaultdict(list), defaultdict(list)
     total = 0
     for f in menus:
-        vistas = {}
-        for n, et, tecla, cmd in items(f):
+        seen = {}
+        for n, lbl, key, cmd in items(f):
             total += 1
-            if tecla in vistas and tecla not in ("''",):
-                teclas_dup.append(f"{f.name}: key «{tecla}» in «{vistas[tecla]}» and in «{et}» (line {n}; the second one cannot be picked from the keyboard)")
-            vistas.setdefault(tecla, et)
+            if key in seen and key not in ("''",):
+                dup_keys.append(f"{f.name}: key «{key}» in «{seen[key]}» and in «{lbl}» (line {n}; the second one cannot be picked from the keyboard)")
+            seen.setdefault(key, lbl)
             if not cmd.startswith("source-file"):          # navigating between menus does not count as a duplicate action
-                por_accion[normal(cmd)].append(f"{f.name}:{tecla} «{et}»")
-            if not et.strip().startswith("‹"):                 # «‹ Back» is repeated on purpose
-                por_etiqueta[et.strip().lower()].append(f.name)
+                by_action[normal(cmd)].append(f"{f.name}:{key} «{lbl}»")
+            if not lbl.strip().startswith("‹"):                 # «‹ Back» is repeated on purpose
+                by_label[lbl.strip().lower()].append(f.name)
             for s in re.findall(r"(?:~|\$HOME)/\.local/bin/([\w.-]+)", cmd):
                 if not (BIN / s).exists():
-                    faltan.append(f"{f.name}: «{et}» calls {s}, which does not exist")
-    dup_acc = {k: v for k, v in por_accion.items() if len(v) > 1}
-    dup_et = {k: v for k, v in por_etiqueta.items() if len(set(v)) > 1}
+                    missing.append(f"{f.name}: «{lbl}» calls {s}, which does not exist")
+    dup_actions = {k: v for k, v in by_action.items() if len(v) > 1}
+    dup_labels = {k: v for k, v in by_label.items() if len(set(v)) > 1}
     out = [f"# Menu check ({len(menus)} menus, {total} options)", ""]
-    out += ["## Keys repeated in the same menu (fix)", *(f"- {x}" for x in teclas_dup or ["none ✔"]), ""]
-    out += ["## Scripts that do not exist (fix)", *(f"- {x}" for x in faltan or ["none ✔"]), ""]
+    out += ["## Keys repeated in the same menu (fix)", *(f"- {x}" for x in dup_keys or ["none ✔"]), ""]
+    out += ["## Scripts that do not exist (fix)", *(f"- {x}" for x in missing or ["none ✔"]), ""]
     out += ["## Same action in several menus (review: on purpose or duplicate?)"]
-    out += [f"- `{k[:90]}` → {', '.join(v)}" for k, v in sorted(dup_acc.items())] or ["- none ✔"]
+    out += [f"- `{k[:90]}` → {', '.join(v)}" for k, v in sorted(dup_actions.items())] or ["- none ✔"]
     out += ["", "## Same label in several menus"]
-    out += [f"- «{k}» → {', '.join(sorted(set(v)))}" for k, v in sorted(dup_et.items())] or ["- none ✔"]
-    texto = "\n".join(out) + "\n"
-    print(texto)
+    out += [f"- «{k}» → {', '.join(sorted(set(v)))}" for k, v in sorted(dup_labels.items())] or ["- none ✔"]
+    text = "\n".join(out) + "\n"
+    print(text)
     if len(sys.argv) > 2 and sys.argv[1] == "--md":
-        Path(sys.argv[2]).write_text(texto, encoding="utf-8")
-    return 1 if teclas_dup or faltan else 0
+        Path(sys.argv[2]).write_text(text, encoding="utf-8")
+    return 1 if dup_keys or missing else 0
 
 
 # ---------------------------------------------------------------------------------------------
 # Manual
 # ---------------------------------------------------------------------------------------------
-def _ramas(m) -> str:
+def _branches(m) -> str:
     """#{?cond,A,B}: an empty branch means a state mark (✓) and is dropped; «…» (a value) is not shown either."""
     a, b = m.group(1).strip(), m.group(2).strip()
     if not a or not b:
         return ""
-    vivas = [x for x in (a, b) if x != "…"]
-    return " / ".join(vivas)
+    live = [x for x in (a, b) if x != "…"]
+    return " / ".join(live)
 
 
-def legible(etiqueta: str) -> str:
+def readable(label: str) -> str:
     """tmux label without formats: #{?c,A,B} → «A / B»; any other #{…} and #[…] removed."""
-    s = etiqueta
+    s = label
     for _ in range(6):
-        s2 = re.sub(r"#\{\?[^{}]*?,([^,{}]*),([^,{}]*)\}", _ramas, s)
+        s2 = re.sub(r"#\{\?[^{}]*?,([^,{}]*),([^,{}]*)\}", _branches, s)
         s2 = re.sub(r"#\{[^{}]*\}", "…", s2)
         if s2 == s:
             break
         s = s2
     s = re.sub(r"#\[[^\]]*\]", "", s).replace("\\\"", '"')
-    return re.sub(r"\s+", " ", s.lstrip("-")).strip(" /") or etiqueta
+    return re.sub(r"\s+", " ", s.lstrip("-")).strip(" /") or label
 
 
-def sin_comillas(t: str) -> str:
+def unquote(t: str) -> str:
     return t[1:-1] if len(t) >= 3 and t[0] == t[-1] and t[0] in "'\"" else t
 
 
-def tecla_legible(t: str) -> str:
-    t = sin_comillas(t)
+def readable_key(t: str) -> str:
+    t = unquote(t)
     return {"BSpace": "⌫", "Enter": "Enter", "Space": "Space", "Escape": "Esc"}.get(t, t)
 
 
-def que_hace(cmd: str) -> str:
+def what_it_does(cmd: str) -> str:
     if cmd.strip().startswith("source-file") and "menu" in cmd:
         return "submenu"
     s = normal(cmd)
     if s.startswith("script: "):
-        partes = [" ".join(w for w in p.split() if re.fullmatch(r"[-\w.]+", w)) for p in s[8:].split(" | ")]
-        return "`" + " · ".join(partes)[:70] + "`"
-    for patron, txt in ((r"send-keys", "types into Claude"), (r"display-popup", "floating window"), (r"run-shell", "action"),
+        parts = [" ".join(w for w in p.split() if re.fullmatch(r"[-\w.]+", w)) for p in s[8:].split(" | ")]
+        return "`" + " · ".join(parts)[:70] + "`"
+    for pattern, txt in ((r"send-keys", "types into Claude"), (r"display-popup", "floating window"), (r"run-shell", "action"),
                         (r"select-window|previous-window|next-window|last-window", "navigate"), (r"split-window", "split"),
                         (r"resize-pane", "zoom"), (r"kill-", "close"), (r"copy-mode", "copy mode")):
-        if re.search(patron, cmd):
+        if re.search(pattern, cmd):
             return txt
     return "tmux"
 
 
-DIRECTAS = [   # (command regex, description) for ~/.tmux.conf; the first match wins
+DIRECT = [   # (command regex, description) for ~/.tmux.conf; the first match wins
     (r"^display-menu", "Tab menu"), (r"menu\.tmux", "Main menu"), (r"tmux-pick", "Find a tab by name"), (r"tmux-open", "Open a repo or folder (→ enters subfolders, ← goes up)"),
     (r"tmux-dash", "Tab dashboard (Enter goes to the tab)"), (r"tmux-agents", "Live subagents"), (r"tmux-help", "Keyboard shortcuts"),
-    (r"tmux-resumen", "Tab summary: what, where and where it left off"), (r"lazygit", "lazygit in the folder"),
-    (r"tmux-pwsh", "Floating PowerShell"), (r"--persistente", "Persistent floating shell (Ctrl+b d hides it)"),
+    (r"tmux-summary", "Tab summary: what, where and where it left off"), (r"lazygit", "lazygit in the folder"),
+    (r"tmux-pwsh", "Floating PowerShell"), (r"--persistent", "Persistent floating shell (Ctrl+b d hides it)"),
     (r"switch-client -p", "Previous group"), (r"switch-client -n", "Next group"), (r"choose-tree", "Groups with their tabs"),
     (r"swap-window -d -t -1", "Move tab left"), (r"swap-window -d -t \+1", "Move tab right"),
     (r"previous-window", "Previous tab"), (r"next-window", "Next tab"), (r"last-window", "Last tab used"),
@@ -148,141 +148,141 @@ DIRECTAS = [   # (command regex, description) for ~/.tmux.conf; the first match 
     (r"main-vertical", "Main layout"), (r"tiled", "Tiled"), (r"begin-selection", "Start selection"),
     (r"copy-selection", "Copy selection"), (r"display-menu", "Tab menu"),
 ]
-TECLAS_RATON = {"MouseDown1StatusRight": "Click on the right of the status bar", "MouseDown3Status": "Right click on a tab",
+MOUSE_KEYS = {"MouseDown1StatusRight": "Click on the right of the status bar", "MouseDown3Status": "Right click on a tab",
                 "DoubleClick1Status": "Double click on a tab"}
 
 
-def prefijo(conf: str) -> str:
+def prefix(conf: str) -> str:
     m = re.search(r"^\s*set(?:-option)?\s+-g\s+prefix\s+(\S+)", conf, re.M)
     p = (m.group(1) if m else "C-b").strip("'\"")
     return p.replace("C-", "Ctrl+").replace("M-", "Alt+")
 
 
-def atajo(tabla: str, tecla: str, pre: str) -> str:
-    t = sin_comillas(tecla)
-    if t in TECLAS_RATON:
-        return TECLAS_RATON[t]
+def shortcut(table: str, key: str, pre: str) -> str:
+    t = unquote(key)
+    if t in MOUSE_KEYS:
+        return MOUSE_KEYS[t]
     t = t.replace("M-S-", "Alt+Shift+").replace("M-", "Alt+").replace("C-", "Ctrl+")
     t = t.replace("Left", "←").replace("Right", "→").replace("Up", "↑").replace("Down", "↓")
-    return {"-n": t, "copy-mode-vi": f"(in copy mode) {t}"}.get(tabla, f"{pre} {t}")
+    return {"-n": t, "copy-mode-vi": f"(in copy mode) {t}"}.get(table, f"{pre} {t}")
 
 
-def teclas_directas() -> list[tuple[str, str]]:
+def direct_keys() -> list[tuple[str, str]]:
     f = HOME / ".tmux.conf"
     if not f.exists():
         return []
     conf = f.read_text(encoding="utf-8")
-    pre = prefijo(conf)
-    filas, alt_num = [], False
-    for linea in conf.replace("\\\n", " ").splitlines():
-        m = re.match(r"^\s*bind(?:-key)?\s+((?:-[nr]\s+|-T\s+\S+\s+)*)(\S+)\s+(.*)$", linea)
+    pre = prefix(conf)
+    rows, alt_num = [], False
+    for line in conf.replace("\\\n", " ").splitlines():
+        m = re.match(r"^\s*bind(?:-key)?\s+((?:-[nr]\s+|-T\s+\S+\s+)*)(\S+)\s+(.*)$", line)
         if not m:
             continue
-        flags, tecla, cmd = m.group(1), m.group(2), m.group(3)
-        tabla = "-n" if "-n" in flags else (re.search(r"-T\s+(\S+)", flags).group(1) if "-T" in flags else "")
-        if tabla == "-n" and re.fullmatch(r"M-[1-9]", tecla):
+        flags, key, cmd = m.group(1), m.group(2), m.group(3)
+        table = "-n" if "-n" in flags else (re.search(r"-T\s+(\S+)", flags).group(1) if "-T" in flags else "")
+        if table == "-n" and re.fullmatch(r"M-[1-9]", key):
             if not alt_num:
-                filas.append(("Alt+1 … Alt+9", "Go to the tab with that number")); alt_num = True
+                rows.append(("Alt+1 … Alt+9", "Go to the tab with that number")); alt_num = True
             continue
-        coment = re.search(r"\s#\s+(.+)$", cmd)
-        desc = coment.group(1).strip() if coment else next((d for rx, d in DIRECTAS if re.search(rx, cmd)), "")
+        comment = re.search(r"\s#\s+(.+)$", cmd)
+        desc = comment.group(1).strip() if comment else next((d for rx, d in DIRECT if re.search(rx, cmd)), "")
         if not desc:
             desc = "`" + re.sub(r"\s+", " ", cmd)[:60] + "`"
-        filas.append((atajo(tabla, tecla, pre), desc))
-    return filas
+        rows.append((shortcut(table, key, pre), desc))
+    return rows
 
 
-def menus_en_arbol() -> list[tuple[str, str, list]]:
+def menu_tree() -> list[tuple[str, str, list]]:
     """[(path, title, [(key, label, what it does)])] from menu.tmux following the submenus."""
-    pre = prefijo((HOME / ".tmux.conf").read_text(encoding="utf-8")) if (HOME / ".tmux.conf").exists() else "Ctrl+b"
-    vistos, salida = set(), []
+    pre = prefix((HOME / ".tmux.conf").read_text(encoding="utf-8")) if (HOME / ".tmux.conf").exists() else "Ctrl+b"
+    visited, result = set(), []
 
-    def visitar(f: Path, ruta: str):
-        if f in vistos or not f.exists():
+    def visit(f: Path, path: str):
+        if f in visited or not f.exists():
             return
-        vistos.add(f)
-        texto = f.read_text(encoding="utf-8")
-        t = re.search(r'-T\s+"(?:#\[[^\]]*\])?([^"]*)"', texto)
-        tramos = [x for x in (t.group(1).split("·") if t else []) if "#" not in x and x.strip()]
-        titulo = "Main menu" if f.name == "menu.tmux" else (legible(" · ".join(x.strip() for x in tramos)) if tramos else f.stem)
-        filas, subs = [], []
-        for _, et, tecla, cmd in items(f):
-            if et.strip().startswith("‹"):
+        visited.add(f)
+        text = f.read_text(encoding="utf-8")
+        t = re.search(r'-T\s+"(?:#\[[^\]]*\])?([^"]*)"', text)
+        segments = [x for x in (t.group(1).split("·") if t else []) if "#" not in x and x.strip()]
+        title = "Main menu" if f.name == "menu.tmux" else (readable(" · ".join(x.strip() for x in segments)) if segments else f.stem)
+        rows, subs = [], []
+        for _, lbl, key, cmd in items(f):
+            if lbl.strip().startswith("‹"):
                 continue
-            filas.append((tecla_legible(tecla), legible(et), que_hace(cmd)))
+            rows.append((readable_key(key), readable(lbl), what_it_does(cmd)))
             sm = re.search(r"source-file\s+\S*?(menu[\w-]*\.tmux)", cmd)
             if sm and cmd.strip().startswith("source-file"):
-                subs.append((DIR / sm.group(1), f"{ruta} → {tecla_legible(tecla)}"))
-        salida.append((ruta, titulo, filas))
+                subs.append((DIR / sm.group(1), f"{path} → {readable_key(key)}"))
+        result.append((path, title, rows))
         for sf, sr in subs:
-            visitar(sf, sr)
+            visit(sf, sr)
 
-    visitar(DIR / "menu.tmux", f"{pre} m")
+    visit(DIR / "menu.tmux", f"{pre} m")
     for f in sorted(DIR.glob("menu*.tmux")):         # menus that do not hang from the main one
-        visitar(f, f"(other) {f.stem}")
-    return salida
+        visit(f, f"(other) {f.stem}")
+    return result
 
 
-def descripcion(p: Path) -> str:
+def describe(p: Path) -> str:
     try:
-        cabeza = p.read_text(encoding="utf-8", errors="replace").splitlines()[:12]
+        head = p.read_text(encoding="utf-8", errors="replace").splitlines()[:12]
     except (OSError, UnicodeError):
         return ""
-    for i, linea in enumerate(cabeza):
-        m = re.match(r'^\s*(?:#|"""|\'\'\')\s*' + re.escape(p.name) + r"(?:\.\w+)?\s*(?:\[[^\]]*\]\s*)?(?:<[^>]*>\s*)?[—–:-]+\s*(.+)$", linea)
+    for i, line in enumerate(head):
+        m = re.match(r'^\s*(?:#|"""|\'\'\')\s*' + re.escape(p.name) + r"(?:\.\w+)?\s*(?:\[[^\]]*\]\s*)?(?:<[^>]*>\s*)?[—–:-]+\s*(.+)$", line)
         if not m:
             continue
-        texto = m.group(1).strip()
-        for sig in cabeza[i + 1:i + 3]:
-            if re.search(r"[.:]\s*$", texto):
+        text = m.group(1).strip()
+        for nxt in head[i + 1:i + 3]:
+            if re.search(r"[.:]\s*$", text):
                 break
-            c = re.sub(r'^\s*#?\s?', "", sig).strip()
-            if not c or c.startswith(("Usage", "Uso", "-", "·")):
+            c = re.sub(r'^\s*#?\s?', "", nxt).strip()
+            if not c or c.startswith(("Usage", "-", "·")):
                 break
-            texto += " " + c
-        texto = re.split(r"(?<=[a-záéíóúñ)])\.\s", texto, maxsplit=1)[0]
-        texto = texto.rstrip('".:')
-        return texto if len(texto) <= 170 else texto[:170].rsplit(" ", 1)[0] + "…"
+            text += " " + c
+        text = re.split(r"(?<=[a-z)])\.\s", text, maxsplit=1)[0]
+        text = text.rstrip('".:')
+        return text if len(text) <= 170 else text[:170].rsplit(" ", 1)[0] + "…"
     return ""
 
 
-def comandos() -> list[tuple[str, str]]:
+def commands() -> list[tuple[str, str]]:
     if not BIN.is_dir():
         return []
-    filas = []
+    rows = []
     for p in sorted(BIN.iterdir()):
         if p.is_file() and os.access(p, os.X_OK) and re.match(r"^(ws-|tmux-|cr$|claude-|devrestore)", p.name):
-            filas.append((p.name, descripcion(p)))
-    return filas
+            rows.append((p.name, describe(p)))
+    return rows
 
 
-def subcomandos(p: Path) -> list[tuple[str, str]]:
+def subcommands(p: Path) -> list[tuple[str, str]]:
     """Lines «<script> args   description» from the Usage: block of the header (bash or Python) and, in bash, the
     commented case branches not listed yet (except the internal ones)."""
     try:
-        texto = p.read_text(encoding="utf-8", errors="replace")
+        text = p.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
-    filas, vistas = [], set()
-    uso = re.search(r"^(?:#\s*)?(?:Usage|Uso):\s*\n(.*?)(?:\n#?\s*\n|\n\"\"\"|\n[^#\s])", texto, re.S | re.M)
-    for linea in (uso.group(1).splitlines() if uso else []):
-        m = re.match(r"^#?\s+(" + re.escape(p.name) + r"(?:\s.*?)?)(?:\s{2,}(\S.*))?$", linea)
+    rows, seen = [], set()
+    usage = re.search(r"^(?:#\s*)?Usage:\s*\n(.*?)(?:\n#?\s*\n|\n\"\"\"|\n[^#\s])", text, re.S | re.M)
+    for line in (usage.group(1).splitlines() if usage else []):
+        m = re.match(r"^#?\s+(" + re.escape(p.name) + r"(?:\s.*?)?)(?:\s{2,}(\S.*))?$", line)
         if m:
-            filas.append((m.group(1).strip(), (m.group(2) or "").strip()))
-            vistas.add(m.group(1).split()[1].split("|")[0] if len(m.group(1).split()) > 1 else "")
-    for m in re.finditer(r"^\s{2}([a-z][a-z|-]*)\)[^#\n]*#\s*(.+)$", texto, re.M):
-        nombre, nota = m.group(1), m.group(2).strip()
-        if nombre.split("|")[0] not in vistas and not re.search(r"internal|test|used by|interno|prueba|lo usa", nota):
-            filas.append((f"{p.name} {nombre}", re.sub(r"^" + re.escape(p.name) + r"\s+\S+\s*", "", nota) or nota))
-    return filas
+            rows.append((m.group(1).strip(), (m.group(2) or "").strip()))
+            seen.add(m.group(1).split()[1].split("|")[0] if len(m.group(1).split()) > 1 else "")
+    for m in re.finditer(r"^\s{2}([a-z][a-z|-]*)\)[^#\n]*#\s*(.+)$", text, re.M):
+        name, note = m.group(1), m.group(2).strip()
+        if name.split("|")[0] not in seen and not re.search(r"internal|test|used by", note):
+            rows.append((f"{p.name} {name}", re.sub(r"^" + re.escape(p.name) + r"\s+\S+\s*", "", note) or note))
+    return rows
 
 
-def ventana_windows() -> Path | None:
+def windows_dir() -> Path | None:
     for cmd in (["wslvar", "USERPROFILE"],):
         try:
             w = subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout.strip()  # nosec B603
             if w:
-                return Path(subprocess.run(["wslpath", "-u", w], capture_output=True, text=True, timeout=10).stdout.strip()) / "ws-telemetria"  # nosec B603 B607
+                return Path(subprocess.run(["wslpath", "-u", w], capture_output=True, text=True, timeout=10).stdout.strip()) / "ws-telemetry"  # nosec B603 B607
         except (OSError, subprocess.SubprocessError):
             continue
     return None
@@ -293,44 +293,44 @@ def c(x: str) -> str:
     return str(x).replace("|", "\\|")
 
 
-def manual(destino: Path | None) -> Path:
+def manual(dest: Path | None) -> Path:
     import datetime as dt
     md = ["# Workstation manual (tmux + Claude)", "",
           f"_Generated {dt.datetime.now():%Y-%m-%d %H:%M} from what is installed (`ws-menus --manual`). Menu → m (Full manual) opens it._", "",
           "## Direct keys", "", "| Shortcut | What it does |", "|---|---|"]
-    md += [f"| {c(a)} | {c(d)} |" for a, d in teclas_directas()] or ["| (~/.tmux.conf not found) | |"]
-    for ruta, titulo, filas in menus_en_arbol():
-        md += ["", f"## {titulo} — `{ruta}`", "", "| Key | Option | Type |", "|---|---|---|"]
-        md += [f"| {c(t)} | {c(e)} | {c(q)} |" for t, e, q in filas]
+    md += [f"| {c(a)} | {c(d)} |" for a, d in direct_keys()] or ["| (~/.tmux.conf not found) | |"]
+    for path, title, rows in menu_tree():
+        md += ["", f"## {title} — `{path}`", "", "| Key | Option | Type |", "|---|---|---|"]
+        md += [f"| {c(t)} | {c(e)} | {c(q)} |" for t, e, q in rows]
     md += ["", "## Terminal commands", "", "| Command | What it does |", "|---|---|"]
-    md += [f"| `{n}` | {c(d)} |" for n, d in comandos()]
+    md += [f"| `{n}` | {c(d)} |" for n, d in commands()]
     md += ["", "## Options of each command", ""]
-    for n, _ in comandos():
-        sub = subcomandos(BIN / n)
+    for n, _ in commands():
+        sub = subcommands(BIN / n)
         if len(sub) >= 2:
             md += [f"### {n}", "", "| Usage | What it does |", "|---|---|", *(f"| `{c(a)}` | {c(d)} |" for a, d in sub), ""]
-    texto = "\n".join(md) + "\n"
-    destino = destino or (HOME / ".local/share/ws-manual/manual.md")
-    destino.parent.mkdir(parents=True, exist_ok=True)
-    destino.write_text(texto, encoding="utf-8")
-    w = ventana_windows() if not os.environ.get("WS_MENUS_SIN_WINDOWS") else None
+    text = "\n".join(md) + "\n"
+    dest = dest or (HOME / ".local/share/ws-manual/manual.md")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(text, encoding="utf-8")
+    w = windows_dir() if not os.environ.get("WS_MENUS_NO_WINDOWS") else None
     if w:
         try:
-            w.mkdir(parents=True, exist_ok=True); shutil.copyfile(destino, w / "manual-estacion.md")
+            w.mkdir(parents=True, exist_ok=True); shutil.copyfile(dest, w / "workstation-manual.md")
         except OSError:
             pass
-    return destino
+    return dest
 
 
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "--manual":
         p = manual(Path(sys.argv[2]) if len(sys.argv) > 2 else None)
         print(f"Manual: {p}"); return 0
-    if len(sys.argv) > 1 and sys.argv[1] == "--ver":
+    if len(sys.argv) > 1 and sys.argv[1] == "--show":
         p = manual(None)
-        visor = ["glow", "-p", str(p)] if shutil.which("glow") else ["less", "-R", str(p)]
-        return subprocess.run(visor).returncode  # nosec B603
-    return revisar()
+        viewer = ["glow", "-p", str(p)] if shutil.which("glow") else ["less", "-R", str(p)]
+        return subprocess.run(viewer).returncode  # nosec B603
+    return check()
 
 
 if __name__ == "__main__":

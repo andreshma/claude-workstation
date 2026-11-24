@@ -5,67 +5,67 @@
 # Menu → Panes → L, or the command palette.
 # Sources: Kubernetes (pod of the current context) · Azure App Service · Docker · .log file · custom command.
 # Usage: tmux-logs                   picker (popup)
-#      tmux-logs --seguir <name> <command…>     (internal: runs in the new tab)
-#      tmux-logs --filtro <name>     (internal / tests: stdin → screen, with alarm)
-# Error pattern: WS_LOGS_PATRON (Python regex, case-insensitive). The notification texts are redacted.
+#      tmux-logs --follow <name> <command…>     (internal: runs in the new tab)
+#      tmux-logs --filter <name>     (internal / tests: stdin → screen, with alarm)
+# Error pattern: WS_LOGS_PATTERN (Python regex, case-insensitive). The notification texts are redacted.
 set -uo pipefail
-PATRON="${WS_LOGS_PATRON:-\\b(error|exception|fatal|panic|critical|unhandled|traceback)\\b|\\s5\\d\\d\\s}"
+PATTERN="${WS_LOGS_PATTERN:-\\b(error|exception|fatal|panic|critical|unhandled|traceback)\\b|\\s5\\d\\d\\s}"
 
-if [[ "${1:-}" == --filtro ]]; then
+if [[ "${1:-}" == --filter ]]; then
   exec python3 -u -c '
 import os, re, subprocess, sys, time
-nombre, pat = sys.argv[1], re.compile(sys.argv[2], re.I)
+name, pat = sys.argv[1], re.compile(sys.argv[2], re.I)
 warn = re.compile(r"\bwarn(ing)?\b", re.I)
-ultimo, pendientes = 0.0, 0
-for linea in sys.stdin:
-    l = linea.rstrip("\n")
+last, pending = 0.0, 0
+for line in sys.stdin:
+    l = line.rstrip("\n")
     if pat.search(l):
         sys.stdout.write("\033[1;31m" + l + "\033[0m\n")
-        pendientes += 1
-        if time.time() - ultimo > float(os.environ.get("WS_LOGS_CADA", "300")):
-            ultimo = time.time()
-            subprocess.Popen(["ws-aviso", "--panel", os.environ.get("TMUX_PANE", ""), "--telegram",
-                              f"🚨 Error in logs:{nombre} ({pendientes})", l[:300]],
+        pending += 1
+        if time.time() - last > float(os.environ.get("WS_LOGS_EVERY", "300")):
+            last = time.time()
+            subprocess.Popen(["ws-notify", "--pane", os.environ.get("TMUX_PANE", ""), "--telegram",
+                              f"🚨 Error in logs:{name} ({pending})", l[:300]],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            pendientes = 0
+            pending = 0
     elif warn.search(l):
         sys.stdout.write("\033[33m" + l + "\033[0m\n")
     else:
         sys.stdout.write(l + "\n")
     sys.stdout.flush()
-' "$2" "$PATRON"
+' "$2" "$PATTERN"
 fi
 
-if [[ "${1:-}" == --seguir ]]; then
-  nombre="$2"; shift 2
-  printf '\e[1m📜 logs:%s\e[0m  ·  errors in red and a Windows/Telegram notification (max 1 every 5 min)  ·  Ctrl+C stops\n\n' "$nombre"
-  "$@" 2>&1 | "$0" --filtro "$nombre"
+if [[ "${1:-}" == --follow ]]; then
+  name="$2"; shift 2
+  printf '\e[1m📜 logs:%s\e[0m  ·  errors in red and a Windows/Telegram notification (max 1 every 5 min)  ·  Ctrl+C stops\n\n' "$name"
+  "$@" 2>&1 | "$0" --filter "$name"
   read -rsn1 -p $'\n[finished: any key closes]'; exit 0
 fi
 
-elegir() { fzf --reverse --prompt "$1> " --header "${2:-}"; }
-origen="$(printf '%s\n' "Kubernetes: pod" "Azure App Service" "Docker: container" "File (.log)" "Custom command" | elegir source 'Live logs with an alarm')" || exit 0
-case "$origen" in
+choose() { fzf --reverse --prompt "$1> " --header "${2:-}"; }
+src="$(printf '%s\n' "Kubernetes: pod" "Azure App Service" "Docker: container" "File (.log)" "Custom command" | choose source 'Live logs with an alarm')" || exit 0
+case "$src" in
   Kubernetes*)
     command -v kubectl >/dev/null || { echo "kubectl is not installed"; sleep 2; exit 1; }
     pod="$(timeout 20 kubectl get pods -A --no-headers -o custom-columns=NS:.metadata.namespace,POD:.metadata.name 2>/dev/null \
-           | elegir pod "Context: $(kubectl config current-context 2>/dev/null)")" || exit 0
-    read -r ns nom <<<"$pod"; nombre="$nom"; cmd=(kubectl logs -f --tail=200 --all-containers -n "$ns" "$nom") ;;
+           | choose pod "Context: $(kubectl config current-context 2>/dev/null)")" || exit 0
+    read -r ns res <<<"$pod"; name="$res"; cmd=(kubectl logs -f --tail=200 --all-containers -n "$ns" "$res") ;;
   Azure*)
     command -v az >/dev/null || { echo "az is not installed"; sleep 2; exit 1; }
-    app="$(timeout 60 az webapp list --query '[].[name,resourceGroup]' -o tsv 2>/dev/null | elegir app "Subscription: $(az account show --query name -o tsv 2>/dev/null)")" || exit 0
-    read -r nom rg <<<"$app"; nombre="$nom"; cmd=(az webapp log tail -n "$nom" -g "$rg") ;;
+    app="$(timeout 60 az webapp list --query '[].[name,resourceGroup]' -o tsv 2>/dev/null | choose app "Subscription: $(az account show --query name -o tsv 2>/dev/null)")" || exit 0
+    read -r res rg <<<"$app"; name="$res"; cmd=(az webapp log tail -n "$res" -g "$rg") ;;
   Docker*)
-    c="$(docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}' 2>/dev/null | elegir container)" || exit 0
-    nombre="${c%%$'\t'*}"; cmd=(docker logs -f --tail 200 "$nombre") ;;
+    c="$(docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}' 2>/dev/null | choose container)" || exit 0
+    name="${c%%$'\t'*}"; cmd=(docker logs -f --tail 200 "$name") ;;
   File*)
-    f="$(find . -maxdepth 4 -type f \( -name '*.log' -o -name '*.log.*' \) 2>/dev/null | elegir file "Folder: $PWD")" || exit 0
-    nombre="$(basename "$f")"; cmd=(tail -n 200 -F "$(realpath "$f")") ;;
+    f="$(find . -maxdepth 4 -type f \( -name '*.log' -o -name '*.log.*' \) 2>/dev/null | choose file "Folder: $PWD")" || exit 0
+    name="$(basename "$f")"; cmd=(tail -n 200 -F "$(realpath "$f")") ;;
   Custom*)
-    read -e -r -p 'Command (e.g. journalctl -fu nginx): ' linea || exit 0
-    [[ -n "${linea// /}" ]] || exit 0
-    nombre="$(awk '{print $1}' <<<"$linea")"; cmd=(bash -c "$linea") ;;
+    read -e -r -p 'Command (e.g. journalctl -fu nginx): ' line || exit 0
+    [[ -n "${line// /}" ]] || exit 0
+    name="$(awk '{print $1}' <<<"$line")"; cmd=(bash -c "$line") ;;
   *) exit 0 ;;
 esac
 q=(); for a in "${cmd[@]}"; do q+=("$(printf '%q' "$a")"); done
-tmux new-window -n "logs:${nombre:0:20}" -c "$PWD" "$0 --seguir $(printf '%q' "$nombre") ${q[*]}"
+tmux new-window -n "logs:${name:0:20}" -c "$PWD" "$0 --follow $(printf '%q' "$name") ${q[*]}"

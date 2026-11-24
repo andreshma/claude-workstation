@@ -7,7 +7,8 @@ General rule: run commands that change your home (patches, `install.sh`, `jq` on
 never inside Claude, because the sandbox prevents it on purpose. `Ctrl+b g` opens a floating shell.
 
 Menu labels, statuses and messages are quoted exactly as the screen shows them. Command names, flags and stored values
-are written as you type them; many are still Spanish words.
+are written as you type them. The names used before 3.0 are listed in
+[USAGE.md](USAGE.md#18-upgrading-from-2x-names).
 
 ## Contents
 
@@ -34,16 +35,18 @@ are written as you type them; many are still Spanish words.
 | What | Where |
 |---|---|
 | The kit (this repository) | Where you cloned it, for example `~/code/claude-workstation`; remote `andreshma/claude-workstation` |
-| Installed scripts | `~/.local/bin/tmux-*`, `~/.local/bin/ws-*`, `~/.local/bin/claude-cuenta` |
+| Installed scripts | `~/.local/bin/tmux-*`, `~/.local/bin/ws-*`, `~/.local/bin/claude-account` |
 | tmux configuration and menus | `~/.tmux.conf`, `~/.config/tmux-claude/` |
 | Claude Code settings and hooks | `~/.claude/settings.json`, `~/.claude/hooks/` |
 | Conversations | `~/.claude/projects/<folder>/<session>.jsonl` |
 | Audit log | `~/.claude/audit/` |
 | tmux saves | `~/.local/share/tmux/resurrect` (30 days) |
-| Telemetry, dashboard and reports | `~/.local/share/ws-telemetria/`; copies in `%UserProfile%\ws-telemetria\` |
-| Routing rules and settings | `~/.config/ws-ruteo/reglas.conf`, `~/.config/ws-ruteo/ajustes.conf` |
-| Telegram settings | `~/.config/ws-telegram/ajustes` |
-| Budgets and prices | `~/.config/ws-telemetria/presupuestos.conf`, `~/.config/ws-telemetria/precios.json` |
+| Telemetry, dashboard and reports | `~/.local/share/ws-telemetry/`; copies in `%UserProfile%\ws-telemetry\` |
+| Routing rules and settings | `~/.config/ws-routing/rules.conf`, `~/.config/ws-routing/settings.conf` |
+| Telegram settings | `~/.config/ws-telegram/settings` |
+| Language | `~/.config/tmux-claude/lang` (`ws-lang`); packs in `~/.local/lib/ws-lang/` |
+| Files set aside by the migration to English names | `~/.local/share/ws-kit/pre-english.<date>/` |
+| Budgets and prices | `~/.config/ws-telemetry/budgets.conf`, `~/.config/ws-telemetry/prices.json` |
 | Backups on the Windows side | `%UserProfile%\.tmux-resurrect-backup`, `%UserProfile%\.claude-wsl-backup`, `%UserProfile%\WSL-Backups\lite`, `%UserProfile%\WSL-Backups` |
 | Secrets | Windows Credential Manager, entries named `ws/<name>` (`ws-secret`) |
 | Backups of files changed by `install.sh` | Next to each file, as `*.bak.<date>` |
@@ -54,8 +57,9 @@ are written as you type them; many are still Spanish words.
 ws-check && ws-health        # workstation and resilience status
 ws-verify                    # read-only verification before pushing kit changes
 ws-test                      # isolated behavior tests of what is installed
-ws-otel estado               # local OpenTelemetry collector
-ws-telegram estado           # Telegram configuration, service and recent events
+ws-otel status               # local OpenTelemetry collector
+ws-telegram status           # Telegram configuration, service and recent events
+ws-lang                      # language in use and what it affects
 ```
 
 | Check | Healthy when |
@@ -80,7 +84,7 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
 - **Typical cause:** at startup, something saved the empty session as the "last save" before tmux restored (fixed in
   v1.6.0: `tmux-save-now` waits 3 min and `.tmux.conf` restores only if the session ends up empty). Earlier saves are
   **not deleted** (they are kept for 30 days).
-- **Steps (quick):** Menu → "Tabs and session" → "Recover tabs from an earlier save" (`tmux-recuperar`). Pick the most
+- **Steps (quick):** Menu → "Tabs and session" → "Recover tabs from an earlier save" (`tmux-recover`). Pick the most
   recent one that has your tabs from **before** the problem (the one marked `← at startup` is usually the right one).
 - **Steps (manual):**
 
@@ -100,7 +104,7 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
 - **Keeping tabs and conversations (recommended):**
 
   ```bash
-  ws-backup-lite --ahora      # optional: an extra backup
+  ws-backup-lite --now      # optional: an extra backup
   tmux kill-server            # first: Ctrl+b Ctrl+s
   ```
 
@@ -118,7 +122,7 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
 ### The menu or the shortcuts do not respond
 
 - Reload the configuration: `tmux source-file ~/.tmux.conf`.
-- Check the syntax without touching your session: `ws-verify --rapido` (tmux section).
+- Check the syntax without touching your session: `ws-verify --quick` (tmux section).
 
 ## 4. Claude and conversations
 
@@ -133,14 +137,14 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
 - Conversations are in `~/.claude/projects/<folder>/<session>.jsonl` and are copied to Windows every 15 min
   (`%UserProfile%\.claude-wsl-backup\projects`). Copy the project folder back to `~/.claude/projects/` and run
   `claude -r` in the tab.
-- From the daily backup: `ws-restore-lite` (test) and then `ws-restore-lite --restaurar`
+- From the daily backup: `ws-restore-lite` (test) and then `ws-restore-lite --restore`
   ([section 17](#17-recovery)).
 - Whatever an agent was executing at the instant of an outage is not recovered; the conversation is, up to the last
   message: ask it to continue.
 
 ## 5. Claude accounts (work and personal)
 
-- The work account (`trabajo`) uses `~/.claude`; the personal account uses `~/.claude-personal`. They share
+- The work account (`work`) uses `~/.claude`; the personal account uses `~/.claude-personal`. They share
   conversations and setup; login and policies are separate.
 - **Switch the tab's account (same conversation):** Menu → "Claude in this tab" → "Switch this tab to the … account
   (same conversation)". Verify with `/status` inside Claude.
@@ -152,15 +156,15 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
   ```
 
 - **The personal account ended up with the work organization:** log out of the personal one **only**
-  (`claude-cuenta logout personal`), switch claude.ai to the personal organization in the browser and log in again
-  (`claude-cuenta login personal`). **Never** use `/logout` or `claude auth logout` without `CLAUDE_CONFIG_DIR`: they
+  (`claude-account logout personal`), switch claude.ai to the personal organization in the browser and log in again
+  (`claude-account login personal`). **Never** use `/logout` or `claude auth logout` without `CLAUDE_CONFIG_DIR`: they
   would log out the work account.
 - **Both accounts show the same organization** (it happened when switching organization in the browser during the
   personal login): log in again on the one that is wrong, with the browser on the correct organization. Work:
-  `env -u CLAUDE_CONFIG_DIR claude auth login`; personal: `claude-cuenta login personal`. Switching account per tab is
-  refused while both are on the same organization. Always check with `claude-cuenta estado`.
+  `env -u CLAUDE_CONFIG_DIR claude auth login`; personal: `claude-account login personal`. Switching account per tab is
+  refused while both are on the same organization. Always check with `claude-account status`.
 - **The login screen does not let you copy the URL:** do not do it in a floating window. In a normal tab:
-  `BROWSER=wslview claude-cuenta login personal`. If the browser does not open: the `c` key copies the URL, or
+  `BROWSER=wslview claude-account login personal`. If the browser does not open: the `c` key copies the URL, or
   Shift + drag to select and `Ctrl+Shift+C`. If the browser shows a code, paste it with `Ctrl+Shift+V`.
 - Before continuing company work on the personal account, remember that the code and the conversation go to that
   organization (without the terms of the Team plan).
@@ -170,7 +174,7 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
 - **The copilot (`Alt+a`, `Alt+e`, `Alt+x`) does not respond:** `timeout 15 claude auth status --text`; if there is no
   session, log in. Model: `export AI_SHELL_MODEL=haiku` (the default).
 - **ble.sh gets in the way or looks odd:** in the session, `ble-detach`; permanently,
-  `touch ~/.config/tmux-claude/sin-ble` and open a new tab. The rest (Tab, fzf, copilot) keeps working.
+  `touch ~/.config/tmux-claude/no-ble` and open a new tab. The rest (Tab, fzf, copilot) keeps working.
 - **Completion is missing for a newly installed tool:** `ws-completions`.
 
 ## 7. Sandbox, solo mode and patches
@@ -211,11 +215,11 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
 
 - **Using a floating window like a normal tab:** wheel = scroll; drag = select and copy to the Windows clipboard;
   `Ctrl+b /` = search; `q` leaves scroll; Shift+click opens a URL; `Ctrl+b d` closes.
-- **A floating window hung:** `tmux -L flot kill-server` (closes all floating windows; your tabs are untouched).
+- **A floating window hung:** `tmux -L popup kill-server` (closes all floating windows; your tabs are untouched).
 - **Turn on the grey AI suggestions:** `ws-secret set anthropic-api-key` (a Claude Console key; it is stored encrypted
   in Windows Credential Manager) and open a new tab. Check: `ws-secret has anthropic-api-key`.
 - **No suggestions appear:** check the key (above), that ble.sh is active, and the circuit breaker:
-  `cat ~/.cache/ai-shell/circuito` (`0 <date>` = paused for 5 min after 3 failures; `rm ~/.cache/ai-shell/circuito`
+  `cat ~/.cache/ai-shell/circuit` (`0 <date>` = paused for 5 min after 3 failures; `rm ~/.cache/ai-shell/circuit`
   resets it). Turn them off for one session: `export AI_SHELL_GHOST=0`. Change the model:
   `export AI_SHELL_API_MODEL=…`.
 - **Cost:** suggestions use the API (Console billing, separate from the Team plan), with Haiku and short responses;
@@ -223,7 +227,7 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
 - **Rotate or remove the key:** `ws-secret set anthropic-api-key` (replaces) or
   `ws-secret delete anthropic-api-key`.
 - **Test everything:** `ws-test` (isolated: does not touch your session or your accounts and spends no usage) and
-  `ws-test --ia` (real Claude and API).
+  `ws-test --ai` (real Claude and API).
 - **Sandbox mask files (`Sandbox mask files left behind`):** close Claude in that repository and delete only the empty
   entries that git does not know about:
 
@@ -235,76 +239,76 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
 
 ## 11. Usage and telemetry
 
-- **Open the dashboard:** Menu → "Usage and reports" → "Usage dashboard (browser)", or `ws-telemetria abrir`. File:
-  `%UserProfile%\ws-telemetria\tablero.html` (regenerated every minute; the page reloads by itself).
-- **The dashboard does not update:** run `ws-telemetria build` by hand and check that tmux is running (the
+- **Open the dashboard:** Menu → "Usage and reports" → "Usage dashboard (browser)", or `ws-telemetry open`. File:
+  `%UserProfile%\ws-telemetry\dashboard.html` (regenerated every minute; the page reloads by itself).
+- **The dashboard does not update:** run `ws-telemetry build` by hand and check that tmux is running (the
   every-minute save triggers it). If the "Updated" time does not change, check `~/.local/bin/tmux-backup`.
-- **Costs:** they are the equivalent at API prices, not what you pay on the Team plan. Prices are in `ws-telemetria`
-  (the `PRECIOS` table); to adjust one: `~/.config/ws-telemetria/precios.json` with
+- **Costs:** they are the equivalent at API prices, not what you pay on the Team plan. Prices are in `ws-telemetry`
+  (the `PRICES` table); to adjust one: `~/.config/ws-telemetry/prices.json` with
   `{"claude-opus-5-5": [input, output, cache_5m, cache_1h, cache_read]}` (input, output, 5 min cache write, 1 h cache
   write, cache read) in USD per million tokens.
-- **Your own queries:** `ws-telemetria sql` (requires DuckDB) or read `~/.local/share/ws-telemetria/turnos.jsonl`.
+- **Your own queries:** `ws-telemetry sql` (requires DuckDB) or read `~/.local/share/ws-telemetry/turns.jsonl`.
 - **Privacy:** transcript-derived data and hook traces store no conversation text; only tokens, lengths, tool names,
   project and branch. Retention: 13 months. Delete everything:
-  `rm -rf ~/.local/share/ws-telemetria "%UserProfile%/ws-telemetria"`.
+  `rm -rf ~/.local/share/ws-telemetry "%UserProfile%/ws-telemetry"`.
 - **Open tabs do not send OpenTelemetry data:** export starts when Claude starts; restart the tabs
-  (`tmux-claude-restart --todas`).
+  (`tmux-claude-restart --all`).
 
 ### Traces, estimation and budgets
 
 | Task | Command |
 |---|---|
-| See which tools are slow or fail | `ws-telemetria trazas --dias 7` |
-| Hours and cost of a ticket (branch `ABC-123-…`) | `ws-telemetria estimar ABC-123`; also `--por proyecto` and `--csv` |
-| Last week's report | `ws-telemetria semana` (saved to `%UserProfile%\ws-telemetria\semana-YYYY-Www.md`) |
-| Monthly budget per project | `~/.config/ws-telemetria/presupuestos.conf` with `project=usd` lines (`*=usd` for the total), then `ws-telemetria presupuestos` |
-| Excel or Power BI | `ws-telemetria exportar` writes `%UserProfile%\ws-telemetria\datos\*.csv` |
-| Free-form SQL | `ws-telemetria sql`, for example `SELECT herramienta, count(*) FROM trazas GROUP BY 1` |
+| See which tools are slow or fail | `ws-telemetry traces --days 7` |
+| Hours and cost of a ticket (branch `ABC-123-…`) | `ws-telemetry estimate ABC-123`; also `--by project` and `--csv` |
+| Last week's report | `ws-telemetry week` (saved to `%UserProfile%\ws-telemetry\week-YYYY-Www.md`) |
+| Monthly budget per project | `~/.config/ws-telemetry/budgets.conf` with `project=usd` lines (`*=usd` for the total), then `ws-telemetry budgets` |
+| Excel or Power BI | `ws-telemetry export` writes `%UserProfile%\ws-telemetry\data\*.csv` |
+| Free-form SQL | `ws-telemetry sql`, for example `SELECT tool, count(*) FROM traces GROUP BY 1` |
 
-- No new traces: `jq '.hooks.PostToolUse' ~/.claude/settings.json | grep ws-trazas` and check that
-  `~/.claude/hooks/ws-trazas.sh` is executable.
-- Turn off: remove the `ws-trazas.sh` entries from `settings.json` (`.bak.*` backup from patch 51).
-- Telegram: `semanal_dia`, `semanal_hora`, `presupuestos=on|off` in `~/.config/ws-telegram/ajustes`.
+- No new traces: `jq '.hooks.PostToolUse' ~/.claude/settings.json | grep ws-traces` and check that
+  `~/.claude/hooks/ws-traces.sh` is executable.
+- Turn off: remove the `ws-traces.sh` entries from `settings.json` (`.bak.*` backup from patch 51).
+- Telegram: `weekly_day`, `weekly_hour`, `budgets=on|off` in `~/.config/ws-telegram/settings`.
 
 ## 12. Model routing
 
-- **How it works:** when you send a text to Claude, if a rule in `~/.config/ws-ruteo/reglas.conf` says it belongs to a
+- **How it works:** when you send a text to Claude, if a rule in `~/.config/ws-routing/rules.conf` says it belongs to a
   different tier than the tab's model, a window appears: `y` switches and sends (`s` also works), `n` sends with the
   current one (it does not suggest that tier again for 30 min), `x` returns the text so you can edit it. With no
   answer in 30 s it sends with the current one.
-- **Moving down a model:** it only asks when context is below `bajar_max_ctx` (30 % by default, in
-  `~/.config/ws-ruteo/ajustes.conf`). Above that, routing suggests the cheap subagent to Claude and does not change
+- **Moving down a model:** it only asks when context is below `downgrade_max_ctx` (30 % by default, in
+  `~/.config/ws-routing/settings.conf`). Above that, routing suggests the cheap subagent to Claude and does not change
   the model.
 - **Turn it off:** Menu → "Claude in this tab" → "Model" → "Turn off automatic routing in ALL tabs (asks before
-  switching)", or `tmux set -g @cruteo off`.
+  switching)", or `tmux set -g @croute off`.
 - **Change the model by hand:** the same menu, or `cr -t sonnet "task"`. Your default model does not change: it is
   restored in `settings.json` after `/model`.
-- **A rule classifies wrongly:** `cr --explica "the task"` says which rule won. Edit `reglas.conf` (the first match
-  wins) and run `cr --probar` (it must stay at 90 % or more).
+- **A rule classifies wrongly:** `cr --explain "the task"` says which rule won. Edit `rules.conf` (the first match wins)
+  and run `cr --test` (it must stay at 90 % or more; with `ws-lang es` it runs the English and the Spanish task sets).
 - **The text got "stuck":** if the window did not appear (no terminal attached), it is sent by itself with the current
-  model in about 1 s. Pending texts live in `$XDG_RUNTIME_DIR/ws-ruteo/` (0600) and are deleted when used.
-- **Uninstall the hook:** remove the `ws-ruteo.sh` entry from `hooks.UserPromptSubmit` in `~/.claude/settings.json`.
+  model in about 1 s. Pending texts live in `$XDG_RUNTIME_DIR/ws-routing/` (0600) and are deleted when used.
+- **Uninstall the hook:** remove the `ws-routing.sh` entry from `hooks.UserPromptSubmit` in `~/.claude/settings.json`.
 
 ## 13. Telegram
 
-- **Set up (once):** `ws-telegram configurar`. Create the bot in @BotFather, paste the token (it is stored in Windows
+- **Set up (once):** `ws-telegram setup`. Create the bot in @BotFather, paste the token (it is stored in Windows
   Credential Manager as `ws/telegram-bot-token`) and send `/start` to your bot.
-- **Notifications do not arrive:** `ws-telegram estado` (configured, turned on, service running) and
-  `ws-telegram prueba`. tmux starts the service every minute; by hand: `ws-telegram asegurar`. If the company network
+- **Notifications do not arrive:** `ws-telegram status` (configured, turned on, service running) and
+  `ws-telegram test`. tmux starts the service every minute; by hand: `ws-telegram ensure`. If the company network
   blocks `api.telegram.org`, the status shows `error_api`.
 - **A button says "The screen changed; I sent nothing":** the dialog is no longer the same (you answered on the PC or
   Claude moved on); nothing was sent. Buttons expire after 10 min.
 - **`!` commands from Telegram:** each command arrives in a code message (tap it to copy it). "▶ Run" runs it in that
   tab as `!` and replies with the redacted output. Dangerous ones arrive without a button: run them on the PC.
   Forwarding or typing text to the bot executes nothing.
-- **Replying with text:** `ws-telegram texto on` (asks for the PIN the first time). In Telegram, use Reply on Claude's
+- **Replying with text:** `ws-telegram text on` (asks for the PIN the first time). In Telegram, use Reply on Claude's
   question (the ones that show ↩), starting with the PIN: `4821 use an opaque cursor`. Change the PIN:
-  `ws-telegram texto pin`. If it was turned off because of wrong PINs: `ws-telegram texto on` on the PC.
-- **Alerts and daily summary:** adjusted in `~/.config/ws-telegram/ajustes` (`resumen_hora`, `consumo_usd_h`,
-  `contexto_pct`, `atorada_min`, `alertas=on|off`). Test the summary: `ws-telegram resumen`. Every alert is rate
+  `ws-telegram text pin`. If it was turned off because of wrong PINs: `ws-telegram text on` on the PC.
+- **Alerts and daily summary:** adjusted in `~/.config/ws-telegram/settings` (`summary_hour`, `usage_usd_h`,
+  `context_pct`, `stalled_min`, `alerts=on|off`). Test the summary: `ws-telegram summary`. Every alert is rate
   limited (30 min per tab; reminders every 3 min). Buttons: `/compact` and switch account.
-- **Turn off:** Menu → "Workstation" → "Telegram: turn notifications on or off", or `ws-telegram apagar`.
-- **Lost phone or compromised Telegram account:** `ws-telegram olvidar` and, in @BotFather, `/revoke` the bot. Without
+- **Turn off:** Menu → "Workstation" → "Telegram: turn notifications on or off", or `ws-telegram off`.
+- **Lost phone or compromised Telegram account:** `ws-telegram forget` and, in @BotFather, `/revoke` the bot. Without
   the token, nobody can send keys to your tabs.
 
 ## 14. Kit CI
@@ -323,43 +327,116 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
 
 | Something fails | Check |
 |---|---|
-| `Ctrl+b e` pastes nothing | Check whether the tab has another pane; if not, the picker opens. `tmux-panel --texto %N` shows the block |
-| The "Notify me when it finishes" notification does not arrive | `ws-aviso --forzar prueba texto`; Telegram: `ws-telegram estado`. The notification goes out when the pane returns to bash |
+| `Ctrl+b e` pastes nothing | Check whether the tab has another pane; if not, the picker opens. `tmux-pane --text %N` shows the block |
+| The "Notify me when it finishes" notification does not arrive | `ws-notify --force test text`; Telegram: `ws-telegram status`. The notification goes out when the pane returns to bash |
 | The palette runs in another tab | Open it from the target tab; the `#{formats}` are expanded against it |
-| The label is not visible in the status bar | `tmux-etiqueta --barra` (a theme change rewrites the formats) |
-| Focus mode got stuck on | `tmux-enfoque off` |
+| The label is not visible in the status bar | `tmux-label --bar` (a theme change rewrites the formats) |
+| Focus mode got stuck on | `tmux-focus off` |
 | Second monitor: leftover `-m2` sessions | They are deleted when their window closes; if not: `tmux kill-session -t <group>-m2` |
 
 ### Patch 53: branch bar, templates, recording, history and swarm
 
 | Something fails | Check |
 |---|---|
-| CI/PR does not show in the status bar | `tmux-rama .` in the folder; `gh auth status` or `az account show`; `tmux set -g @rama_barra on` |
-| The status bar is slow | `tmux set -g @rama_barra off` (everything network-related runs in the background with a 3 min cache) |
+| CI/PR does not show in the status bar | `tmux-branch .` in the folder; `gh auth status` or `az account show`; `tmux set -g @branch_bar on` |
+| The status bar is slow | `tmux set -g @branch_bar off` (everything network-related runs in the background with a 3 min cache) |
 | Recording with no events | The pane had another capture (`Ctrl+b H` or history): turn it off and record again |
-| History takes a lot of space | `tmux-historial --estado`; `WS_HISTORIAL_DIAS=7`; `tmux-historial off` |
-| Swarm with a conflict | Resolve in the main repository (branch `enjambre/<id>/integracion`), commit and `tmux-enjambre integrar <id>` |
-| Removing a swarm | `tmux-enjambre limpiar <id>` (keeps unintegrated branches and worktrees with changes) |
+| History takes a lot of space | `tmux-history --status`; `WS_HISTORY_DAYS=7`; `tmux-history off` |
+| Swarm with a conflict | Resolve in the main repository (branch `swarm/<id>/integration`), commit and `tmux-swarm integrate <id>` |
+| Removing a swarm | `tmux-swarm clean <id>` (keeps unintegrated branches and worktrees with changes) |
 
 ## 16. Upgrading
 
 ```bash
 ws-update                    # Claude Code, plugins, packages
-ws-actualizar                # update the workstation from the kit; rolls back if ws-test fails
-tmux-claude-restart --todas  # make every idle tab pick up the new configuration
+ws-kit-update                # update the workstation from the kit; rolls back if ws-test fails
+tmux-claude-restart --all  # make every idle tab pick up the new configuration
 bash export.sh               # capture what is installed back into the kit
 ws-verify                    # verify before pushing
 ```
 
+An upgrade from 2.x to 3.0 has extra steps: see [Upgrading from 2.x to 3.0](#upgrading-from-2x-to-30-english-names).
+
 1. Run `ws-update` for Claude Code, the tmux plugins and the system packages.
-2. Run `ws-actualizar` for the workstation itself. It pulls with `--ff-only`, runs `install.sh` (every changed file is
+2. Run `ws-kit-update` for the workstation itself. It pulls with `--ff-only`, runs `install.sh` (every changed file is
    backed up as `*.bak.<date>`) and then `ws-test`. If the tests fail it goes back to the previous commit and
    reinstalls. It does nothing when the kit folder has uncommitted changes or unpushed commits.
-3. Reload tmux (`Ctrl+b r`) and restart Claude in the idle tabs (`tmux-claude-restart --todas`) so they pick up the new
+3. Reload tmux (`Ctrl+b r`) and restart Claude in the idle tabs (`tmux-claude-restart --all`) so they pick up the new
    settings, hooks and telemetry.
 4. If you maintain the kit: `bash export.sh`, review the diff, `ws-verify`, commit.
 
 If something stopped working after the update, every changed file has its `*.bak.<date>` next to it.
+
+### Upgrading from 2.x to 3.0 (English names)
+
+Version 3.0 renames commands, options, variables, folders and stored values. `install.sh` (and `ws-kit-update`, which
+runs it) migrates the installation before copying the new files. The tables of old and new names are in
+[USAGE.md](USAGE.md#18-upgrading-from-2x-names).
+
+1. Save your work and take an extra backup: `Ctrl+b Ctrl+s`, then `ws-backup-lite --now` (in 2.x:
+   `ws-backup-lite --ahora`).
+2. Preview: `bash install.sh --dry-run`. Under "Names from before 3.0 → English (renames.tsv)" each line says
+   `moved` (your data, moved to the new name), `shim` (an old command or hook set aside and replaced by a wrapper) or
+   `dropped` (an old kit file set aside). A warning `both ~/<old> and ~/<new> exist` means neither was touched: merge
+   them by hand and run the preview again.
+3. Install: `bash install.sh`. Note the date in the line `backup: *.bak.<date>`; the files set aside go to
+   `~/.local/share/ws-kit/pre-english.<date>/`.
+4. Restart tmux: `tmux kill-server`, then `dev`. The tabs come back. A server that keeps running holds the old option
+   names and values, and the state labels, protection icons and menus do not match the new scripts.
+5. Look for `changed Windows handler …` in the output: the migration patches the registered `ws-claude://` handler
+   in place (backup `<file>.bak.<date>`) so that it accepts `ws-claude://focus/N` and calls `tmux-goto`. If the
+   installer warns that it could not update it, make those two changes by hand, following
+   `windows/ws-claude-focus.ps1`.
+6. Check: `ws-check && ws-health`, `ws-test`, `ws-lang` (an installation that came from 2.x is set to `es`),
+   `ws-telegram status` (the old service was stopped and tmux starts the new one within a minute) and
+   `ws-telemetry summary` (the history from before the upgrade must still be there).
+7. Replace the old names in your own scripts and configuration. When nothing calls them:
+   `bash install.sh --remove-shims`.
+
+| Symptom after the upgrade | Cause and steps |
+|---|---|
+| `<old> was renamed to <new>; its options were renamed too` on stderr | Something still calls a wrapper. Find the caller (`grep -rn '<old>' ~/.bashrc ~/.config ~/.tmux.conf ~/.claude/settings.json`) and use the new name |
+| A wrapper fails with a usage error | Wrappers pass the arguments unchanged and the subcommand or option was renamed: use the new one from the tables |
+| `both ~/<old> and ~/<new> exist` | A 3.0 command ran before the migration and created the new folder. Move the content of the old one into the new one by hand, delete the old one and rerun `install.sh` |
+| The status labels or the menus look wrong | tmux was not restarted: `tmux kill-server` and open the session again |
+| A Windows notification click does nothing | The registered `ws-claude://` handler still expects `ws-claude://foco/N`. The install output shows `changed Windows handler …` when it was patched; otherwise edit that `.ps1` to accept `focus` and call `tmux-goto` (see `windows/ws-claude-focus.ps1`) |
+| The dashboard misses the days before the upgrade | Check that `~/.local/share/ws-telemetry/traces/` holds the old files (moved from `ws-telemetria/trazas/`), then `ws-telemetry build` |
+| Prompts typed in Spanish are no longer routed or detected | `ws-lang` shows `en`: run `ws-lang es` |
+
+### Rolling back the rename
+
+The migration deletes nothing, so it can be undone by hand. Run this in a normal shell, with tmux stopped
+(`tmux kill-server`).
+
+1. From the 3.0 kit, remove the wrappers so the old commands can be put back: `bash install.sh --remove-shims`.
+2. Go back to the 2.x kit, for example `git -C ~/code/claude-workstation checkout v2.7.0`.
+3. Put back the files that were set aside. They keep their path under `$HOME`:
+
+   ```bash
+   cp -a ~/.local/share/ws-kit/pre-english.<date>/. ~/
+   ```
+
+4. Move your data back to the old names. The pairs are the `data` lines of `renames.tsv` in the 3.0 kit (old path,
+   new path); move each new path back to its old one, the files inside a folder first, then the folder. For example:
+
+   ```bash
+   mv ~/.local/share/ws-telemetry/traces ~/.local/share/ws-telemetry/trazas
+   mv ~/.local/share/ws-telemetry ~/.local/share/ws-telemetria
+   ```
+
+5. Restore the files the installer replaced, from the backup with the date of the upgrade:
+
+   ```bash
+   find ~ -maxdepth 4 -name '*.bak.<date>'     # lists them; copy each one over its original
+   cp -p ~/.bashrc.bak.<date> ~/.bashrc
+   cp -p ~/.claude/settings.json.bak.<date> ~/.claude/settings.json
+   ```
+
+6. Run `bash install.sh` from the 2.x kit, start tmux and run `ws-test`.
+
+Records written by 3.0 between the upgrade and the rollback carry English field names, which 2.x does not read: those
+days show incomplete numbers in the 2.x dashboard. The files of 3.0 that have no 2.x name (`ws-lang`, the language
+packs, `~/.config/tmux-claude/lang`) stay in place and are harmless.
 
 ## 17. Recovery
 
@@ -367,9 +444,9 @@ If something stopped working after the update, every changed file has its `*.bak
 
 | Layer | What it stores | Frequency | Where | Recover with |
 |---|---|---|---|---|
-| tmux (continuum + resurrect) | Tabs, panes, folders | Every minute and when tabs change | `~/.local/share/tmux/resurrect` (30 days) | `tmux-recuperar` |
+| tmux (continuum + resurrect) | Tabs, panes, folders | Every minute and when tabs change | `~/.local/share/tmux/resurrect` (30 days) | `tmux-recover` |
 | `ws-backup` | Conversations and audit log | Every 15 min, incremental, never deletes | `%UserProfile%\.claude-wsl-backup` | Copy back |
-| `ws-backup-lite` | All of Claude (conversations, subagents, todos, plans, `/rewind`, history, memory), tmux and inventory | Daily, automatic (14 copies) | `%UserProfile%\WSL-Backups\lite` | `ws-restore-lite --restaurar` |
+| `ws-backup-lite` | All of Claude (conversations, subagents, todos, plans, `/rewind`, history, memory), tmux and inventory | Daily, automatic (14 copies) | `%UserProfile%\WSL-Backups\lite` | `ws-restore-lite --restore` |
 | Kit (GitHub) | All the configuration | On push | `andreshma/claude-workstation` | `install.sh` |
 | `devsnapshot` (optional) | The whole distro | By hand | `%UserProfile%\WSL-Backups` | `wsl --import` |
 
@@ -378,8 +455,8 @@ If something stopped working after the update, every changed file has its `*.bak
 - **Test that the backup works:** Menu → "Workstation" → "Test the latest backup" (`ws-restore-lite`): it extracts
   into a temporary folder and verifies SHA-256, readable conversations, tmux, inventory and that it carries no
   credentials.
-- **Back up now:** Menu → "Workstation" → "Back up Claude now" (`ws-backup-lite --ahora`).
-- **Restore on this machine:** close Claude in every tab and run `ws-restore-lite --restaurar`. Anything that already
+- **Back up now:** Menu → "Workstation" → "Back up Claude now" (`ws-backup-lite --now`).
+- **Restore on this machine:** close Claude in every tab and run `ws-restore-lite --restore`. Anything that already
   exists and differs is kept as `<file>.~N~` (nothing is overwritten).
 
 ### New laptop or lost distro, without a snapshot
@@ -387,7 +464,7 @@ If something stopped working after the update, every changed file has its `*.bak
 1. Install a clean Ubuntu 24.04.
 2. Clone the kit and run `bash install.sh`.
 3. Copy the latest `claude-lite-*.tar.zst` (and its `.sha256`) to `%UserProfile%\WSL-Backups\lite`.
-4. Run `ws-restore-lite` (test) and then `ws-restore-lite --restaurar`.
+4. Run `ws-restore-lite` (test) and then `ws-restore-lite --restore`.
 5. Install packages and tools with the commands it prints.
 6. Log in (Claude, az, gh, aws).
 7. Run `dev` and press `Ctrl+b Ctrl+r`.
@@ -401,10 +478,11 @@ Run `wsl --unregister Ubuntu` **only** once the snapshot is verified, and then
 
 ### Encrypted cloud backup
 
-- **Set up (once):** `ws-respaldo-nube configurar`. Save the private key it shows in your password manager: without
+- **Set up (once):** `ws-backup-cloud setup`. Save the private key it shows in your password manager: without
   it, the cloud backups cannot be opened if you lose the laptop.
-- **Every day** `ws-telegram` copies the latest lite backup, encrypted, to `OneDrive…\Respaldos\estacion-wsl` (keeps
-  7).
-- **Every month** the recovery test (local and cloud) arrives through Telegram. By hand: `ws-respaldo-nube probar`.
-- **Restore on a new laptop:** `ws-secret set age-respaldo` (paste the key from your password manager),
-  `ws-respaldo-nube bajar`, then `ws-restore-lite` (test) and `ws-restore-lite --restaurar`.
+- **Every day** `ws-telegram` copies the latest lite backup, encrypted, to `OneDrive…\Backups\workstation-wsl` (keeps
+  7). An installation that already copied to `OneDrive…\Respaldos\estacion-wsl` keeps using that folder while it
+  exists and the new one does not.
+- **Every month** the recovery test (local and cloud) arrives through Telegram. By hand: `ws-backup-cloud test`.
+- **Restore on a new laptop:** `ws-secret set age-backup` (paste the key from your password manager),
+  `ws-backup-cloud fetch`, then `ws-restore-lite` (test) and `ws-restore-lite --restore`.

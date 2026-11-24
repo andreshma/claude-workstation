@@ -13,6 +13,6 @@ paths = [
   '''files/home/\.claude/hooks/guard\.sh''',             # patterns the guard blocks
   '''files/home/\.local/bin/ws-test''',                  # fake tokens assembled at run time
   '''files/home/\.local/bin/ws-telegram''',              # redaction self-test
-  '''files/home/\.local/bin/ws-historial''',             # secret search patterns
+  '''files/home/\.local/bin/ws-history''',               # secret search patterns
   '''files/home/\.config/tmux-claude/ai-shell\.sh''',    # redaction rules
 ]

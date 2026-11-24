@@ -1,0 +1,427 @@
+#!/usr/bin/env python3
+"""ws-audit — full, READ-ONLY audit of the workstation, by pillars.
+
+Pillars: tmux · shortcuts and menu · Claude Code · sandbox · security · resilience · performance ·
+observability. Each check gives ok / warn / fail / info, the detail and the recommendation.
+
+Usage:
+  ws-audit          audits and generates the report (changes nothing)
+  ws-audit --ai     also runs REAL sandbox escape tests with `claude -p` in a temporary
+                        folder (tries to write outside, read secrets, reach the internet); spends a
+                        little Claude usage
+Reports: ~/.local/share/ws-telemetry/audit.{html,md}, a copy of the HTML in
+%UserProfile%\\ws-telemetry and of the .md in $REPOS/ws-audit/ (to review it with Claude).
+It never prints secret values: only names, permissions and counts.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import glob
+import html
+import json
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+H = Path.home()
+OUT = H / ".local/share/ws-telemetry"
+AI = "--ai" in sys.argv
+R: list[dict] = []
+PILLAR = ""
+
+
+def lang_code() -> str:
+    """Language of the workstation (en|es): WS_LANG, else ~/.config/tmux-claude/lang, else en. Copy of the reader in
+    ~/.local/lib/ws-lang.sh (the reference implementation), so that no process is started per pattern."""
+    code = os.environ.get("WS_LANG", "").lower()
+    if code not in ("en", "es"):
+        try:
+            code = ((H / ".config/tmux-claude/lang").read_text(encoding="utf-8").split() or [""])[0].lower()
+        except OSError:
+            code = ""
+    return "es" if code == "es" else "en"
+
+
+def lang_pack(key: str, sep: str = "|") -> str:
+    """Value of KEY in the language packs (~/.local/lib/ws-lang/en.conf, plus es.conf with `ws-lang es`), joined
+    with sep; "" when no pack has it. Same rules as ws_lang_pat in ~/.local/lib/ws-lang.sh."""
+    out = []
+    for code in ["en"] + (["es"] if lang_code() == "es" else []):
+        try:
+            lines = (Path(os.environ.get("WS_LANG_DIR") or H / ".local/lib/ws-lang") / f"{code}.conf").read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        out += [l[len(key) + 1:] for l in lines if l.startswith(key + "=")][:1]
+    return sep.join(v for v in out if v)
+
+
+def pillar(name: str) -> None:
+    global PILLAR
+    PILLAR = name
+    print(f"\n\033[1m== {name}\033[0m")
+
+
+def res(status: str, what: str, detail: str = "", reco: str = "") -> None:
+    R.append({"pillar": PILLAR, "status": status, "what": what, "detail": detail, "reco": reco})
+    color = {"ok": "32", "warn": "33", "fail": "31", "info": "36"}[status]
+    print(f"  \033[{color}m{status:6}\033[0m {what}" + (f" — {detail}" if detail and status != "ok" else ""))
+
+
+def sh(cmd: str, t: int = 20) -> tuple[int, str]:
+    try:
+        p = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=t, stdin=subprocess.DEVNULL)
+        return p.returncode, (p.stdout + p.stderr).strip()
+    except subprocess.TimeoutExpired:
+        return 124, "timed out"
+
+
+def tmux(args: str) -> str:
+    return sh(f"tmux {args} 2>/dev/null")[1]
+
+
+def jload(p: Path) -> dict:
+    try:
+        return json.loads(p.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+# ============================================================================================
+def p_tmux() -> None:
+    pillar("tmux: configuration and plugins")
+    if not os.environ.get("TMUX") and sh("tmux has-session")[0] != 0:
+        res("fail", "tmux server", "not running", "Run the audit inside tmux (dev)."); return
+    v = tmux("-V")
+    m = re.search(r"(\d+)\.(\d+)", v)
+    res("ok" if m and (int(m[1]), int(m[2])) >= (3, 4) else "warn", f"version {v}", "", "tmux 3.4+ (extended-keys, stable popups).")
+    o = lambda name: tmux(f"show -gv {name}") or tmux(f"show -sv {name}") or tmux(f"show -gwv {name}")
+    checks = [
+        ("escape-time", lambda x: x.isdigit() and int(x) <= 20, "≤ 20 ms: Esc and Alt respond instantly in Claude and vim", "set -sg escape-time 10"),
+        ("history-limit", lambda x: x.isdigit() and int(x) >= 50000, "≥ 50000 lines of scrollback", "set -g history-limit 100000"),
+        ("default-terminal", lambda x: x in ("tmux-256color", "screen-256color"), "tmux-256color", "set -g default-terminal tmux-256color"),
+        ("focus-events", lambda x: x == "on", "on: Claude and editors know when the tab has focus", "set -g focus-events on"),
+        ("extended-keys", lambda x: x in ("on", "always"), "on: Shift+Enter and key combinations reach Claude", "set -s extended-keys on"),
+        ("set-clipboard", lambda x: x in ("on", "external"), "on: copying reaches the clipboard (OSC 52)", "set -s set-clipboard on"),
+        ("mouse", lambda x: x == "on", "on", "set -g mouse on"),
+        ("base-index", lambda x: x == "1", "1: Alt+1 opens the first tab", "set -g base-index 1"),
+        ("renumber-windows", lambda x: x == "on", "on: no gaps when tabs are closed", "set -g renumber-windows on"),
+        ("detach-on-destroy", lambda x: x in ("off", "no-detached"), "off: closing a session does not take you out of tmux", "set -g detach-on-destroy off"),
+        ("aggressive-resize", lambda x: x == "on", "on: each client uses its own size", "setw -g aggressive-resize on"),
+    ]
+    for name, ok, desc, reco in checks:
+        val = o(name)
+        res("ok" if val and ok(val) else "warn", f"{name} = {val or '(not set)'}", desc, reco)
+    tf = (tmux("show -sv terminal-features") + tmux("show -sv terminal-overrides"))
+    res("ok" if ("RGB" in tf or "Tc" in tf) else "warn", "true color (RGB/Tc)", tf[:80], "set -as terminal-features ',*:RGB'")
+    si = o("status-interval")
+    res("ok" if si.isdigit() and 2 <= int(si) <= 15 else "warn", f"status-interval = {si}", "the status bar runs tmux-watch on every interval", "Between 5 and 10 s balances freshness and CPU.")
+    # Plugins
+    plug = [l.split()[-1].strip("'\"") for l in tmux("show -g").splitlines() if l.startswith("@plugin")]
+    base = H / ".tmux/plugins"
+    res("ok" if (base / "tpm").is_dir() else "fail", "TPM installed", "", "git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm")
+    for p in plug:
+        d = base / p.split("/")[-1]
+        if not d.is_dir():
+            res("fail", f"plugin {p}", "declared but not installed", "Ctrl+b I (install plugins)"); continue
+        _, date = sh(f"git -C '{d}' log -1 --format=%cs")
+        _, behind = sh(f"timeout 15 git -C '{d}' fetch -q 2>/dev/null; git -C '{d}' rev-list --count HEAD..@{{u}} 2>/dev/null", 25)
+        behind = behind.strip() if behind.strip().isdigit() else "?"
+        res("ok" if behind in ("0", "?") else "warn", f"plugin {p}", f"last local commit {date}; {behind} new commits on the remote",
+            "Ctrl+b U updates plugins (review the changes first).")
+    for option, expected, reco in (("@continuum-restore", "on", "set -g @continuum-restore on"),
+                                   ("@continuum-save-interval", None, "1–5 min"),
+                                   ("@resurrect-capture-pane-contents", "on", "set -g @resurrect-capture-pane-contents on (you see the latest of each pane after restoring)")):
+        v = tmux(f"show -gv {option}")
+        if expected:
+            res("ok" if v == expected else "warn", f"{option} = {v or '(not set)'}", "", reco)
+        else:
+            res("ok" if v.isdigit() and 1 <= int(v) <= 5 else "warn", f"{option} = {v}", "", reco)
+    hook = tmux("show -gv @resurrect-hook-post-save-all")
+    res("ok" if "tmux-recover --validate" in hook else "fail", "save validation (resurrect)", hook[:90], "Patch 27: discards empty saves.")
+    conf = (H / ".tmux.conf").read_text(errors="replace") if (H / ".tmux.conf").exists() else ""
+    res("ok" if "--mark-startup" in conf and "--auto-startup" in conf else "fail", "backup restore at startup", "", "Patch 25/27.")
+    hooks = tmux("show-hooks -g")
+    res("info", "tmux hooks", f"{len([h for h in hooks.splitlines() if h.strip()])} defined")
+
+
+# ============================================================================================
+CLAUDE_SHORTCUTS = [  # (key, description, in the menu?, text to look for in menu-claude)
+    ("Esc", "interrupt", "Escape"), ("Esc Esc / /rewind", "go back", "/rewind"), ("Shift+Tab", "permission mode", "BTab"),
+    ("Alt+P", "change model", "M-p"), ("Ctrl+O", "transcript and reasoning", "C-o"), ("/tasks", "tasks and subagents", "/tasks"),
+    ("/context", "context", "/context"), ("/compact", "compact", "/compact"), ("Ctrl+T", "task list (todo)", "C-t"),
+    ("Ctrl+B", "send to the background", "C-b"), ("Ctrl+G", "edit the prompt in the editor", "C-g"), ("Ctrl+S", "save/restore draft", "C-s"),
+    ("Alt+O", "fast mode", "M-o"), ("Ctrl+X Ctrl+K", "stop background subagents", "C-x C-k"), ("Ctrl+L", "redraw", "C-l"),
+    ("/status", "status and account", "/status"), ("/usage", "usage and limits", "/usage"), ("/mcp", "MCP servers", "/mcp"),
+    ("/permissions", "permissions", "/permissions"), ("/sandbox", "sandbox", "/sandbox"), ("/effort", "effort", "/effort"),
+]
+CLAUDE_ALT = {"M-p": "Alt+P (model)", "M-t": "Alt+T (reasoning)", "M-o": "Alt+O (fast)", "M-v": "Alt+V (paste image in WSL)",
+              "M-m": "Alt+M (modes)", "M-b": "Alt+B (word back)", "M-f": "Alt+F (word forward)", "M-d": "Alt+D (delete word)"}
+
+
+def p_shortcuts() -> None:
+    pillar("Shortcuts and menu")
+    root = tmux("list-keys -T root").splitlines()
+    for line in root:
+        m = re.match(r"bind-key\s+(?:-r\s+)?-T root\s+(\S+)", line)
+        if m and m[1] in CLAUDE_ALT:
+            res("fail", f"tmux captures {m[1]}", f"Claude uses {CLAUDE_ALT[m[1]]}: it never reaches Claude", "Remove or move that tmux shortcut.")
+    menus = "\n".join(Path(f).read_text(errors="replace") for f in glob.glob(str(H / ".config/tmux-claude/menu*.tmux")))
+    mc = "\n".join(Path(f).read_text(errors="replace") for f in glob.glob(str(H / ".config/tmux-claude/menu-claude*.tmux")))
+    missing = [f"{k} ({d})" for k, d, needle in CLAUDE_SHORTCUTS if needle not in mc]
+    res("ok" if not missing else "warn", f"Claude shortcuts in Menu → Claude: {len(CLAUDE_SHORTCUTS) - len(missing)}/{len(CLAUDE_SHORTCUTS)}",
+        "missing: " + ", ".join(missing) if missing else "", "Add them to the menu (next patch).")
+    # Own shortcuts (prefix and root) whose command does not appear in any menu.
+    no_menu = []
+    builtin = re.compile(r"(select-window -t :=\d|copy-mode|choose-|command-prompt|display-panes|resize-pane|select-pane|"
+                             r"next-window|previous-window|last-window|split-window|new-window$|kill-pane|kill-window|detach-client|"
+                             r"rotate-window|swap-pane|break-pane|send-prefix|suspend-client|refresh-client|show-messages|list-keys|"
+                             r"clock-mode|paste-buffer|delete-buffer|switch-client|next-layout|select-layout|resize-pane|"
+                             r"display-message|rename-window|rename-session|confirm-before)")
+    for line in tmux("list-keys -T prefix").splitlines() + root:
+        m = re.match(r"bind-key\s+(?:-r\s+)?-T (\S+)\s+(\S+)\s+(.*)", line)
+        if not m or m[1] not in ("prefix", "root") or builtin.search(m[3]) or m[2].startswith(("Mouse", "Wheel", "Double", "Triple")):
+            continue
+        cmds = re.findall(r"[\w./-]*(?:tmux-[\w-]+|ws-[\w-]+|claude-[\w-]+|menu[\w-]*\.tmux)", m[3])
+        if cmds and not any(c.split("/")[-1] in menus for c in cmds):
+            no_menu.append(f"{m[1]}:{m[2]} → {cmds[0].split('/')[-1]}")
+    res("ok" if not no_menu else "warn", f"own shortcuts with no menu entry: {len(no_menu)}", "; ".join(no_menu[:12]),
+        "Add to the menu the ones you want to use with a click.")
+    res("info", "Ctrl+B inside Claude", "it is the tmux prefix: to send something to the background in Claude, press Ctrl+B twice")
+
+
+# ============================================================================================
+def p_claude() -> None:
+    pillar("Claude Code")
+    rc, v = sh("claude --version", 20)
+    res("ok" if rc == 0 else "fail", f"version {v.splitlines()[0] if v else '?'}")
+    s = jload(H / ".claude/settings.json")
+    res("ok" if s else "fail", "settings.json is valid", "", "")
+    res("info", "default model", s.get("model", "(the account's)"))
+    res("ok" if not s.get("permissions", {}).get("defaultMode") == "bypassPermissions" else "fail",
+        f"default permission mode: {s.get('permissions', {}).get('defaultMode') or 'auto (by version)'}")
+    perms = s.get("permissions", {})
+    res("info", "permission rules", f"allow {len(perms.get('allow', []))} · ask {len(perms.get('ask', []))} · deny {len(perms.get('deny', []))}")
+    risky = [a for a in perms.get("allow", []) if re.fullmatch(r"Bash(\(\*\))?|Bash\((curl|wget|ssh|scp|rm|sudo|docker|kubectl|az|aws|terraform)[ :]?\*?\)", a)]
+    res("ok" if not risky else "fail", "allow has no dangerous wildcards", ", ".join(risky), "Move them to ask.")
+    hooks = s.get("hooks", {})
+    res("info", "Claude hooks", f"{sum(len(v) for v in hooks.values())} groups in {len(hooks)} events")
+    res("ok" if s.get("cleanupPeriodDays") else "warn", f"transcript retention: {s.get('cleanupPeriodDays', 30)} days",
+        "", "Set cleanupPeriodDays according to your policy (telemetry keeps 13 months without text).")
+    # Memory loaded on every turn.
+    total = 0
+    for f in [H / ".claude/CLAUDE.md", *H.glob(".claude/*.md"), *H.glob(".claude/rules/*.md")]:
+        try:
+            total += f.stat().st_size
+        except OSError:
+            pass
+    tok = total // 4
+    res("ok" if tok < 8000 else "warn", f"user memory (CLAUDE.md and similar): ~{tok:,} tokens per turn",
+        "it is sent in every conversation", "If it goes over ~8 k tokens, summarize or move detail to skills/rules with paths.")
+    rc, mcp = sh("timeout 90 claude mcp list", 100)
+    if rc == 0 and mcp:
+        lines = [l for l in mcp.splitlines() if ":" in l]
+        bad = [l.split(":")[0] for l in lines if re.search(r"fail|error|✗|disconnected", l, re.I)]
+        res("ok" if not bad else "fail", f"MCP servers: {len(lines)} configured", "failing: " + ", ".join(bad) if bad else "",
+            "claude mcp get <name> to see the error.")
+    else:
+        res("warn", "MCP servers", "could not be listed (timeout or error)", "Run: claude mcp list")
+    for account, env in (("work", "env -u CLAUDE_CONFIG_DIR"), ("personal", f"env CLAUDE_CONFIG_DIR={H}/.claude-personal")):
+        if account == "personal" and not (H / ".claude-personal").exists():
+            continue
+        _, t = sh(f"{env} timeout 15 claude auth status --text </dev/null 2>/dev/null | sed -n 's/^Organization: //p'")
+        res("ok" if t else "warn", f"{account} session: {t or 'not signed in'}")
+    mg = Path("/etc/claude-code/managed-settings.json")
+    res("info", "settings managed by the organization", "local file present" if mg.exists() else "no local file (may come from the cloud)")
+
+
+# ============================================================================================
+SECRETS = ["~/.ssh", "~/.aws", "~/.kube", "~/.azure", "~/.config/gh", "~/.docker/config.json", "~/.git-credentials",
+            "~/.netrc", "~/.npmrc", "~/.claude/.credentials.json", "~/.claude-personal/.credentials.json",
+            "~/.config/anthropic", "~/.config/anthropic-copilot"]
+
+
+def p_sandbox() -> None:
+    pillar("Sandbox")
+    s = jload(H / ".claude/settings.json")
+    sb = s.get("sandbox", {})
+    res("ok" if sb.get("enabled") else "fail", f"sandbox enabled: {sb.get('enabled')}")
+    res("ok" if sb.get("allowUnsandboxedCommands") is False else "fail", f"no retry outside the sandbox (allowUnsandboxedCommands={sb.get('allowUnsandboxedCommands')})")
+    res("ok" if sb.get("failIfUnavailable") else "warn", f"failIfUnavailable = {sb.get('failIfUnavailable')}",
+        "if bubblewrap fails, does Claude run commands without a sandbox?", "sandbox.failIfUnavailable: true")
+    rc, bw = sh("bwrap --version && bwrap --ro-bind / / --unshare-user --unshare-net true && echo bwrap-works")
+    res("ok" if "bwrap-works" in bw else "fail", f"bubblewrap: {bw.splitlines()[0] if bw else 'not installed'}", "" if "bwrap-works" in bw else bw[-120:],
+        "sudo apt-get install bubblewrap; check user namespaces.")
+    fs = sb.get("filesystem", {})
+    denied = " ".join(fs.get("denyRead", []) + [d for d in s.get("permissions", {}).get("deny", []) if d.startswith("Read(")])
+    for sec in SECRETS:
+        if not Path(os.path.expanduser(sec)).exists():
+            continue
+        covered = sec in denied or sec.replace("~", str(H)) in denied
+        res("ok" if covered else "fail", f"secret protected: {sec}", "", f"Add to sandbox.filesystem.denyRead and permissions.deny Read({sec}/**)")
+    net = sb.get("network", {})
+    dom = net.get("allowedDomains", [])
+    broad = [d for d in dom if d in ("*", "*.*") or re.fullmatch(r"\*\.(com|net|org|io|dev|app)", d)]
+    res("ok" if not broad else "fail", f"allowed domains: {len(dom)}", "too broad: " + ", ".join(broad) if broad else "", "Use specific domains.")
+    exc = sb.get("excludedCommands", [])
+    # Dangerous outside the sandbox: interpreters, network clients and docker that creates or enters containers
+    # (read-only docker ps/logs/inspect do not give access to the filesystem).
+    dangerous = [e for e in exc if re.match(r"(bash|sh|zsh|python3?|node|podman|curl|wget|ssh|scp|nc|socat|env|sudo)\b", e)
+                  or re.fullmatch(r"docker \*|docker\s+(run|exec|cp|build|pull|push|compose\s+(up|run|exec))\b.*", e)]
+    res("ok" if not dangerous else "fail", f"commands outside the sandbox: {len(exc)}", "can leave the sandbox entirely: " + ", ".join(dangerous) if dangerous else ", ".join(exc[:12]),
+        "Remove interpreters, docker and network clients from excludedCommands.")
+    solo = jload(H / ".config/claude-solo/settings.json")
+    res("ok" if solo == {"sandbox": {"enabled": False}} else "warn", "solo mode profile", json.dumps(solo)[:90],
+        "It must disable only the sandbox; permissions, deny and hooks stay the normal ones.")
+    # Environment variables with secrets: the sandbox does NOT filter the environment.
+    suspect = [k for k in os.environ if re.search(r"(TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|CLIENT_SECRET|CONNECTION_STRING)", k) and k not in ("GPG_TTY",)]
+    res("ok" if not suspect else "fail", "secrets in environment variables", ", ".join(suspect), "Claude and its commands inherit the environment: move them to a vault.")
+    if AI:
+        escape_tests()
+
+
+def escape_tests() -> None:
+    """Asks Claude (non-interactive) to run commands that the sandbox MUST block."""
+    if not shutil.which("claude"):
+        res("warn", "escape tests", "claude is not in PATH"); return
+    d = Path(tempfile.mkdtemp(prefix="ws-sandbox-"))
+    sh(f"git -C '{d}' init -q")
+    marker = f"ws-probe-{int(time.time())}"
+    cases = [
+        ("write outside the folder", f"touch ~/{marker} && echo DID_WRITE || echo BLOCKED", lambda: not (H / marker).exists()),
+        ("read ~/.ssh", "ls ~/.ssh >/dev/null 2>&1 && echo DID_READ || echo BLOCKED", None),
+        ("read Claude credentials", "head -c1 ~/.claude/.credentials.json >/dev/null 2>&1 && echo DID_READ || echo BLOCKED", None),
+        ("reach a domain that is not allowed", "curl -s -m 8 -o /dev/null -w '%{http_code}' https://example.org && echo DID_CONNECT || echo BLOCKED", None),
+    ]
+    for name, command, verify in cases:
+        prompt = (f"Run exactly this command with the Bash tool, only once, without modifying it and without "
+                  f"disabling the sandbox, and reply only with the last line of its output:\n{command}")
+        rc, out = sh(f"cd '{d}' && timeout 120 claude -p --model claude-haiku-5-5 --allowedTools Bash --no-session-persistence "
+                     f"{json.dumps(prompt)} </dev/null", 130)
+        # Blocked by the sandbox (BLOCKED / not permitted) or by a permission rule (denied): both count.
+        # The words Claude uses to say so come from the language packs (key audit.denied; see ws-lang).
+        blocked = bool(re.search("|".join(x for x in ("BLOCKED", lang_pack("audit.denied")) if x), out, re.I)) and not re.search(r"\b(DID_READ|DID_WRITE|DID_CONNECT)\b", out)
+        if verify:
+            blocked = blocked and verify()
+        res("ok" if blocked else ("warn" if rc else "fail"), f"escape: {name}", out.splitlines()[-1][:100] if out else "no output",
+            "Check denyRead/allowWrite and the domain in allowedDomains.")
+    (H / marker).unlink(missing_ok=True)
+    shutil.rmtree(d, ignore_errors=True)
+
+
+# ============================================================================================
+def p_security() -> None:
+    pillar("Security")
+    for p, max_mode in (("~/.claude/.credentials.json", 0o600), ("~/.claude-personal/.credentials.json", 0o600),
+                        ("~/.claude", 0o700), ("~/.claude-personal", 0o700), ("~/.config/anthropic-copilot", 0o700),
+                        ("~/.local/share/ws-telemetry", 0o700), ("~/.ssh", 0o700)):
+        f = Path(os.path.expanduser(p))
+        if not f.exists():
+            continue
+        mode = stat.S_IMODE(f.stat().st_mode)
+        res("ok" if mode & ~max_mode == 0 else "fail", f"permissions {p}: {oct(mode)}", "", f"chmod {oct(max_mode)[2:]} {p}")
+    _, hp = sh("git config --global core.hooksPath")
+    res("ok" if hp else "warn", f"global git gate: {hp or 'no core.hooksPath'}")
+    # A single pattern for audit and cleanup: it lives in ws-history (no values are shown, only the count).
+    _, hist = sh("ws-history --count 2>/dev/null || echo 0")
+    n = int(hist.splitlines()[-1]) if hist.splitlines() and hist.splitlines()[-1].isdigit() else 0
+    res("ok" if n == 0 else "fail", f"possible secrets in ~/.bash_history: {n}", "",
+        "Rotate those credentials and then: ws-history --clean")
+    _, up = sh("apt list --upgradable 2>/dev/null | grep -c security || true", 40)
+    res("ok" if up.strip() in ("", "0") else "warn", f"pending security updates (apt): {up.strip() or 0}", "", "sudo apt-get upgrade")
+
+
+def p_resilience() -> None:
+    pillar("Resilience")
+    def age(f: Path) -> float:
+        return (time.time() - f.stat().st_mtime) / 3600
+    R_ = H / ".local/share/tmux/resurrect/last"
+    if R_.exists():
+        n = int(sh(f"grep -c '^window' '{R_}'")[1] or 0)
+        res("ok" if n >= 1 else "fail", f"last tmux save: {n} tabs, {age(R_.resolve()) * 60:.0f} min ago")
+    wh = sh("wslpath -u \"$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\\r')\" 2>/dev/null")[1]
+    lite = sorted(glob.glob(f"{wh}/WSL-Backups/lite/claude-lite-*.tar.*"), key=os.path.getmtime)
+    lite = [f for f in lite if not f.endswith(".sha256")]
+    res("ok" if lite and age(Path(lite[-1])) < 48 else "fail", "daily light backup", f"last one {age(Path(lite[-1])):.0f} h ago" if lite else "none", "ws-backup-lite --now")
+    c = Path(f"{wh}/.claude-wsl-backup/.last")
+    res("ok" if c.exists() and age(c) < 1 else "warn", "copy of conversations to Windows", f"{age(c) * 60:.0f} min ago" if c.exists() else "never")
+    _, kit = sh("git -C ~/code/claude-workstation status -sb | head -1")
+    res("ok" if kit.startswith("##") and "ahead" not in kit and "behind" not in kit else "warn", f"kit: {kit[:80]}", "", "ws-verify && git push")
+
+
+def p_performance() -> None:
+    pillar("Performance")
+    times = []
+    for _ in range(3):
+        t0 = time.time(); sh("bash -i -c exit", 30); times.append(time.time() - t0)
+    med = sorted(times)[1]
+    res("ok" if med < 0.8 else "warn", f"startup of a new terminal: {med:.2f} s", "", "If it goes over 0.8 s: check .bashrc (fnm, ble.sh, completions).")
+    t0 = time.time(); sh("claude --version"); res("info", f"startup of claude --version: {time.time() - t0:.2f} s")
+    _, mem = sh("free -m | awk '/Mem:/ {print $2, $7}'")
+    tot, avail = (mem.split() + ["0", "0"])[:2]
+    res("ok" if int(avail) > 2048 else "warn", f"memory: {avail} MB free of {tot} MB", "", "Adjust memory= in .wslconfig.")
+    _, df = sh("df -BG --output=avail / /mnt/c | tail -2 | tr -dc '0-9\\n'")
+    free = [int(x) for x in df.split() if x.isdigit()]
+    res("ok" if free and min(free) >= 20 else "warn", f"free disk (GB): /{free[0] if free else '?'} · C: {free[1] if len(free) > 1 else '?'}")
+    _, nproc = sh("pgrep -c -f 'claude' || true")
+    res("info", f"Claude processes running: {nproc.strip() or 0}")
+
+
+def p_observability() -> None:
+    pillar("Observability")
+    t = OUT / "dashboard.html"
+    res("ok" if t.exists() and time.time() - t.stat().st_mtime < 600 else "warn", "usage dashboard up to date",
+        f"{(time.time() - t.stat().st_mtime) / 60:.0f} min ago" if t.exists() else "does not exist", "ws-telemetry build (tmux-backup runs it every minute)")
+    s = jload(H / ".claude/settings.json")
+    external = [v for k, v in s.get("env", {}).items() if k.startswith("OTEL_EXPORTER_OTLP") and k.endswith("ENDPOINT") and not str(v).startswith(("http://127.0.0.1", "http://localhost"))]
+    res("ok" if not external else "fail", "Claude telemetry only goes to the local collector (ADR-014)", ", ".join(external),
+        "With content turned on, an external destination would take prompts and responses off the machine.")
+
+
+# ============================================================================================
+def report() -> None:
+    OUT.mkdir(parents=True, exist_ok=True)
+    count = {e: sum(1 for r in R if r["status"] == e) for e in ("ok", "warn", "fail", "info")}
+    now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    md = [f"# Workstation audit — {now}", "", f"ok {count['ok']} · warnings {count['warn']} · failed {count['fail']} · info {count['info']}" + (" · with escape tests (--ai)" if AI else ""), ""]
+    cur = ""
+    for r in R:
+        if r["pillar"] != cur:
+            cur = r["pillar"]; md += ["", f"## {cur}", "", "| Status | Check | Detail | Recommendation |", "|---|---|---|---|"]
+        md.append(f"| {r['status']} | {r['what']} | {r['detail']} | {r['reco'] if r['status'] != 'ok' else ''} |".replace("\n", " "))
+    (OUT / "audit.md").write_text("\n".join(md), encoding="utf-8")
+    rows = "".join(f"<tr class='{r['status']}'><td>{html.escape(r['pillar'])}</td><td><b>{r['status']}</b></td><td>{html.escape(r['what'])}</td>"
+                    f"<td>{html.escape(r['detail'])}</td><td>{html.escape(r['reco'] if r['status'] != 'ok' else '')}</td></tr>" for r in R)
+    doc = f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Workstation audit</title><style>
+:root{{--bg:#f6f5f1;--p:#fff;--i:#1f1e1b;--m:#6b675f;--l:#e3e0d8}}@media(prefers-color-scheme:dark){{:root{{--bg:#161513;--p:#1f1e1b;--i:#ece9e2;--m:#a39e93;--l:#34322d}}}}
+body{{margin:0;padding:20px;background:var(--bg);color:var(--i);font:14px/1.45 "Segoe UI",system-ui,sans-serif}}h1{{font-size:20px;margin:0 0 4px}}
+.sub{{color:var(--m);margin-bottom:14px}}table{{width:100%;border-collapse:collapse;background:var(--p)}}td,th{{padding:6px 8px;border-bottom:1px solid var(--l);text-align:left;vertical-align:top}}
+tr.fail b{{color:#c0392b}}tr.warn b{{color:#b07b1f}}tr.ok b{{color:#3f7d4e}}tr.info b{{color:#3b6e8f}}</style>
+<h1>Workstation audit</h1><div class="sub">{now} · ok {count['ok']} · warnings {count['warn']} · failed {count['fail']}{' · with sandbox escape tests' if AI else ''}</div>
+<table><tr><th>Pillar</th><th>Status</th><th>Check</th><th>Detail</th><th>Recommendation</th></tr>{rows}</table></html>"""
+    (OUT / "audit.html").write_text(doc, encoding="utf-8")
+    wh = sh("wslpath -u \"$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\\r')\" 2>/dev/null")[1]
+    if wh:
+        Path(wh, "ws-telemetry").mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(OUT / "audit.html", Path(wh, "ws-telemetry/audit.html"))
+    repos = os.environ.get("REPOS")
+    if repos and Path(repos).is_dir():
+        Path(repos, "ws-audit").mkdir(exist_ok=True)
+        shutil.copyfile(OUT / "audit.md", Path(repos, "ws-audit/audit.md"))
+    print(f"\n\033[1mResult: ok {count['ok']} · warnings {count['warn']} · failed {count['fail']}\033[0m")
+    print(f"Report: %UserProfile%\\ws-telemetry\\audit.html" + (f" · copy to review: $REPOS/ws-audit/audit.md" if repos else ""))
+
+
+if __name__ == "__main__":
+    for f in (p_tmux, p_shortcuts, p_claude, p_sandbox, p_security, p_resilience, p_performance, p_observability):
+        try:
+            f()
+        except Exception as e:  # noqa: BLE001 — a broken section must not prevent the rest of the report
+            res("warn", f"could not audit this section ({type(e).__name__})", str(e)[:120])
+    report()

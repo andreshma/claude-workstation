@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # guard.sh — deterministic guardrails for Claude Code (PreToolUse hook). Part of the FLOOR of ADR-013: it runs at
-# every protection level (completo, normal, solo and puro).
+# every protection level (full, normal, solo and bare).
 # Blocks with exit 2 (Claude receives the reason and looks for another way) actions against policy:
 #   · forced git push (--force, -f, -fu, +refspec) · push to main/master (explicit, refs/heads/… or while on that one)
 #   · bypassing the git gate (--no-verify, core.hooksPath, ws.gate.*) · commits with Co-authored-by
@@ -34,16 +34,16 @@ case "$tool" in
     sc="$(sed -E "s/'[^']*'//g; s/\"[^\"]*\"//g" <<<"$cmd")"
     GIT='git([[:space:]]+-[cC][[:space:]]*[^[:space:]]+)*[[:space:]]+'
     if grep -Eq "${GIT}push([[:space:]]|\$)" <<<"$sc"; then
-      resto="$(grep -Eo "${GIT}push[^|;&]*" <<<"$sc" | sed -E "s/^${GIT}push//" | tr '\n' ' ')"
-      grep -Eq '(^|[[:space:]])(--force|-[a-zA-Z]*f[a-zA-Z]*)([[:space:]]|$)|(^|[[:space:]])\+[^[:space:]]' <<<"$resto" &&
+      rest="$(grep -Eo "${GIT}push[^|;&]*" <<<"$sc" | sed -E "s/^${GIT}push//" | tr '\n' ' ')"
+      grep -Eq '(^|[[:space:]])(--force|-[a-zA-Z]*f[a-zA-Z]*)([[:space:]]|$)|(^|[[:space:]])\+[^[:space:]]' <<<"$rest" &&
         block "forced git push (use --force-with-lease on your branch, or do it yourself)"
-      grep -Eq '(^|[[:space:]:/])(main|master)([[:space:]]|$)' <<<"$resto" &&
+      grep -Eq '(^|[[:space:]:/])(main|master)([[:space:]]|$)' <<<"$rest" &&
         block "direct push to main/master: work on a branch and open a PR"
       # «git push» with no branch (zero or one non-option argument) or with HEAD: pushes the current branch.
-      args="$(tr ' ' '\n' <<<"$resto" | grep -Evc '^(-.*)?$')"
-      if (( args < 2 )) || grep -Eq '(^|[[:space:]:])HEAD([[:space:]:]|$)' <<<"$resto"; then
-        rama="$(git -C "${cwd:-.}" branch --show-current 2>/dev/null)"
-        [[ "$rama" == main || "$rama" == master ]] && block "push while on $rama: work on a branch and open a PR"
+      args="$(tr ' ' '\n' <<<"$rest" | grep -Evc '^(-.*)?$')"
+      if (( args < 2 )) || grep -Eq '(^|[[:space:]:])HEAD([[:space:]:]|$)' <<<"$rest"; then
+        branch="$(git -C "${cwd:-.}" branch --show-current 2>/dev/null)"
+        [[ "$branch" == main || "$branch" == master ]] && block "push while on $branch: work on a branch and open a PR"
       fi
     fi
     grep -Eq "${GIT}(commit|push|merge|rebase|am|cherry-pick)[^|;&]*[[:space:]]--no-verify([[:space:]]|\$)" <<<"$sc" &&
@@ -83,8 +83,8 @@ case "$tool" in
       block "writing to .git/hooks or .git/config leaves code that runs outside the sandbox: do it yourself"
     ;;
   Write|Edit|MultiEdit|NotebookEdit)
-    ruta="$(jq -r '.tool_input.file_path // .tool_input.notebook_path // ""' <<<"$input")"
-    grep -Eq '(^|/)\.git/(hooks/|config$|info/attributes$)' <<<"$ruta" &&
+    path="$(jq -r '.tool_input.file_path // .tool_input.notebook_path // ""' <<<"$input")"
+    grep -Eq '(^|/)\.git/(hooks/|config$|info/attributes$)' <<<"$path" &&
       block "writing to .git/hooks or .git/config leaves code that runs outside the sandbox: do it yourself"
     content="$(jq -r '[.tool_input.content, .tool_input.new_string, .tool_input.new_source, (.tool_input.edits[]?.new_string)] | map(select(. != null)) | join("\n")' <<<"$input")"
     grep -Eq -- '-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|AccountKey=[A-Za-z0-9+/=]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}|SharedAccessSignature=|[?&]sig=[A-Za-z0-9%]{30,}' <<<"$content" &&

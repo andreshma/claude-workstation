@@ -1,7 +1,7 @@
 ﻿<#
   claude-workstation.ps1 — PowerShell shortcuts for the WSL + tmux + Claude Code workstation.
   Source: windows/profile.ps1 in the claude-workstation kit. Do not edit it in the profile
-  folder: change it in the kit and run windows/instalar.ps1 again.
+  folder: change it in the kit and run windows/install.ps1 again.
 #>
 
 function dev {
@@ -58,7 +58,7 @@ function devsnapshot {
     return
   }
   $bk = '/mnt/' + $env:USERPROFILE.Substring(0,1).ToLower() + ($env:USERPROFILE.Substring(2) -replace '\\','/') + '/WSL-Backups'
-  wsl.exe -d Ubuntu -e bash -lc "tmux run-shell ~/.tmux/plugins/tmux-resurrect/scripts/save.sh 2>/dev/null; apt-mark showmanual > '$bk/paquetes.txt'"
+  wsl.exe -d Ubuntu -e bash -lc "tmux run-shell ~/.tmux/plugins/tmux-resurrect/scripts/save.sh 2>/dev/null; apt-mark showmanual > '$bk/packages.txt'"
   wsl.exe --terminate Ubuntu
   $f = Join-Path $dir ('Ubuntu-{0:yyyyMMdd-HHmm}.vhdx' -f (Get-Date))
   wsl.exe --export Ubuntu $f --vhd

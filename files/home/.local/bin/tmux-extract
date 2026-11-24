@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+#
+# tmux-extract — pulls from the screen what you usually copy by hand: URLs, paths, git hashes, IPs, ports, GUIDs,
+# Azure resource IDs, tickets (ABC-123), container images and emails. Ctrl+b u.
+#   Enter copies to the clipboard · Ctrl+P pastes it into the pane · Ctrl+O opens it (URL in the browser, path in
+#   Explorer) · Tab marks several (copied together, one per line)
+# Usage: tmux-extract <pane>  ·  tmux-extract --list < text   (extract only: «type<TAB>value»; for tests)
+set -uo pipefail
+TAB=$'\t'
+
+list_items() {   # stdin → «type<TAB>value», no duplicates, most recent first
+  python3 -c '
+import re, sys
+text = sys.stdin.read()
+P = [
+    ("url", r"https?://[^\s<>\"'"'"'`)\]]+"),
+    ("azure", r"/subscriptions/[0-9a-fA-F-]{36}(?:/[\w.()-]+)+"),
+    ("guid", r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"),
+    ("path", r"(?:(?<=\s)|^)(?:~|\.{1,2})?/(?:[\w.@+-]+/)*[\w.@+-]+/?(?::\d+(?::\d+)?)?"),
+    ("path", r"\b[A-Za-z]:\\(?:[^\\\s:*?\"<>|]+\\)*[^\\\s:*?\"<>|]*"),
+    ("hash", r"\b[0-9a-f]{7,40}\b"),
+    ("ip", r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b"),
+    ("port", r"\b(?:localhost|127\.0\.0\.1|0\.0\.0\.0):\d{2,5}\b"),
+    ("ticket", r"\b[A-Z][A-Z0-9]+-\d+\b"),
+    ("image", r"\b[\w.-]+(?:\.azurecr\.io|\.io|\.com)?/[\w./-]+:[\w.-]+\b"),
+    ("email", r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),
+]
+seen, rows = set(), []
+for line in reversed(text.splitlines()):
+    for kind, rx in P:
+        for m in re.findall(rx, line):
+            v = m.strip(".,;:")
+            if kind == "hash" and (v.isdigit() or not re.search(r"\d", v) or not re.search(r"[a-f]", v)):
+                continue
+            if kind == "path" and (len(v) < 3 or v.startswith("//")):
+                continue
+            if v and v not in seen:
+                seen.add(v); rows.append(f"{kind}\t{v}")
+print("\n".join(rows))
+'
+}
+[[ "${1:-}" == --list ]] && { list_items; exit 0; }
+
+p="${1:?pane}"
+dir="$(tmux display -p -t "$p" '#{pane_current_path}')"
+rows="$(tmux capture-pane -p -J -t "$p" -S -500 | ws-redact | list_items)"
+[[ -n "$rows" ]] || { echo "Found nothing to extract in this pane."; sleep 1.5; exit 0; }
+open_item() {
+  local v="$1"
+  if [[ "$v" =~ ^https?:// ]]; then wslview "$v" 2>/dev/null || explorer.exe "$v"
+  else
+    v="${v%%:[0-9]*}"; v="${v/#\~/$HOME}"; [[ "$v" == /* || "$v" =~ ^[A-Za-z]: ]] || v="$dir/$v"
+    [[ "$v" =~ ^[A-Za-z]: ]] || v="$(wslpath -w "$v" 2>/dev/null || echo "$v")"
+    explorer.exe "$v"
+  fi
+}
+out="$(fzf --multi --delimiter="$TAB" --with-nth=1,2 --tiebreak=index --reverse --prompt 'extract> ' \
+          --header 'Enter copies · Ctrl+P pastes into the pane · Ctrl+O opens · Tab marks several' \
+          --expect=ctrl-p,ctrl-o <<<"$rows")" || exit 0
+key="$(head -1 <<<"$out")"; values="$(tail -n +2 <<<"$out" | cut -f2)"
+[[ -n "$values" ]] || exit 0
+case "$key" in
+  ctrl-p) tmux send-keys -t "$p" -l -- "$(paste -sd' ' <<<"$values")" ;;
+  ctrl-o) while IFS= read -r v; do open_item "$v"; done <<<"$values" ;;
+  *) printf '%s' "$values" | ws-copy 2>/dev/null || printf '%s' "$values" | tmux load-buffer -w -
+     tmux display -d 2000 "Copied: $(head -c 60 <<<"$values" | head -1)" ;;
+esac

@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+#
+# tmux-background — maintains the status bar and runs the background tasks. tmux-watch calls it on every bar refresh.
+#   Always (cheap, tmux options only):
+#     · each tab's Claude state with its time (tmux-status --all)
+#     · tab label, recording ⏺ and CI/PR in the tab formats
+#     · your personal segments in status-right, each one ONCE: ~/.config/ws-local/bar-extra.conf
+#       (one line per segment, e.g. #(~/.local/bin/ws-cache 30 ~/path/my-segment.sh); «# » = comment).
+#       That file is personal: it does not go into the team kit. It survives theme changes and config reloads.
+#   At most once a minute (WS_BACKGROUND_EVERY), one run at a time:
+#     · CI/PR/ticket of each tab (tmux-branch --update)
+#     · searchable history, if you turned it on (tmux-history --sample)
+#   Once a day: ws-personal sync (your personal configuration to the private repo)
+# Usage: tmux-background          everything
+#      tmux-background --bar    only the bar (used by extras.tmux when loading the configuration)
+set -uo pipefail
+B="$HOME/.local/bin"
+EXTRA="${WS_BAR_EXTRA:-$HOME/.config/ws-local/bar-extra.conf}"
+
+bar() {
+  [[ -x "$B/tmux-status" ]] && "$B/tmux-status" --all   # Claude state with its time (patch 56)
+  [[ -x "$B/tmux-label" ]] && "$B/tmux-label" --bar
+  [[ -x "$B/tmux-favorites" ]] && "$B/tmux-favorites" --bar
+  local o seg current
+  for o in window-status-format window-status-current-format; do
+    [[ "$(tmux show -gv "$o" 2>/dev/null)" == *"@cbranch"* ]] || tmux set -ag "$o" '#{?@crec, #{@crec},}#{?@cbranch, #[dim]#{@cbranch}#[nodim],}'
+  done
+  for o in window-status-format window-status-current-format; do   # 🔒/🔓 of the protection level (patch 59)
+    [[ "$(tmux show -gv "$o" 2>/dev/null)" == *"@clevel_ico"* ]] || tmux set -ag "$o" '#{?@clevel_ico, #{@clevel_ico},}'
+  done
+  # In focus mode the bar is minimal on purpose; on leaving, the previous one is restored (with your segments).
+  [[ -f "$EXTRA" && -z "$(tmux show -gqv @focus_end 2>/dev/null)" ]] || return 0
+  current="$(tmux show -gv status-right 2>/dev/null)"
+  while IFS= read -r seg || [[ -n "$seg" ]]; do
+    seg="${seg%$'\r'}"
+    [[ -z "${seg// /}" || "$seg" =~ ^#[[:space:]] || "$seg" == "#" ]] && continue
+    [[ "$current" == *"$seg"* ]] && continue
+    tmux set -ga status-right " $seg"; current+=" $seg"
+  done < "$EXTRA"
+}
+
+bar
+[[ "${1:-}" == --bar ]] && exit 0
+
+st="${XDG_RUNTIME_DIR:-/tmp}/tmux-background-$(id -u)"; mkdir -p "$st" 2>/dev/null && chmod 700 "$st"
+stamp="$st/last"
+if [[ -f "$stamp" ]] && (( $(date +%s) - $(stat -c %Y "$stamp") < ${WS_BACKGROUND_EVERY:-60} )); then exit 0; fi
+exec 9>"$st/lock"; flock -n 9 || exit 0
+touch "$stamp"
+[[ "$(tmux show -gqv @branch_bar)" == off ]] || timeout 50 "$B/tmux-branch" --update
+[[ "$(tmux show -gqv @history)" == on && -x "$B/tmux-history" ]] && timeout 30 "$B/tmux-history" --sample
+# Once a day: your personal configuration to the private repo (ws-personal, ADR-011). If it finds something that
+# looks like a secret it does not commit and notifies you.
+day="$st/personal-$(date +%F)"
+personal="${WS_PERSONAL_DIR:-$HOME/code/workstation-personal}"
+# Repo created before the rename: keep using it while the new directory does not exist.
+[[ -z "${WS_PERSONAL_DIR:-}" && ! -d "$personal" && -d "$HOME/code/estacion-personal" ]] && personal="$HOME/code/estacion-personal"
+if [[ ! -f "$day" && -x "$B/ws-personal" && -d "$personal/.git" ]]; then
+  touch "$day"
+  ( timeout 120 "$B/ws-personal" sync --quiet >/dev/null 2>&1 \
+      || "$B/ws-notify" "ws-personal: sync failed" "Check on the PC: ws-personal sync (possible secret or no network?)" ) &
+fi
+exit 0

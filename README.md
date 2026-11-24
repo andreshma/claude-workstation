@@ -18,8 +18,10 @@ clobbering** on another (`install.sh`): every file that changes is backed up fir
 > exported as templates; the standards the kit installs are generic. Telemetry stays on your machine. See
 > [SECURITY.md](SECURITY.md) and the [threat model](docs/THREAT_MODEL.md).
 
-> **Language.** Everything is in English: the interface (menus, status labels, messages), the code comments and the
-> documentation. Labels are quoted here as the screen shows them.
+> **Language.** Everything is in English: the interface (menus, status labels, messages), the commands, options and
+> stored values, the code comments and the documentation. `ws-lang es` also recognizes prompts typed in Spanish
+> ([Language](docs/USAGE.md#15-language)). Version 3.0 renamed the Spanish command names of 2.x: see
+> [Upgrading from 2.x names](docs/USAGE.md#18-upgrading-from-2x-names).
 
 ## Contents
 
@@ -68,12 +70,12 @@ bash install.sh --dry-run    # shows new / changed / same without writing
 bash install.sh              # detects your Windows user; otherwise pass --win-user
 
 # 3. Tools and health
-ws-tools install base nube calidad
+ws-tools install base cloud quality
 # install.sh also points git at the kit hooks (commit gate) unless you already use another hooks path
 ws-check && ws-health
 ```
 
-On Windows, run `windows\instalar.ps1` from PowerShell to add the terminal profile and shortcuts. Then start the
+On Windows, run `windows\install.ps1` from PowerShell to add the terminal profile and shortcuts. Then start the
 session with `dev`, press `Ctrl+b I` once to install the tmux plugins, and `Ctrl+b m` to open the menu.
 
 The installer options, the optional packages and the first run are described in
@@ -98,7 +100,7 @@ flowchart LR
     hooks["Hooks<br/>state, guard, routing, traces"]
     gate["Git hooks<br/>ws-gate"]
     otel["ws-otel<br/>OTLP collector on 127.0.0.1"]
-    telem[("Local telemetry<br/>~/.local/share/ws-telemetria")]
+    telem[("Local telemetry<br/>~/.local/share/ws-telemetry")]
   end
   api[("Claude API")]
   remote[("Git remote")]
@@ -119,15 +121,15 @@ flowchart LR
 Solid arrows are local calls and Claude Code's own traffic; dotted arrows are optional or on-demand paths.
 
 - **Per-tab state.** Claude Code hooks (`tmux-state.sh`) write the phase of each tab into tmux window options;
-  `tmux-estado` turns it into the label with its elapsed time. `tmux-watch` runs on every status refresh: it counts
+  `tmux-status` turns it into the label with its elapsed time. `tmux-watch` runs on every status refresh: it counts
   the tabs that wait for you (⚠), the stalled ones (⏳) and the estimated spend per hour (◉), sends Windows
   reminders, and keeps the local OpenTelemetry collector running.
 - **Guardrails.** Every tool call passes the PreToolUse hooks (`audit.sh`, `guard.sh`), the permission rules and the
   sandbox; every commit and push passes `ws-gate`.
-- **Protection levels.** `tmux-nivel` restarts Claude in the tab with the chosen level (`completo`, `normal`, `puro`,
+- **Protection levels.** `tmux-level` restarts Claude in the tab with the chosen level (`full`, `normal`, `bare`,
   or solo mode) and resumes the conversation. A floor of `deny` rules plus `guard.sh` stays on in every level.
 - **Telemetry.** Transcripts, hook traces, resource samples and the local OpenTelemetry collector feed
-  `ws-telemetria build`, which renders the dashboard and the data the reports read. Nothing is sent off the machine:
+  `ws-telemetry build`, which renders the dashboard and the data the reports read. Nothing is sent off the machine:
   the exporter endpoints in `~/.claude/settings.json` point to `127.0.0.1:14318`.
 
 The state lifecycle, the guardrail sequence, the protection-level table and the telemetry pipeline are in
@@ -139,16 +141,18 @@ Everything under `files/home/` is installed into `$HOME`, as listed in `manifest
 
 | Component | What it does | Where |
 |---|---|---|
-| tmux configuration | Tabs, status bar with agent state, menus, themes, tab templates, shell helpers (`tw`, `twt`, `two`, `tp`), account selection for new shells (`cuentas.sh`) | `.tmux.conf`, `.config/tmux-claude/` |
-| tmux commands | Repository and tab pickers, dashboard, active view, state painter (`tmux-estado`), watcher (`tmux-watch`), protection levels (`tmux-nivel`, `tmux-solo`), restart (`tmux-claude-restart`), subagents, focus mode, recording, screensaver (`tmux-saver`, `tmux-arte`), summaries | `.local/bin/tmux-*` |
-| Workstation commands | Health (`ws-check`, `ws-health`, `ws-verify`, `ws-auditoria`), backups, tools, the commit gate (`ws-gate`), telemetry and reports (`ws-telemetria`, `ws-informe`, `ws-otel`, `ws-hooks`), `ws-cache`, Telegram, secrets and redaction, handoff and learning, the behavior tests (`ws-test`) | `.local/bin/ws-*` |
-| Accounts | Two Claude accounts (`trabajo` = work, `personal`), per tab and per project | `.local/bin/claude-cuenta` |
+| tmux configuration | Tabs, status bar with agent state, menus, themes, tab templates, shell helpers (`tw`, `twt`, `two`, `tp`), account selection for new shells (`accounts.sh`) | `.tmux.conf`, `.config/tmux-claude/` |
+| tmux commands | Repository and tab pickers, dashboard, active view, state painter (`tmux-status`), watcher (`tmux-watch`), protection levels (`tmux-level`, `tmux-solo`), restart (`tmux-claude-restart`), subagents, focus mode, recording, screensaver (`tmux-saver`, `tmux-art`), summaries | `.local/bin/tmux-*` |
+| Workstation commands | Health (`ws-check`, `ws-health`, `ws-verify`, `ws-audit`), backups, tools, the commit gate (`ws-gate`), telemetry and reports (`ws-telemetry`, `ws-report`, `ws-otel`, `ws-hooks`), `ws-cache`, Telegram, secrets and redaction, handoff and learning, the behavior tests (`ws-test`) | `.local/bin/ws-*` |
+| Accounts | Two Claude accounts (`work`, `personal`), per tab and per project | `.local/bin/claude-account` |
 | Claude Code settings and hooks | Model, permissions, sandbox, OpenTelemetry export, status line and the hooks: state, audit, guard, routing, traces, notifications, lint on edit, document conversion | `.claude/settings.json`, `.claude/hooks/` |
-| Subagents | `arquitecto`, `depurador`, `explorador`, `sql-rapido` | `.claude/agents/` |
-| Working standards | Generic working standards; your organization's own go in your personal configuration | `.claude/CLAUDE.md`, `.claude/estandares.md` |
+| Subagents | `architect`, `debugger`, `explorer`, `sql-quick` | `.claude/agents/` |
+| Working standards | Generic working standards; your organization's own go in your personal configuration | `.claude/CLAUDE.md`, `.claude/standards.md` |
 | Git hooks | A chain that runs `ws-gate` and then each repository's own hooks | `.config/git/hooks/` |
 | Prompt | Prompt with folder, branch, Kubernetes, Azure and AWS context; production contexts in red | `.config/starship.toml` |
+| Language packs | `ws-lang` selects `en` or `es`; the packs hold the words and expressions the hooks, routing, Telegram and reports recognize in prompts and answers | `.local/bin/ws-lang`, `.local/lib/ws-lang.sh`, `.local/lib/ws-lang/` |
 | MCP servers | User-level MCP servers; those whose executable is missing are skipped with a warning | `files/mcp-servers.json` |
+| Installer | Export, install with backups, and the migration of the names used before 3.0 | `export.sh`, `install.sh`, `migrate.sh`, `renames.tsv`, `lib.sh` |
 | Windows side | PowerShell profile (`dev`, `devo`…) and installer | `windows/` |
 
 Kept out of the repository on purpose: conversations, audit logs, telemetry, credentials and backups.
@@ -168,9 +172,9 @@ The full guide is [docs/USAGE.md](docs/USAGE.md). `Ctrl+b` is the tmux prefix: p
 | Send a side pane to Claude | `Ctrl+b e` |
 | Ask a quick question | `Ctrl+b ?` |
 | Pick the model per task | `cr "task"`, or Menu → "Claude in this tab" → "Model" |
-| Change the protection level | Menu → "Claude in this tab" → "Protection", or `tmux-nivel completo\|normal\|puro` |
-| Switch a tab to the other account | Menu → "Claude in this tab" → "Switch this tab to the … account (same conversation)", or `claude-cuenta pestaña` |
-| List every shortcut | `Ctrl+b h`; full manual with `ws-menus --ver` |
+| Change the protection level | Menu → "Claude in this tab" → "Protection", or `tmux-level full\|normal\|bare` |
+| Switch a tab to the other account | Menu → "Claude in this tab" → "Switch this tab to the … account (same conversation)", or `claude-account tab` |
+| List every shortcut | `Ctrl+b h`; full manual with `ws-menus --show` |
 
 Pinning a project to an account, restarting Claude in every tab, answering from the phone, handing work over to
 another Claude and the usage reports are covered in the guide.
@@ -179,14 +183,14 @@ another Claude and the usage reports are covered in the guide.
 
 | Command | What you get |
 |---|---|
-| `ws-telemetria abrir` | Usage dashboard: today, 7 and 30 days; **trends** (last 7 days against the previous 7, cost per week and project, model mix per week, turn duration, cache and reasoning share, hour-of-day heat map); per project, model, session and tool; resources and network; **API, permissions and active time** from OpenTelemetry; **estimation ratios** |
-| `ws-informe [--ia]` | 30-day report in HTML and Markdown: what to improve and what to create (rule-based, with evidence), weekly trend, tokens and words, machine resources, an **estimation baseline** per project (active hours, turns, tokens, words, lines, cost per hour), **estimation ratios**, agents, recurring prompts, tools, MCP servers, skills and what Claude has learned about you. `--ia` adds findings written by Claude from the aggregated metrics only |
-| `ws-otel estado`, `ws-otel resumen` | Local OpenTelemetry collector: state, port and signals stored today; counts per signal and event. Also `iniciar`, `detener` |
-| `ws-hooks` | Time spent in hooks per event, as measured by Claude Code (needs `ws-otel`). `ws-hooks tiempo SessionStart` runs each hook separately to find the slow one |
-| `ws-telemetria estimar` | Active hours, cost, lines and commits per ticket (taken from the branch name) |
-| `ws-telemetria semana` | Last week against the one before, in Markdown |
-| `ws-telemetria presupuestos` | Monthly budgets per project with projection |
-| `ws-telemetria exportar`, `ws-telemetria sql` | CSV for Excel or Power BI; ad-hoc SQL with DuckDB |
+| `ws-telemetry open` | Usage dashboard: today, 7 and 30 days; **trends** (last 7 days against the previous 7, cost per week and project, model mix per week, turn duration, cache and reasoning share, hour-of-day heat map); per project, model, session and tool; resources and network; **API, permissions and active time** from OpenTelemetry; **estimation ratios** |
+| `ws-report [--ai]` | 30-day report in HTML and Markdown: what to improve and what to create (rule-based, with evidence), weekly trend, tokens and words, machine resources, an **estimation baseline** per project (active hours, turns, tokens, words, lines, cost per hour), **estimation ratios**, agents, recurring prompts, tools, MCP servers, skills and what Claude has learned about you. `--ai` adds findings written by Claude from the aggregated metrics only |
+| `ws-otel status`, `ws-otel summary` | Local OpenTelemetry collector: state, port and signals stored today; counts per signal and event. Also `start`, `stop` |
+| `ws-hooks` | Time spent in hooks per event, as measured by Claude Code (needs `ws-otel`). `ws-hooks time SessionStart` runs each hook separately to find the slow one |
+| `ws-telemetry estimate` | Active hours, cost, lines and commits per ticket (taken from the branch name) |
+| `ws-telemetry week` | Last week against the one before, in Markdown |
+| `ws-telemetry budgets` | Monthly budgets per project with projection |
+| `ws-telemetry export`, `ws-telemetry sql` | CSV for Excel or Power BI; ad-hoc SQL with DuckDB |
 
 **Estimation ratios** (30 days) are unit rates for projecting work: your words and Claude's words per turn, tokens per
 word, model calls and tool calls per turn, output speed, cost per turn, per thousand words, per million tokens and per
@@ -201,7 +205,7 @@ Two kinds of data, with different content rules:
   no file contents.
 - **The local OpenTelemetry collector** (`ws-otel`, [ADR 0014](docs/adr/0014-local-opentelemetry-collector.md)) stores
   everything Claude Code emits, including prompt, response and tool text, with secrets that are recognizable by their
-  shape replaced by `[SECRET]`. Set `WS_OTEL_CONTENIDO=0` to keep counts, timings and names only.
+  shape replaced by `[SECRET]`. Set `WS_OTEL_CONTENT=0` to keep counts, timings and names only.
 
 ## Configuration
 
@@ -218,32 +222,33 @@ of the target machine.
 | Setting | Default | Meaning |
 |---|---|---|
 | `~/.config/tmux-claude/roots.txt` | Installed by the kit | Repository roots for the picker, one per line as `label\|depth\|path` |
-| `~/.config/ws-ruteo/reglas.conf` | Installed by the kit | Routing rules; the first match wins |
-| `~/.config/ws-telemetria/precios.json` | Not present; the built-in price table applies | Model prices |
-| `~/.config/ws-telemetria/presupuestos.conf` | Not present | Monthly budgets |
-| `~/.config/ws-local/barra-extra.conf` | Not present; not part of the kit | Extra status bar segments |
-| `~/.config/claude-cuentas/activa` | `trabajo` | Account for new tabs (written by `claude-cuenta`) |
-| `~/.config/claude-cuentas/proyectos.conf` | Not present | Accounts pinned per project (written by `claude-cuenta`) |
-| `~/.config/tmux-claude/apariencia` | Screensaver on, random scene, 10 minutes | Theme and screensaver preferences |
-| `~/.config/tmux-claude/galeria` | Not present | Screensaver images |
+| `~/.config/ws-routing/rules.conf` | Installed by the kit | Routing rules; the first match wins |
+| `~/.config/ws-telemetry/prices.json` | Not present; the built-in price table applies | Model prices |
+| `~/.config/ws-telemetry/budgets.conf` | Not present | Monthly budgets |
+| `~/.config/ws-local/bar-extra.conf` | Not present; not part of the kit | Extra status bar segments |
+| `~/.config/claude-accounts/active` | `work` | Account for new tabs (written by `claude-account`) |
+| `~/.config/claude-accounts/projects.conf` | Not present | Accounts pinned per project (written by `claude-account`) |
+| `~/.config/tmux-claude/appearance` | Screensaver on, random scene, 10 minutes | Theme and screensaver preferences |
+| `~/.config/tmux-claude/gallery` | Not present | Screensaver images |
+| `~/.config/tmux-claude/lang` | `en`; `es` on an installation migrated from 2.x | Language of the prompts and answers the kit recognizes, and the language Claude writes reports in (written by `ws-lang`; `WS_LANG` overrides it) |
 | Secrets | Windows Credential Manager | Stored through `ws-secret`; never files or exported variables |
 
-Environment variables and tmux options are listed in [docs/USAGE.md](docs/USAGE.md#17-command-reference).
+Environment variables and tmux options are listed in [docs/USAGE.md](docs/USAGE.md#19-command-reference).
 
 ### Two Claude accounts
 
-`claude-cuenta` keeps a work account (`trabajo`, in `~/.claude`) and a personal one (in `~/.claude-personal`, selected
+`claude-account` keeps a work account (`work`, in `~/.claude`) and a personal one (in `~/.claude-personal`, selected
 with `CLAUDE_CONFIG_DIR`). Each has its own login; both share settings, hooks, agents, conversations and history, so
 switching a tab keeps the same conversation.
 
 ```bash
-claude-cuenta setup                      # once: prepares ~/.claude-personal
-claude-cuenta login personal             # logs in to the personal account
-claude-cuenta usar trabajo|personal      # account for new tabs
-claude-cuenta pestaña                    # switches the current tab to the other account
-claude-cuenta proyecto personal ~/code/x # pins a repository (and its worktrees) to an account
-claude-cuenta proyectos                  # lists pinned projects
-claude-cuenta estado                     # default account, organization of each, pinned projects
+claude-account setup                      # once: prepares ~/.claude-personal
+claude-account login personal             # logs in to the personal account
+claude-account use work|personal          # account for new tabs
+claude-account tab                        # switches the current tab to the other account
+claude-account project personal ~/code/x  # pins a repository (and its worktrees) to an account
+claude-account projects                   # lists pinned projects
+claude-account status                     # default account, organization of each, pinned projects
 ```
 
 A pinned project wins over the default account: every new tab opened there uses the pinned account.
@@ -256,8 +261,8 @@ organization's standards) does not belong in this kit. `ws-personal` keeps it in
 
 ```bash
 ws-personal init --github     # once: creates the private repository and pushes it
-ws-personal agregar .config/something/mine.conf
-ws-personal restaurar         # on a new PC, after install.sh
+ws-personal add .config/something/mine.conf
+ws-personal restore           # on a new PC, after install.sh
 ```
 
 ## Security model
@@ -281,10 +286,10 @@ The full analysis, with residual risks, is in [docs/THREAT_MODEL.md](docs/THREAT
 - **Telemetry is local.** Hook traces hold no prompt text. The local OpenTelemetry collector does keep content on disk
   (the owner's choice, ADR 0014), with recognizable secrets masked and files readable only by the user. Text that
   leaves the machine through the kit's own channels (Telegram messages, panes pasted into Claude, handoff summaries)
-  is redacted first with `ws-redactar`.
+  is redacted first with `ws-redact`.
 - **Telegram control** answers only the owner's chat, with one-time codes that expire in 10 minutes. Free-text replies
   are off by default and require a PIN. Commands proposed by Claude are never offered or run in tabs without a sandbox
-  (`puro` or solo mode) and are checked against two block lists.
+  (`bare` or solo mode) and are checked against two block lists.
 - **Supply chain**: CI uses only GitHub's own actions; gitleaks is downloaded at a pinned version and verified by
   checksum; `ws-tools` installs from apt, pipx or GitHub releases verified against their checksum; Dependabot watches
   the workflows.
@@ -297,10 +302,10 @@ Details in [docs/TESTING.md](docs/TESTING.md).
 
 | Command | Scope |
 |---|---|
-| `bash tests/run.sh` | Installer and exporter in temporary homes (templates, secret blocking, backups, idempotence), JSON and shellcheck of the payload, and the guard tests |
+| `bash tests/run.sh` | Installer and exporter in temporary homes (templates, secret blocking, backups, idempotence, migration of the names used before 3.0), JSON and shellcheck of the payload, and the guard tests |
 | `bash tests/guard.sh` | The PreToolUse guard: bypass variants, false positives and fail-closed behavior |
 | `ws-test` | Behavior of the **installed** workstation, with an isolated home, isolated tmux sockets and a simulated Claude; costs no usage |
-| `ws-test --ia` | The same plus non-deterministic checks against the real Claude |
+| `ws-test --ai` | The same plus non-deterministic checks against the real Claude |
 | `ws-verify` | Read-only verification before pushing: scripts, tmux, Claude Code settings, the kit and the tests |
 
 CI runs lint (shellcheck, Python compile, JSON, tmux syntax), SAST and secret scanning (bandit, gitleaks),
@@ -315,9 +320,12 @@ Beta, used daily by its author on Windows 11 with WSL2 (Ubuntu 24.04), tmux 3.4 
 Known limits:
 
 - Windows with WSL2 only.
-- The interface, messages, comments and documentation are in English, but command names (`tmux-nivel`,
-  `ws-telemetria`, `claude-cuenta`…), flags (`--todas`, `--lista`) and some stored values (`completo`, `puro`,
-  `trabajo`) are still Spanish, pending a rename.
+- Version 3.0 is a breaking release: commands, options, environment variables, folders and stored values were renamed
+  from Spanish to English. The installer migrates an existing installation and leaves wrappers under the old command
+  names until the next major version; scripts and spreadsheets that use the old subcommands, options or CSV and JSON
+  keys must be updated ([Upgrading from 2.x names](docs/USAGE.md#18-upgrading-from-2x-names)).
+- The interface is English only; `ws-lang` selects which languages are recognized in prompts, not the language of the
+  menus ([ADR 0015](docs/adr/0015-english-names-and-language-selector.md)).
 - Hook-based traces and OpenTelemetry data exist only from the day the workstation is installed, while cost and token
   history is rebuilt from the transcripts Claude Code keeps.
 - OpenTelemetry traces are a beta feature of Claude Code and may change.
@@ -335,7 +343,7 @@ Roadmap pointers: phase 2 of ADR 0013 is still pending and is listed in the
 | [docs/TESTING.md](docs/TESTING.md) | Which test suites exist, what each covers and how CI runs them |
 | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | Which assets, trust boundaries, threats, controls, residual risks and pending work exist |
 | [docs/runbook.md](docs/runbook.md) | How to operate, upgrade and recover the workstation, step by step |
-| [docs/adr/](docs/adr/README.md) | Which architecture decisions were made and why |
+| [docs/adr/](docs/adr/README.md) | Which architecture decisions were made and why; the latest is [0015](docs/adr/0015-english-names-and-language-selector.md), English names and the language selector |
 | [CHANGELOG.md](CHANGELOG.md) | What changed in each release (Keep a Changelog) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to set up, change, test and document a contribution |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Which behavior is expected and how to report a problem |

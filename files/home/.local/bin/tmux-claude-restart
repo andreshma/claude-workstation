@@ -5,39 +5,39 @@
 # If the pane already has a shell, it only starts claude-resume. If Claude does not exit in 15 s,
 # it says so and types nothing else.
 #
-# tmux-claude-restart --todas [--tambien-ocupadas]
+# tmux-claude-restart --all [--include-busy]
 #   Exits and re-enters ALL the tabs with Claude, each one resuming its conversation, so they pick up the new
 #   configuration after installing or updating (rules, hooks, telemetry). By default it does NOT touch the ones that
-#   are working or waiting for your answer in a dialog (pensando, herramienta, compactando, permiso, pregunta):
-#   it counts them and leaves them alone. It respects each tab's protection level (completo or puro); the ones in
-#   solo mode are left alone. --tambien-ocupadas restarts those too (interrupts whatever they are doing).
-#   --lista only shows what it would do.
+#   are working or waiting for your answer in a dialog (thinking, tool, compacting, permission, question):
+#   it counts them and leaves them alone. It respects each tab's protection level (full or bare); the ones in
+#   solo mode are left alone. --include-busy restarts those too (interrupts whatever they are doing).
+#   --list only shows what it would do.
 set -uo pipefail
 
-todas() {
-  local forzar=0 lista=0 n=0 ocup=0 solo=0 pane fase nivel csolo cmd nom T=$'\t' pids=()
-  for a in "$@"; do case "$a" in --tambien-ocupadas) forzar=1 ;; --lista) lista=1 ;; esac; done
+restart_all() {
+  local force=0 list=0 n=0 busy=0 solo=0 pane phase level csolo cmd name T=$'\t' pids=()
+  for a in "$@"; do case "$a" in --include-busy) force=1 ;; --list) list=1 ;; esac; done
   # «-» in the empty fields: tmux 3.4 collapses consecutive tabs when reading.
-  while IFS="$T" read -r pane fase nivel csolo cmd nom; do
+  while IFS="$T" read -r pane phase level csolo cmd name; do
     [[ -n "$pane" ]] || continue
     case "$cmd" in bash|zsh|sh|dash|fish) continue ;; esac          # Claude is not running there
-    if (( ! forzar )) && [[ "$fase" =~ ^(pensando|herramienta|compactando|permiso|pregunta)$ ]]; then
-      ocup=$((ocup + 1)); (( lista )) && echo "busy     $nom ($fase)"; continue
+    if (( ! force )) && [[ "$phase" =~ ^(thinking|tool|compacting|permission|question)$ ]]; then
+      busy=$((busy + 1)); (( list )) && echo "busy     $name ($phase)"; continue
     fi
-    if [[ "$csolo" != - ]]; then solo=$((solo + 1)); (( lista )) && echo "solo     $nom (left as is)"; continue; fi
+    if [[ "$csolo" != - ]]; then solo=$((solo + 1)); (( list )) && echo "solo     $name (left as is)"; continue; fi
     n=$((n + 1))
-    if (( lista )); then echo "restart  $nom$([[ "$nivel" != - ]] && echo " (level $nivel)")"; continue; fi
-    if [[ "$nivel" == completo || "$nivel" == puro ]]; then "$HOME/.local/bin/tmux-nivel" "$nivel" "$pane" >/dev/null 2>&1 &
+    if (( list )); then echo "restart  $name$([[ "$level" != - ]] && echo " (level $level)")"; continue; fi
+    if [[ "$level" == full || "$level" == bare ]]; then "$HOME/.local/bin/tmux-level" "$level" "$pane" >/dev/null 2>&1 &
     else "$0" "$pane" >/dev/null 2>&1 & fi
     pids+=("$!")
-  done < <(tmux list-panes -a -F "#{pane_id}${T}#{?#{@cfase},#{@cfase},-}${T}#{?#{@cnivel},#{@cnivel},-}${T}#{?#{@csolo},1,-}${T}#{pane_current_command}${T}#{window_index} #{window_name}${T}#{?#{==:#{@cpane},#{pane_id}},si,no}" 2>/dev/null \
-            | awk -F"$T" -v OFS="$T" '$7 == "si" { print $1, $2, $3, $4, $5, $6 }')
-  (( lista )) && return 0
+  done < <(tmux list-panes -a -F "#{pane_id}${T}#{?#{@cphase},#{@cphase},-}${T}#{?#{@clevel},#{@clevel},-}${T}#{?#{@csolo},1,-}${T}#{pane_current_command}${T}#{window_index} #{window_name}${T}#{?#{==:#{@cpane},#{pane_id}},yes,no}" 2>/dev/null \
+            | awk -F"$T" -v OFS="$T" '$7 == "yes" { print $1, $2, $3, $4, $5, $6 }')
+  (( list )) && return 0
   (( ${#pids[@]} )) && wait "${pids[@]}" 2>/dev/null
-  tmux display -d 6000 "Claude restarted in $n tab(s)$( (( ocup )) && echo " · $ocup busy left as is" )$( (( solo )) && echo " · $solo in solo mode untouched" )"
+  tmux display -d 6000 "Claude restarted in $n tab(s)$( (( busy )) && echo " · $busy busy left as is" )$( (( solo )) && echo " · $solo in solo mode untouched" )"
 }
 
-if [[ "${1:-}" == --todas ]]; then shift; todas "$@"; exit 0; fi
+if [[ "${1:-}" == --all ]]; then shift; restart_all "$@"; exit 0; fi
 
 p="${1:?pane}"
 cmd() { tmux display -p -t "$p" '#{pane_current_command}'; }

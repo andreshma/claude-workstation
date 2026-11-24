@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+#
+# tmux-recover — recovers the tmux tabs from any tmux-resurrect save.
+#
+# Usage:
+#   tmux-recover                 lists the saves (time, tabs, names) and restores the chosen one
+#   tmux-recover --mark-startup   (called by .tmux.conf when the server starts) remembers which was the
+#                                  last save BEFORE anything could overwrite it with an empty session
+#   tmux-recover --auto-startup     (called by .tmux.conf in the background) if after startup the session
+#                                  ended up empty and the startup save had tabs, it restores it by itself
+#   tmux-recover --validate       (resurrect post-save-all hook) if a save came out empty (it happens when
+#                                  closing tmux: panes close while it is saving), it deletes it
+#                                  and points "last" at the latest save with tabs
+# It only deletes empty saves; for the rest, it changes what "last" points to and uses resurrect's restore.
+# WS_RECOVER_WAIT: seconds to wait before auto-restoring (20; the tests use less).
+set -uo pipefail
+R="$HOME/.local/share/tmux/resurrect"
+RESTORE="$HOME/.tmux/plugins/tmux-resurrect/scripts/restore.sh"
+MARK="$R/last-at-startup"
+
+server_age() { echo $(( $(date +%s) - $(tmux display -p '#{start_time}' 2>/dev/null || echo 0) )); }
+tab_count() { local n; n="$(grep -c '^window' "$1" 2>/dev/null)"; echo "${n:-0}"; }
+# names <file> — names of the saved tabs, comma-separated.
+names() { awk -F'\t' '$1 == "window" { sub(/^:/, "", $4); printf "%s%s", (n++ ? ", " : ""), $4 }' "$1" 2>/dev/null; }
+
+# last_valid [EXCLUDE] — the most recent save that is not empty and has at least one tab.
+last_valid() {
+  local f
+  while IFS= read -r f; do
+    [[ "$f" == "${1:-}" ]] && continue
+    [[ -s "$f" ]] && (( $(tab_count "$f") >= 1 )) && { echo "$f"; return 0; }
+  done < <(find "$R" -maxdepth 1 -name 'tmux_resurrect_*.txt' -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
+  return 1
+}
+
+restore() {
+  ln -sf "$1" "$R/last"
+  # -b: the restore runs inside the tmux server; the caller does not wait for it
+  # (a synchronous run-shell from a pane can hang while the panes are being recreated).
+  tmux run-shell -b "$RESTORE"
+  tmux display "Restored: $(basename "$1") ($(tab_count "$1") tabs)"
+}
+
+case "${1:-}" in
+  --mark-startup)
+    # Only on a real server start (not when reloading the configuration). If "last" ended up
+    # empty (interrupted shutdown), the latest save with tabs is marked.
+    (( $(server_age) < 30 )) || exit 0
+    target="$(readlink -f "$R/last" 2>/dev/null)"
+    if [[ -s "$target" ]] && (( $(tab_count "$target") >= 1 )); then cp -P "$R/last" "$MARK"
+    elif good="$(last_valid)"; then ln -sf "$good" "$MARK"; fi
+    exit 0 ;;
+
+  --validate)
+    target="$(readlink -f "$R/last" 2>/dev/null)"
+    [[ -n "$target" ]] || exit 0
+    if [[ ! -s "$target" ]] || (( $(tab_count "$target") == 0 )); then
+      good="$(last_valid "$target")" && ln -sf "$good" "$R/last"
+      [[ -s "$target" ]] || rm -f "$target"                   # only empty saves are deleted
+    fi
+    exit 0 ;;
+
+  --auto-startup)
+    sleep "${WS_RECOVER_WAIT:-20}"   # lets continuum finish; if it restored, there are tabs by now
+    target="$(readlink -f "$MARK" 2>/dev/null)"
+    [[ -s "$target" ]] || target="$(last_valid)" || exit 0
+    open_count="$(tmux list-windows -a 2>/dev/null | wc -l)"
+    saved_count="$(tab_count "$target")"
+    # Only if the session ended up practically empty, the save had more and it was marked at THIS startup. The age
+    # of the save itself says nothing: resurrect discards a save equal to the previous one, so tabs that did not
+    # change for days keep an old file (a 24 h limit used to leave a 40-tab session unrestored).
+    if (( open_count <= 1 && saved_count >= 2 )) && (( $(date +%s) - $(stat -c %Y "$MARK" 2>/dev/null || echo 0) < 600 )); then
+      restore "$target"
+    fi
+    exit 0 ;;
+esac
+
+# Interactive: pick a save with fzf.
+command -v fzf >/dev/null || { echo "fzf is missing"; exit 1; }
+mark="$(readlink -f "$MARK" 2>/dev/null || true)"
+chosen="$(
+  find "$R" -maxdepth 1 -name 'tmux_resurrect_*.txt' -printf '%T@ %p\n' | sort -rn | head -40 | cut -d' ' -f2- |
+  while IFS= read -r f; do
+    t="$(basename "$f" .txt)"; t="${t#tmux_resurrect_}"
+    label=""; [[ "$f" == "$mark" ]] && label="  ← at startup"
+    printf '%s\t%s %s:%s  %2s tabs  %s%s\n' "$f" "${t:0:4}-${t:4:2}-${t:6:2}" "${t:9:2}" "${t:11:2}" \
+      "$(tab_count "$f")" "$(names "$f" | cut -c1-70)" "$label"
+  done | fzf --with-nth=2.. --delimiter='\t' --no-sort --reverse \
+      --header='Pick the save to restore (the most recent one with your tabs, before the problem)' \
+  | cut -f1
+)"
+[[ -n "$chosen" ]] || exit 0
+read -rp "Restore $(basename "$chosen") ($(tab_count "$chosen") tabs)? [y/N] " r
+[[ "$r" =~ ^([yY]([eE][sS])?|[sS]([iIíÍ])?)$ ]] && restore "$chosen"

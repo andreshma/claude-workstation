@@ -6,8 +6,8 @@
 ## Context and problem statement
 
 This record was written retroactively, on 2026-11-24. The original text of ADR-008 is not in this repository; the
-decision is reconstructed from the changelog (versions 1.8.0 and 1.30.0), from the header of `ws-telemetria` and
-`ws-trazas.sh`, which name this ADR, and from [ADR 0014](0014-local-opentelemetry-collector.md), which amends it. The
+decision is reconstructed from the changelog (versions 1.8.0 and 1.30.0), from the header of `ws-telemetry` and
+`ws-traces.sh`, which name this ADR, and from [ADR 0014](0014-local-opentelemetry-collector.md), which amends it. The
 date is the release date of version 1.8.0.
 
 Several Claude Code sessions run all day across repositories and nobody knows what the usage looks like: how many
@@ -17,7 +17,7 @@ exact token counts of each response.
 
 ### Later changes
 
-- Phase F2 (version 1.30.0, 2026-11-19) added hook traces (`ws-trazas.sh`), under the same content rule: counts,
+- Phase F2 (version 1.30.0, 2026-11-19) added hook traces (`ws-traces.sh`), under the same content rule: counts,
   timings and names, never content.
 - [ADR 0014](0014-local-opentelemetry-collector.md) relaxes the content rule for the local OpenTelemetry collector
   only: it may store prompt, response and tool text, still on the machine.
@@ -36,7 +36,7 @@ one described under Decision.
 
 ## Decision
 
-Telemetry is local first. `ws-telemetria` reads local sources only, all read-only:
+Telemetry is local first. `ws-telemetry` reads local sources only, all read-only:
 
 - the Claude Code transcripts (`~/.claude/projects/**.jsonl`): exact tokens per response (input, output, cache written
   and read, reasoning), model, session, folder, branch and subagents; responses repeated by streaming are counted once;
@@ -44,9 +44,9 @@ Telemetry is local first. `ws-telemetria` reads local sources only, all read-onl
 - samples of the Claude processes taken every minute from `/proc`: CPU, memory, disk operations and bytes per project.
 
 It never stores the text of prompts or responses: only lengths, counts and tool names. Cost is the equivalent at API
-prices, from a price table that `~/.config/ws-telemetria/precios.json` can override. The data lives in
-`~/.local/share/ws-telemetria` with mode 0700 and is kept for 13 months. An HTML dashboard is regenerated every minute
-and reloads by itself; `ws-telemetria resumen` prints a summary and `ws-telemetria sql` queries the data with DuckDB,
+prices, from a price table that `~/.config/ws-telemetry/prices.json` can override. The data lives in
+`~/.local/share/ws-telemetry` with mode 0700 and is kept for 13 months. An HTML dashboard is regenerated every minute
+and reloads by itself; `ws-telemetry summary` prints a summary and `ws-telemetry sql` queries the data with DuckDB,
 which is optional.
 
 ## Consequences

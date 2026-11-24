@@ -48,10 +48,10 @@ Security rules of the channel:
 - Before sending the key, the screen is read again: if the dialog changed, nothing is sent.
 - There are only closed options (a number or Escape); never free text.
 - The screen text is redacted (tokens, keys, passwords) before it leaves the PC.
-- Everything is logged in `~/.local/share/ws-telemetria/telegram/`, without the screen text.
+- Everything is logged in `~/.local/share/ws-telemetry/telegram/`, without the screen text.
 
-The channel is optional and is set up with `ws-telegram configurar`; the menu and `ws-telegram encender`, `apagar`
-turn it on and off, and `ws-telegram olvidar` deletes token, chat and state.
+The channel is optional and is set up with `ws-telegram setup`; the menu and `ws-telegram on`, `off`
+turn it on and off, and `ws-telegram forget` deletes token, chat and state.
 
 ## Consequences
 

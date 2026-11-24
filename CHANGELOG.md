@@ -6,22 +6,85 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+The next version is **3.0.0**: this is a breaking release. Commands, options, variables, folders and stored values
+change name; see [Upgrading from 2.x names](docs/USAGE.md#18-upgrading-from-2x-names).
+
 ### Added
 
-- **Favorite tabs** (`tmux-favoritos`): `Ctrl+b *` adds or removes the current tab's folder, which shows a ★ in the
+- Personal folder roots for `tmux-open` in `~/.config/ws-local/roots.txt`, which the installer never replaces.
+- **Favorite tabs** (`tmux-favorites`): `Ctrl+b *` adds or removes the current tab's folder, which shows a ★ in the
   status bar, and `Ctrl+b F` (or Menu → `F`) lists the favorites, open or not; Enter goes to the tab or opens the folder
   with Claude in its group, and `Ctrl+X` removes it from the list. The mark belongs to the folder, so it survives
-  closing the tab and restarting tmux; it is kept in `~/.config/tmux-claude/favoritos`. `tmux-open --dir <folder>` opens
+  closing the tab and restarting tmux; it is kept in `~/.config/tmux-claude/favorites`. `tmux-open --dir <folder>` opens
   a folder without asking.
+- **Language selector** (`ws-lang en|es`) and **language packs** (`~/.local/lib/ws-lang/en.conf`, `es.conf`, and
+  `rules.es.conf` for the routing rules). `en` recognizes English in prompts and answers; `es` recognizes English and
+  Spanish and asks Claude to write reports and handoffs in Spanish. The setting is `~/.config/tmux-claude/lang`
+  (`WS_LANG` overrides it) and the Workstation menu switches it. `cr --test` has one task set per language
+  ([ADR 0015](docs/adr/0015-english-names-and-language-selector.md)).
+- **Installer migration** from the names used before 3.0 (`migrate.sh`, `renames.tsv`): your data and settings are
+  moved to the new names and never overwritten, old commands and hooks are replaced by wrappers that call the new
+  names, and old kit files are set aside in `~/.local/share/ws-kit/pre-english.<date>/`. `install.sh --dry-run`
+  previews it; a migrated installation is set to `ws-lang es`.
+- `install.sh --remove-shims` deletes the wrappers left under the old command names.
 
 ### Changed
 
-- **The whole kit is now in English**: the interface (menus, status labels, messages, notifications), the code
-  comments and the documentation. Command names, flags and some stored values are still Spanish words, pending a
-  rename. Entries below quote the Spanish labels that existed when they were written.
+- **Breaking: every name is now English.** The interface (menus, status labels, messages, notifications), the code
+  comments and the documentation were translated, and commands, subcommands, options, environment variables, tmux
+  options, configuration and state folders, stored values (protection levels `full` and `bare`, account `work`, themes,
+  scene names, tab phases) and telemetry field names were renamed. The old and new names are listed in
+  [Upgrading from 2.x names](docs/USAGE.md#18-upgrading-from-2x-names). Entries below this one keep the names that
+  existed when they were written.
+- CSV exports and JSON output (`ws-telemetry export`, `ws-telemetry estimate --csv` and `--json`, `ws-report --json`)
+  use English column and key names. Telemetry recorded before the upgrade is still read: old records are translated
+  when loaded and the files are not rewritten.
+- Regular expressions and word lists that match Spanish prompts and answers moved out of the scripts into the Spanish
+  language pack; they are active only with `ws-lang es`.
+- After upgrading, restart the tmux server (`tmux kill-server`, then open the session again).
+- CI job names are English: `SAST and secrets (bandit, gitleaks)`, `Kit tests`, `Clean install (Ubuntu 24.04)`.
+  Update branch-protection rules that list required checks.
 - The documentation follows a shared structure: the same files, sections and order as the owner's other repositories.
   New `docs/DIAGRAMS.md` collects every diagram; `docs/adr/` gains an index, a template and the records 0008 to 0010,
-  written retroactively; `docs/README.es.md` is removed.
+  written retroactively.
+
+### Deprecated
+
+- The wrappers under the old command and hook names (`tmux-nivel`, `ws-telemetria`, `ws-trazas.sh` and the rest of
+  the table in `docs/USAGE.md`) and the `claude-trabajo` shell alias. They are removed in the next major version.
+- The compatibility readers for old names: `tmux-level completo|puro`, the Spanish scene names, `ws-cache --tope`,
+  `WS_OTEL_CONTENIDO`, `WS_OTEL_PUERTO`, `WS_OTEL_RETENCION_DIAS`, the Spanish keys in `appearance`, `settings`,
+  `settings.conf`, `cloud.conf` and the Telegram settings, the `age-respaldo` credential, the OneDrive folder
+  `Respaldos\estacion-wsl` and the personal repository `~/code/estacion-personal`. They are removed in the next major
+  version.
+
+### Removed
+
+- `docs/README.es.md`.
+
+### Fixed
+
+- Restarting Claude from the menus (protection level, solo mode, account switch, restart in all tabs) now clears the
+  input box first and falls back to `Ctrl+C` twice when Claude does not exit.
+- `tmux-level` no longer fails when the tmux server's `PATH` lacks `~/.local/bin`, or when error output was captured
+  into the command it types.
+- The favorites test in `ws-test` no longer depends on the owner's own favorites.
+- `tmux-open` failed with "invalid session" for a folder outside every root (the group name came out empty); such
+  folders now open in the group `other`.
+- After a tmux restart the tabs were not restored when the last save was more than 24 hours old, which is the normal
+  case when the tabs did not change (identical saves are discarded). The automatic restore now depends on the save
+  having been marked at this startup, not on its age.
+- A tmux server started without `~/.local/bin` in `PATH` (from Windows Terminal, without a login shell) made scripts
+  that call each other by name fail (`ws-redact: command not found`); `.tmux.conf` now adds it to the server.
+- The sandbox recreated the pre-3.0 folders it was told to deny; `denyRead` lists only the current paths, and the
+  migration removes an empty leftover instead of reporting a conflict.
+
+### Security
+
+- The `deny` rules cover the copilot credentials and the OpenTelemetry store under both their new and their old
+  paths (`~/.config/anthropic-copiloto`, `~/.local/share/ws-telemetria/otel`), so Claude's own tools stay blocked
+  during the migration. The sandbox `denyRead` list names only the new paths: a sandbox mount of the old ones
+  would recreate the folders the migration has just moved.
 
 ## [2.7.0] - 2026-11-23
 

@@ -21,14 +21,14 @@ min="${CLAUDE_NOTIFY_MIN_SECS:-20}"
 js() { jq -r "$1 // empty" <<<"$input" 2>/dev/null; }
 b64() { printf '%s' "$1" | base64 -w0; }
 # Claude's last message: from the hook or, if it is not there, from the end of the transcript.
-ultimo_msg() {
+last_msg() {
   local m; m="$(js .last_assistant_message)"
   [[ -n "$m" ]] || m="$(tail -n 80 "$(js .transcript_path)" 2>/dev/null \
     | jq -rs '[.[] | select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text] | last // ""' 2>/dev/null)"
   printf '%s' "$m"
 }
 # All of Claude's text in this turn (since your last message): commands may come in intermediate messages.
-textos_turno() {
+turn_texts() {
   local tp; tp="$(js .transcript_path)"; [[ -f "$tp" ]] || return 0
   tail -n 600 "$tp" | jq -rs '
     (to_entries | map(select(.value.type == "user" and ((.value.message.content | type) == "string"
@@ -37,13 +37,22 @@ textos_turno() {
     | join("\n\n")' 2>/dev/null
 }
 # Is it asking you for something? A question, a command with ! or an action verb aimed at you. Then it notifies even
-# if the turn was short. Spanish on purpose: the patterns match what Claude writes when the owner works in Spanish.
-pide_algo() {
-  { textos_turno; ultimo_msg; } \
-    | grep -qiE '(^|[[:space:]`])![[:space:]]*[a-z./~]|```(bash|sh|shell|zsh|console)|(ejecuta|ejecútalo|corre|córrelo|run|lanza)[^`]{0,50}`[a-z./~]' \
-    && return 0   # a command (with !, in a bash block or after ejecuta/corre) anywhere in the turn
-  ultimo_msg | tail -c 1500 | grep -qiE \
-    '\?[[:space:]]*$|¿|(^|[[:space:]`])![[:space:]]*[a-z]|\b(ejecuta|ejecútalo|ejecutalo|corre|córrelo|correlo|pega|confirma|autoriza|aprueba|run|paste|confirm)\b'
+# if the turn was short. The verbs come from the language packs (keys notify.command, notify.asks and
+# notify.question; see ws-lang): English, plus Spanish with `ws-lang es`. Without the packs only the fixed marks count.
+asks_something() {
+  local verbs="" closing="" question=""
+  local command_re='(^|[[:space:]`])![[:space:]]*[a-z./~]|```(bash|sh|shell|zsh|console)'
+  local closing_re='\?[[:space:]]*$|(^|[[:space:]`])![[:space:]]*[a-z]'
+  # shellcheck source=/dev/null
+  if source "$HOME/.local/lib/ws-lang.sh" 2>/dev/null; then
+    # shellcheck disable=SC2016   # literal backticks of the expression, not a command substitution
+    ws_lang_var verbs notify.command && command_re+="|(${verbs})"'[^`]{0,50}`[a-z./~]'
+    ws_lang_var question notify.question && closing_re+="|${question}"
+    ws_lang_var closing notify.asks && closing_re+="|\\b(${closing})\\b"
+  fi
+  { turn_texts; last_msg; } | grep -qiE -- "$command_re" \
+    && return 0   # a command (with !, in a bash block or after «run») anywhere in the turn
+  last_msg | tail -c 1500 | grep -qiE -- "$closing_re"
 }
 
 case "${1:-}" in
@@ -54,8 +63,8 @@ case "${1:-}" in
   done)
     start="$(cat "$ts" 2>/dev/null)"; rm -f "$ts"
     # Turn that continued without a new prompt (after a background task, for example): notifies if it asks something.
-    [[ -n "$start" ]] || { pide_algo || exit 0; start=$(date +%s); }
-    secs=$(( $(date +%s) - start )); (( secs >= min )) || pide_algo || exit 0
+    [[ -n "$start" ]] || { asks_something || exit 0; start=$(date +%s); }
+    secs=$(( $(date +%s) - start )); (( secs >= min )) || asks_something || exit 0
     msg="$(js .last_assistant_message | tr '\n\t' '  ' | cut -c1-140)"
     body="Finished in $(( secs / 60 ))m $(( secs % 60 ))s${msg:+: $msg}" ;;
   alert)
@@ -64,15 +73,15 @@ case "${1:-}" in
 esac
 
 # Telegram (ws-telegram, ADR-010): always; the question goes redacted and with buttons to answer.
-objetivo="$p"; [[ -n "${WS_FLOT_SESION:-}" ]] && objetivo="flot:$WS_FLOT_SESION"   # Claude inside a popup
+target="$p"; [[ -n "${WS_POPUP_SESSION:-}" ]] && target="popup:$WS_POPUP_SESSION"   # Claude inside a popup
 # Telegram gets the whole end of the message (commands with ! are usually at the end), not just 140 characters.
-cuerpo_tg="$body"; completo=""
+tg_body="$body"; full=""
 if [[ "$1" == "done" ]]; then   # notification: end of the message; `!` commands: whole message (0600, ws-telegram deletes it)
-  cuerpo_tg="${body%%:*}:"$'\n'"$(ultimo_msg | tail -c 1200)"
-  completo="$(mktemp)"; turno="$(textos_turno)"; [[ -n "$turno" ]] || turno="$(ultimo_msg)"
-  printf '%s' "$turno" > "$completo"
+  tg_body="${body%%:*}:"$'\n'"$(last_msg | tail -c 1200)"
+  full="$(mktemp)"; turn="$(turn_texts)"; [[ -n "$turn" ]] || turn="$(last_msg)"
+  printf '%s' "$turn" > "$full"
 fi
-setsid "$HOME/.local/bin/ws-telegram" avisar "$1" "$objetivo" "$cuerpo_tg" "$p" "$completo" >/dev/null 2>&1 </dev/null &
+setsid "$HOME/.local/bin/ws-telegram" notify "$1" "$target" "$tg_body" "$p" "$full" >/dev/null 2>&1 </dev/null &
 [[ "$(tmux show -gqv @cnotify)" == off ]] && exit 0
 if [[ -z "${CLAUDE_NOTIFY_FORCE:-}" && "$(tmux display -p -t "$p" '#{window_active}')" == 1 ]] &&
    tmux list-clients -F '#{client_flags}' 2>/dev/null | grep -q focused; then exit 0; fi
@@ -84,7 +93,7 @@ ps="\$d={param(\$s)[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(\
 \$null=[Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime]
 \$null=[Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom.XmlDocument,ContentType=WindowsRuntime]
 \$e=[Security.SecurityElement]; \$x=New-Object Windows.Data.Xml.Dom.XmlDocument
-\$x.LoadXml(\"<toast activationType='protocol' launch='ws-claude://foco/${p#%}'><visual><binding template='ToastGeneric'><text>\$(\$e::Escape(\$t))</text><text>\$(\$e::Escape(\$b))</text></binding></visual><actions><action content='Go to the tab'activationType='protocol' arguments='ws-claude://foco/${p#%}'/></actions></toast>\")
+\$x.LoadXml(\"<toast activationType='protocol' launch='ws-claude://focus/${p#%}'><visual><binding template='ToastGeneric'><text>\$(\$e::Escape(\$t))</text><text>\$(\$e::Escape(\$b))</text></binding></visual><actions><action content='Go to the tab'activationType='protocol' arguments='ws-claude://focus/${p#%}'/></actions></toast>\")
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe').Show([Windows.UI.Notifications.ToastNotification]::new(\$x))"
 enc="$(printf '%s' "$ps" | iconv -f UTF-8 -t UTF-16LE | base64 -w0)"
 setsid powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand "$enc" \

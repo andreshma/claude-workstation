@@ -12,7 +12,7 @@ fmt+="${TAB}#{?#{@cctx},#{@cctx}%,}${TAB}#{window_bell_flag}${TAB}#{@cstall}${TA
 # The @cmain values compared below are stored identifiers written by tmux-state.sh.
 list="$(tmux list-windows -a -F "$fmt" | awk -F "$TAB" -v OFS="$TAB" '{
     p = 3; m = " "
-    if ($8 == "te necesita" || $8 == "te toca" || $8 == "error API") { p = 0; m = "⚠" }
+    if ($8 == "needs you" || $8 == "your turn" || $8 == "API error") { p = 0; m = "⚠" }
     else if ($6 == 1) { p = 1; m = "!" }
     else if ($7 == 1) { p = 2; m = "⏳" }
     print p, $9, $1, sprintf("%s %3s  %-30s %-16s %5s", m, $2, substr($3, 1, 30), substr($4, 1, 16), $5)

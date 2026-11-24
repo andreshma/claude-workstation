@@ -16,9 +16,9 @@ ago() {
   else printf '%dh%02dm\n' $(( s / 3600 )) $(( s % 3600 / 60 )); fi
 }
 
-# rows <a|fin> — TSV rows per tab; the last column is the agent_id.
+# rows <a|finished> — TSV rows per tab; the last column is the agent_id.
 #   a:   tab, type, running for, last event, doing, id
-#   fin: time, tab, type, answer, id
+#   finished: time, tab, type, answer, id
 rows() {
   local pid wname d f ty st act ts id hh msg
   while IFS="$TAB" read -r pid wname; do
@@ -29,7 +29,7 @@ rows() {
         IFS="$TAB" read -r ty st act ts id < "$f"
         printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$wname" "${ty:-agent}" "$(ago "$st")" "$(ago "$ts")" "${act:0:70}" "$id"
       done
-    elif [[ "$1" == fin && -f "$d/done.log" ]]; then
+    elif [[ "$1" == finished && -f "$d/done.log" ]]; then
       while IFS="$TAB" read -r hh ty msg id; do
         printf '%s\t%s\t%s\t%s\t%s\n' "$hh" "$wname" "$ty" "${msg:0:80}" "$id"
       done < "$d/done.log"
@@ -38,15 +38,15 @@ rows() {
 }
 
 draw() {
-  local act fin
-  act="$(rows a)"; fin="$(rows fin | sort -r | head -8)"
+  local act finished
+  act="$(rows a)"; finished="$(rows finished | sort -r | head -8)"
   printf '\033[H\033[2J\033[1;35mActive subagents\033[0m  %s\n\n' "$(date +%H:%M:%S)"
   if [[ -n "$act" ]]; then
     { printf 'TAB\tAGENT\tRUNNING\tLAST\tDOING\n'; cut -f1-5 <<<"$act"; } | column -t -s "$TAB"
   else echo "  (none)"; fi
   printf '\n\033[1mRecently finished\033[0m\n\n'
-  if [[ -n "$fin" ]]; then
-    { printf 'TIME\tTAB\tAGENT\tANSWER\n'; cut -f1-4 <<<"$fin"; } | column -t -s "$TAB"
+  if [[ -n "$finished" ]]; then
+    { printf 'TIME\tTAB\tAGENT\tANSWER\n'; cut -f1-4 <<<"$finished"; } | column -t -s "$TAB"
   else echo "  (none)"; fi
 }
 
@@ -68,7 +68,7 @@ render() {
 pick() {
   local sel id f
   sel="$( { rows a | awk -F "$TAB" -v OFS="$TAB" '{ print "active    " $1 " · " $2 " · " $5, $6 }'
-            rows fin | sort -r | awk -F "$TAB" -v OFS="$TAB" '{ print "finished  " $2 " · " $3 " · " $1, $5 }'; } |
+            rows finished | sort -r | awk -F "$TAB" -v OFS="$TAB" '{ print "finished  " $2 " · " $3 " · " $1, $5 }'; } |
           fzf --reverse --delimiter="$TAB" --with-nth=1 --prompt='view agent> ')" || return 0
   id="${sel##*"$TAB"}"
   f="$(find "$HOME/.claude/projects" -path "*/subagents/agent-$id.jsonl" 2>/dev/null | head -1)"

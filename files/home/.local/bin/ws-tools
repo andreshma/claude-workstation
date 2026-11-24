@@ -6,7 +6,7 @@
 #
 # Usage:
 #   ws-tools                                 inventory
-#   ws-tools install <group|tool>...         groups: base nube aws contenedores calidad
+#   ws-tools install <group|tool>...         groups: base cloud aws containers quality
 #                                            python web rust sql dev
 #   ws-tools install --force ...             installs even if C: has less than 10 GB free
 set -uo pipefail
@@ -37,29 +37,29 @@ TOOLS=(
   "agg|base|agg --version|fn:agg"
   "starship|base|starship --version|fn:starship"
   "wslu|base|wslview --version|apt:wslu"
-  "az|nube|az version --query '\"azure-cli\"' -o tsv|fn:az"
-  "bicep|nube|$HOME/.azure/bin/bicep --version|fn:bicep"
-  "azd|nube|azd version|fn:azd"
-  "kubectl|nube|kubectl version --client|fn:aks"
-  "kubelogin|nube|kubelogin --version|fn:aks"
-  "kubectx|nube|command -v kubectx|apt:kubectx"
-  "helm|nube|helm version --short|fn:helm"
-  "k9s|nube|k9s version --short|fn:k9s"
-  "terraform|nube|terraform version|fn:terraform"
-  "tflint|nube|tflint --version|fn:tflint"
+  "az|cloud|az version --query '\"azure-cli\"' -o tsv|fn:az"
+  "bicep|cloud|$HOME/.azure/bin/bicep --version|fn:bicep"
+  "azd|cloud|azd version|fn:azd"
+  "kubectl|cloud|kubectl version --client|fn:aks"
+  "kubelogin|cloud|kubelogin --version|fn:aks"
+  "kubectx|cloud|command -v kubectx|apt:kubectx"
+  "helm|cloud|helm version --short|fn:helm"
+  "k9s|cloud|k9s version --short|fn:k9s"
+  "terraform|cloud|terraform version|fn:terraform"
+  "tflint|cloud|tflint --version|fn:tflint"
   "aws|aws|aws --version|fn:awscli"
-  "docker|contenedores|docker --version|manual:Docker Desktop → Settings → Resources → WSL integration → Ubuntu"
-  "compose|contenedores|docker compose version|manual:comes with Docker Desktop"
-  "scout|contenedores|docker scout --help >/dev/null 2>&1 && echo available|manual:comes with Docker Desktop (docker scout cves <image>)"
-  "hadolint|contenedores|hadolint --version|fn:hadolint"
-  "checkov|calidad|checkov --version|pipx:checkov"
-  "pre-commit|calidad|pre-commit --version|pipx:pre-commit"
-  "k6|calidad|k6 version|fn:k6"
-  "osv-scanner|calidad|osv-scanner --version|fn:osv"
-  "markitdown|calidad|markitdown --version|pipx:markitdown[all]"
-  "pandoc|calidad|pandoc --version|apt:pandoc"
-  "pdfimages|calidad|pdfimages -v 2>&1|apt:poppler-utils"
-  "yamllint|calidad|yamllint --version|apt:yamllint"
+  "docker|containers|docker --version|manual:Docker Desktop → Settings → Resources → WSL integration → Ubuntu"
+  "compose|containers|docker compose version|manual:comes with Docker Desktop"
+  "scout|containers|docker scout --help >/dev/null 2>&1 && echo available|manual:comes with Docker Desktop (docker scout cves <image>)"
+  "hadolint|containers|hadolint --version|fn:hadolint"
+  "checkov|quality|checkov --version|pipx:checkov"
+  "pre-commit|quality|pre-commit --version|pipx:pre-commit"
+  "k6|quality|k6 version|fn:k6"
+  "osv-scanner|quality|osv-scanner --version|fn:osv"
+  "markitdown|quality|markitdown --version|pipx:markitdown[all]"
+  "pandoc|quality|pandoc --version|apt:pandoc"
+  "pdfimages|quality|pdfimages -v 2>&1|apt:poppler-utils"
+  "yamllint|quality|yamllint --version|apt:yamllint"
   "python3|python|python3 -m venv --help >/dev/null && python3 --version|apt:python3-venv"
   "chafa|base|chafa --version | head -1|apt:chafa"
   "numpy|python|python3 -c 'import numpy; print(numpy.__version__)'|apt:python3-numpy"
@@ -192,7 +192,7 @@ fn_azd() { curl -fsSL https://aka.ms/install-azd.sh -o /tmp/install-azd.sh && ba
 install_tools() {
   local force=0 want=() t n g how apt=() pipx=() fns=() manual=()
   for a in "$@"; do [[ "$a" == --force ]] && force=1 || want+=("$a"); done
-  (( ${#want[@]} )) || { echo "Give groups or tools: base nube calidad dev | terraform helm …"; return 2; }
+  (( ${#want[@]} )) || { echo "Give groups or tools: base cloud quality dev | terraform helm …"; return 2; }
   local free; free="$(df -BG --output=avail /mnt/c 2>/dev/null | tail -1 | tr -dc 0-9)"
   if (( force == 0 && ${free:-0} < MIN_FREE_GB )); then
     echo "C: has ${free:-?} GB free (minimum $MIN_FREE_GB). The Ubuntu disk grows on C:; free up space or use --force."
@@ -217,7 +217,7 @@ install_tools() {
 }
 
 case "${1:-}" in
-  ""|inventario|check) inventory ;;
+  ""|inventory|check) inventory ;;
   install) shift; install_tools "$@" ;;
   -h|--help) sed -n '3,11p' "$0" ;;
   *) echo "usage: ws-tools [install <group|tool>...]" >&2; exit 2 ;;

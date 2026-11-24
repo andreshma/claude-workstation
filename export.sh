@@ -24,7 +24,7 @@ if [[ -s "$HOME/.claude.json" ]]; then
 fi
 
 WU="$(win_user)"
-wslconfig="/mnt/c/Users/${WU:-sin-usuario}/.wslconfig"
+wslconfig="/mnt/c/Users/${WU:-no-user}/.wslconfig"
 if [[ -f "$wslconfig" ]]; then
   install -D -m 644 "$wslconfig" "$KIT/files/windows/.wslconfig" && log "Windows .wslconfig"
 fi

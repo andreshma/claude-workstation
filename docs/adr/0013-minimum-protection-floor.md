@@ -108,11 +108,11 @@ Invert the model: the base is strict and the profiles *add*.
 ### Implementation status
 
 - **Phase 1, done:** fail-closed guard and its tests; the floor's `deny`
-  rules and no wildcard `allow`; the pure level (`puro`) keeps the floor and
+  rules and no wildcard `allow`; the pure level (`bare`) keeps the floor and
   not the kit's permissions; Telegram does not execute without a sandbox and
   blocks more; lint-on-edit does not run code from the repository; the tab
   path is escaped in the status bar.
-- **Full level (`completo`), done:** confirmed against the documentation that
+- **Full level (`full`), done:** confirmed against the documentation that
   lists are merged across sources; the full level now starts without the
   user settings and with a profile that has no excluded commands.
 - **Phase 2, partly done (2026-11-23):** a PIN to execute from Telegram

@@ -34,7 +34,7 @@ mins() { echo "$(( ($1 + 59) / 60 ))m"; }
 # Local OpenTelemetry collector (ws-otel): if it is not running, start it. Without it, what Claude emits is lost.
 if [[ -x "$HOME/.local/bin/ws-otel" ]]; then
   op="$(cat "${XDG_RUNTIME_DIR:-/tmp}/ws-otel-$(id -u)/pid" 2>/dev/null)"
-  { [[ -n "$op" ]] && kill -0 "$op" 2>/dev/null; } || ( "$HOME/.local/bin/ws-otel" asegurar >/dev/null 2>&1 & )
+  { [[ -n "$op" ]] && kill -0 "$op" 2>/dev/null; } || ( "$HOME/.local/bin/ws-otel" ensure >/dev/null 2>&1 & )
 fi
 
 waiting=(); stalled=(); goto=""; cands=()
@@ -42,15 +42,15 @@ while IFS='|' read -r wid idx name pane main ts sub; do
   [[ -n "$main" ]] || { tmux set -wu -t "$wid" @cstall 2>/dev/null; continue; }
   age=$(( now - ${ts:-$now} ))
   case "$main" in   # @cmain values are stored identifiers written by tmux-state.sh
-    "te necesita"|"error API")
+    "needs you"|"API error")
       waiting+=("$idx"); goto="${goto:-$wid}"; cands+=("$wid"); tmux set -wu -t "$wid" @cstall 2>/dev/null
       (( age >= remind )) && alert "wait-$wid" "$remind" "$pane" "Claude · $idx $name" \
         "Still waiting for your answer ($main) for $(mins "$age")" ;;
-    "te toca")   # Claude finished leaving you something: counts in ⚠, with a single reminder (not an open dialog)
+    "your turn")   # Claude finished leaving you something: counts in ⚠, with a single reminder (not an open dialog)
       waiting+=("$idx"); goto="${goto:-$wid}"; cands+=("$wid"); tmux set -wu -t "$wid" @cstall 2>/dev/null
       (( age >= remind )) && alert "wait-$wid" 86400 "$pane" "Claude · $idx $name" \
         "It left you something to do or answer $(mins "$age") ago" ;;
-    listo) rm -f "$st/wait-$wid" "$st/stall-$wid"; tmux set -wu -t "$wid" @cstall 2>/dev/null ;;
+    "done") rm -f "$st/wait-$wid" "$st/stall-$wid"; tmux set -wu -t "$wid" @cstall 2>/dev/null ;;
     *)
       if (( age >= stall )); then
         stalled+=("$idx($(mins "$age"))"); goto="${goto:-$wid}"; cands+=("$wid"); tmux set -w -t "$wid" @cstall 1
@@ -63,8 +63,8 @@ done < <(tmux list-windows -a -F '#{window_id}|#{window_index}|#{window_name}|#{
 if [[ "${1:-}" == --goto ]]; then
   # Jumps to the NEXT one waiting for you, not the one already in front of you (it used to pick the first, which was
   # often the current one, and seemed to do nothing). switch-client also switches group; select-window only within it.
-  cur="$(tmux display -p '#{window_id}' 2>/dev/null)"; goto=""; visto=0
-  for w in "${cands[@]}"; do [[ "$w" == "$cur" ]] && { visto=1; continue; }; (( visto )) && { goto="$w"; break; }; done
+  cur="$(tmux display -p '#{window_id}' 2>/dev/null)"; goto=""; seen=0
+  for w in "${cands[@]}"; do [[ "$w" == "$cur" ]] && { seen=1; continue; }; (( seen )) && { goto="$w"; break; }; done
   [[ -n "$goto" ]] || for w in "${cands[@]}"; do [[ "$w" != "$cur" ]] && { goto="$w"; break; }; done
   if [[ -n "$goto" ]]; then
     ses="$(tmux display -p -t "$goto" '#{session_id}' 2>/dev/null)"
@@ -102,5 +102,5 @@ if [[ "$(tmux show -gqv @theme_mode)" == auto ]]; then
   if (( now - last >= 120 )); then echo "$now" > "$st/theme-check"; ( "$HOME/.local/bin/tmux-theme" check >/dev/null 2>&1 & ); fi
 fi
 # Patch 53: background tasks (CI/PR of each tab, searchable history), at most once a minute.
-( "$HOME/.local/bin/tmux-fondo" >/dev/null 2>&1 & )
+( "$HOME/.local/bin/tmux-background" >/dev/null 2>&1 & )
 printf '%s' "$out"

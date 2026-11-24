@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+#
+# ws-routing-confirm <pane> <level> <rule> <current> — routing popup (opened by the hook).
+#   [y] / Enter  switches the tab's model (/model <ID>, without touching your default model) and sends the text
+#                ([s] also works)
+#   [n]          sends with the current model and does not suggest that level again on this tab for 30 min
+#   [x] / Esc    gives the text back to Claude's input box without sending it, so you can edit it
+# No answer in 30 s = [n]. With Telegram active, the question also reaches your phone with buttons and the wait
+# is 2 min (the first answer wins); if no terminal is attached, only Telegram answers.
+set -uo pipefail
+# shellcheck source=/dev/null
+source "$HOME/.local/lib/ws-routing.sh"
+p="$1" level="$2" rule="$3" current="$4"; n="${p#%}"
+txt="$WS_ROUTING_RUN/prompt-$n"; choice="$WS_ROUTING_RUN/choice-$n"
+
+if [[ "${5:-}" == --inside ]]; then
+  first="$(head -c 400 "$txt" | tr '\n' ' ' | cut -c1-64)"
+  ctx="$(tmux show -wqv -t "$p" @cctx 2>/dev/null)"
+  printf '\n  \e[1m%s…\e[0m\n\n' "$first"
+  printf '  Looks like level \e[1;36m%s\e[0m (%s) · this tab uses \e[1m%s\e[0m\n' "$level" "$rule" "$current"
+  printf '  Switching re-reads the conversation without cache%s.\n\n' "${ctx:+ (context: ${ctx}%)}"
+  printf '  \e[1m[y]\e[0m switch to %s and send   \e[1m[n]\e[0m send with %s   \e[1m[x]\e[0m edit\n  ' "$level" "$current"
+  # With Telegram active, the same question reaches your phone and it waits 2 min; whichever answers first wins.
+  remote="$WS_ROUTING_RUN/remote-$n"; rm -f "$remote"; lim=30
+  if "$HOME/.local/bin/ws-telegram" active 2>/dev/null; then
+    : > "$remote.waiting"; lim=120
+    "$HOME/.local/bin/ws-telegram" ask "$p" \
+      "Model routing: «${first}…» looks like level ${level} (rule ${rule}); the tab uses ${current}." \
+      "s=Switch to ${level} and send;n=Send with ${current};x=Edit on the PC" "$remote" >/dev/null 2>&1 || true
+    printf '  (you can also answer in Telegram; waiting 2 min)\n  '
+  fi
+  k="" expired=1
+  for (( i = 0; i < lim; i++ )); do
+    if [[ -t 0 ]]; then
+      if IFS= read -rsn1 -t 1 k; then expired=0; break; fi
+    else sleep 1; fi   # no popup (terminal closed): only Telegram can answer
+    if [[ -s "$remote" ]]; then k="$(head -c1 "$remote")"; expired=0; break; fi
+  done
+  rm -f "$remote" "$remote.waiting"
+  (( expired )) && k=n
+  case "$k" in y|Y|s|S|"") echo s ;; x|X|$'\e') echo x ;; *) echo n ;; esac > "$choice"
+  exit 0
+fi
+
+rm -f "$choice"
+sleep 0.3   # let Claude finish processing the block before opening the popup
+if ! tmux display-popup -t "$p" -E -w 78 -h 12 -T " Model routing " "$0 '$p' '$level' '$rule' '$current' --inside" 2>/dev/null; then
+  # With no terminal attached there is no popup: if Telegram is active, the question goes to the phone only; otherwise
+  # it carries on with the current model.
+  if "$HOME/.local/bin/ws-telegram" active 2>/dev/null; then "$0" "$p" "$level" "$rule" "$current" --inside </dev/null >/dev/null 2>&1
+  else sleep 1; fi
+fi
+e="$(cat "$choice" 2>/dev/null || echo n)"; rm -f "$choice"
+chars="$(wc -c < "$txt" 2>/dev/null || echo 0)"
+case "$e" in
+  s) routing_switch "$p" "$level"; routing_paste "$p" "$txt" send
+     routing_log hook "$level" "$rule" "$current" accepted "$chars" ;;
+  x) routing_paste "$p" "$txt" paste-only
+     routing_log hook "$level" "$rule" "$current" edited "$chars" ;;
+  *) tmux set -w -t "$p" @croute_no "$level:$(date +%s)"
+     routing_paste "$p" "$txt" send
+     routing_log hook "$level" "$rule" "$current" rejected "$chars" ;;
+esac

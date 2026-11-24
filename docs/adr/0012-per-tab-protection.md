@@ -25,7 +25,7 @@ ask/deny/guard.
 
 ## Considered options
 
-- **A. Three levels per tab, switched with `tmux-nivel`.**
+- **A. Three levels per tab, switched with `tmux-level`.**
 - **B. A global switch in `~/.claude/settings.json`.** Affects every tab and
   forces editing the file.
 - **C. Only `--settings` for the pure level.** The ask/deny lists are merged
@@ -35,14 +35,14 @@ ask/deny/guard.
 
 ## Decision
 
-Option **A**. Three levels per tab with `tmux-nivel`, which restarts Claude and
+Option **A**. Three levels per tab with `tmux-level`, which restarts Claude and
 resumes the conversation (`claude -c`):
 
-- **Full (`completo`):** user configuration + `--settings` with
+- **Full (`full`):** user configuration + `--settings` with
   `sandbox.enabled=true`, `allowUnsandboxedCommands=false` and no
   `excludedCommands` (no escape hatches). ask/deny/guard remain.
 - **Normal:** the user configuration as is.
-- **Pure (`puro`):** `--setting-sources project,local` (does not load the user
+- **Pure (`bare`):** `--setting-sources project,local` (does not load the user
   rules) + `--settings` with everything else from the user configuration
   EXCEPT `permissions.ask`, `permissions.deny`, the `guard.sh` hook and the
   sandbox. Hooks that do not restrict are kept (status, traces, notifications,
@@ -50,7 +50,7 @@ resumes the conversation (`claude -c`):
   repository's `.claude/settings*.json` always apply.
 
 The profiles are generated on every switch from `~/.claude/settings.json`
-(always up to date), in `~/.config/claude-niveles/` (0600). The status bar
+(always up to date), in `~/.config/claude-levels/` (0600). The status bar
 shows 🔒 (full) or 🔓 (pure).
 
 ## Consequences

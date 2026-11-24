@@ -3,11 +3,11 @@
 # tmux-worktree <dir> <branch> — creates (if missing) the worktree of <branch> for the repo that
 # contains <dir> and opens it in its own tab with Claude (function twt). Used by the menu (w).
 set -euo pipefail
-dir="${1:?folder}"; rama="${2:-}"
+dir="${1:?folder}"; branch="${2:-}"
 fail() { tmux display -d 4000 "Worktree: $*"; exit 1; }
-[[ -n "$rama" ]] || fail "the branch name is missing"
+[[ -n "$branch" ]] || fail "the branch name is missing"
 git -C "$dir" rev-parse --show-toplevel >/dev/null 2>&1 || fail "$dir is not a git repo"
-git check-ref-format --branch "$rama" >/dev/null 2>&1 || fail "invalid branch name: $rama"
+git check-ref-format --branch "$branch" >/dev/null 2>&1 || fail "invalid branch name: $branch"
 # shellcheck source=/dev/null
 source "$HOME/.config/tmux-claude/functions.sh"
-twt "$dir" "$rama" >/dev/null 2>&1 || fail "could not create $rama (does it already exist in another worktree?)"
+twt "$dir" "$branch" >/dev/null 2>&1 || fail "could not create $branch (does it already exist in another worktree?)"

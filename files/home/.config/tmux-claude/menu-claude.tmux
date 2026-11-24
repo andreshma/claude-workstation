@@ -13,23 +13,23 @@ display-menu -O -T "#[align=centre] 🤖  Claude · #W · #{?#{@cs},#{@cs},no Cl
   "Interrupt" e "send-keys Escape" \
   "Send to background" B "send-keys C-b" \
   "-#[nodim]── Model and mode ──" "" "" \
-  "Model: #{?#{@cmodel},#{@cmodel},—} ›" 9 "source-file ~/.config/tmux-claude/menu-claude-modelo.tmux" \
+  "Model: #{?#{@cmodel},#{@cmodel},—} ›" 9 "source-file ~/.config/tmux-claude/menu-claude-model.tmux" \
   "Permission mode / plan" p "send-keys BTab" \
-  "Protection: #{?@cnivel,#{@cnivel},normal}#{?#{@csolo}, · solo mode,} ›" S "source-file ~/.config/tmux-claude/menu-claude-nivel.tmux" \
+  "Protection: #{?@clevel,#{@clevel},normal}#{?#{@csolo}, · solo mode,} ›" S "source-file ~/.config/tmux-claude/menu-claude-level.tmux" \
   "-#[nodim]── With other tabs ──" "" "" \
-  "Send the neighboring pane to Claude (Ctrl+b e)" x "run-shell -b '~/.local/bin/tmux-panel #{pane_id}'" \
-  "Same text to several Claude tabs" D "display-popup -E -w 85% -h 70% -T ' Broadcast ' \"~/.local/bin/tmux-flot-run ~/.local/bin/tmux-difundir\"" \
-  "Swarm: several Claudes in parallel on one goal" Z "display-popup -E -w 92% -h 85% -T ' Swarm ' -d \"#{pane_current_path}\" \"~/.local/bin/tmux-flot-run ~/.local/bin/tmux-enjambre nuevo\"" \
-  "Export my work for another Claude (handoff)" E "display-popup -E -w 92% -h 85% -T ' Handoff ' \"~/.local/bin/tmux-flot-run ~/.local/bin/tmux-pause 'ws-traspaso #{pane_id}'\"" \
-  "Solo Claude in a new tab" s "run-shell -b '~/.local/bin/tmux-solo nueva \"#{pane_current_path}\"'" \
+  "Send the neighboring pane to Claude (Ctrl+b e)" x "run-shell -b '~/.local/bin/tmux-pane #{pane_id}'" \
+  "Same text to several Claude tabs" D "display-popup -E -w 85% -h 70% -T ' Broadcast ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-broadcast\"" \
+  "Swarm: several Claudes in parallel on one goal" Z "display-popup -E -w 92% -h 85% -T ' Swarm ' -d \"#{pane_current_path}\" \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-swarm new\"" \
+  "Export my work for another Claude (handoff)" E "display-popup -E -w 92% -h 85% -T ' Handoff ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-pause 'ws-handoff #{pane_id}'\"" \
+  "Solo Claude in a new tab" s "run-shell -b '~/.local/bin/tmux-solo new \"#{pane_current_path}\"'" \
   "Solo Claude in a new worktree" w "run-shell -b '~/.local/bin/tmux-solo worktree \"#{pane_current_path}\"'" \
   "-#[nodim]── Account ──" "" "" \
-  "Switch this tab to the #{?#{==:#{@ccuenta},personal},work,personal} account (same conversation)" a "confirm-before -p \"Switch the account of #W? (y/n)\" \"run-shell -b '~/.local/bin/claude-cuenta pestaña #{pane_id}'\"" \
-  "New tabs use: #{?#{==:#{@ccuenta_def},personal},personal → switch to work,work → switch to personal}" n "run-shell -b '~/.local/bin/claude-cuenta usar #{?#{==:#{@ccuenta_def},personal},trabajo,personal}'" \
-  "Always use the account of this tab for this project (#{?#{==:#{@ccuenta},personal},personal,work})" f "run-shell -b '~/.local/bin/claude-cuenta proyecto #{?#{==:#{@ccuenta},personal},personal,trabajo} --pane #{pane_id}'" \
-  "Log in to the personal account" L "new-window -n login-personal \"~/.local/bin/tmux-pause 'claude-cuenta login personal'\"" \
+  "Switch this tab to the #{?#{==:#{@caccount},personal},work,personal} account (same conversation)" a "confirm-before -p \"Switch the account of #W? (y/n)\" \"run-shell -b '~/.local/bin/claude-account tab #{pane_id}'\"" \
+  "New tabs use: #{?#{==:#{@caccount_def},personal},personal → switch to work,work → switch to personal}" n "run-shell -b '~/.local/bin/claude-account use #{?#{==:#{@caccount_def},personal},work,personal}'" \
+  "Always use the account of this tab for this project (#{?#{==:#{@caccount},personal},personal,work})" f "run-shell -b '~/.local/bin/claude-account project #{?#{==:#{@caccount},personal},personal,work} --pane #{pane_id}'" \
+  "Log in to the personal account" L "new-window -n login-personal \"~/.local/bin/tmux-pause 'claude-account login personal'\"" \
   '' \
-  "More Claude commands ›" '+' "source-file ~/.config/tmux-claude/menu-claude-mas.tmux" \
+  "More Claude commands ›" '+' "source-file ~/.config/tmux-claude/menu-claude-more.tmux" \
   '' \
   "‹ Back" BSpace "source-file ~/.config/tmux-claude/menu.tmux"
 set -gF status-interval '#{?@si_prev,#{@si_prev},15}'

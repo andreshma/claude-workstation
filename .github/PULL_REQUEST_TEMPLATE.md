@@ -15,7 +15,7 @@
 
 - [ ] No secrets, tokens, personal paths or user names (they are exported as templates).
 - [ ] Hooks still exit 0 on their own errors and never store prompt text, full commands or file contents.
-- [ ] Anything that leaves the machine is redacted (`ws-redactar`) and needs the user's confirmation.
+- [ ] Anything that leaves the machine is redacted (`ws-redact`) and needs the user's confirmation.
 - [ ] No new third-party GitHub Actions; new tools are verified (checksum or signature).
 
 ## Tests
@@ -29,3 +29,5 @@
 
 - [ ] The documents named in `CONTRIBUTING.md` for this kind of change are updated, in English.
 - [ ] A non-trivial decision has an ADR in `docs/adr/`.
+- [ ] Identifiers are English; words that match prompts in another language are in a language pack; a renamed
+      command, path or stored value has its row in `renames.tsv` and in the rename tables of `docs/USAGE.md`.
