@@ -120,8 +120,9 @@ jobs:
         run: |
           export HOME="$RUNNER_TEMP/home"; mkdir -p "$HOME"
           git config --global user.email ci@example.invalid; git config --global user.name ci
-          bash install.sh --dry-run | tail -5
-          bash install.sh
+          # No Windows side and no Claude Code on the runner: the user is given and the MCP servers are skipped.
+          bash install.sh --dry-run --win-user ci --no-mcp | tail -5
+          bash install.sh --win-user ci --no-mcp
           echo "Installed in ~/.local/bin: $(ls "$HOME/.local/bin" | wc -l)"
       - name: ws-test on the installed files
         run: |
