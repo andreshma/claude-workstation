@@ -100,6 +100,46 @@ LEGACY_VALUES = {   # by (English) field: old value → new value
 }
 
 
+def _english_select(source: str) -> str:
+    """SELECT over a DuckDB table function that exposes only the English column names. Days written before the rename
+    carry the Spanish names (the files are never rewritten), so with union_by_name both spellings show up as columns.
+    The columns that really exist are asked to DuckDB first (DESCRIBE): COALESCE cannot name a column no file has.
+    Each old column is folded into its new name (the old one first, as in normalize) and dropped; the old values of
+    text columns are translated with LEGACY_VALUES. If the columns cannot be read, the plain SELECT * is returned."""
+    plain = f"SELECT * FROM {source}"
+    try:
+        out = subprocess.run(["duckdb", "-csv", "-noheader", "-c", f"DESCRIBE {plain}"],  # nosec B603 B607
+                             capture_output=True, text=True, timeout=120, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return plain
+    import csv
+    types = {r[0]: r[1] for r in csv.reader(out.splitlines()) if len(r) >= 2}
+
+    def q(name: str) -> str:
+        return '"' + name.replace('"', '""') + '"'
+
+    def lit(text: str) -> str:
+        return "'" + text.replace("'", "''") + "'"
+
+    olds: dict[str, list[str]] = {}
+    for old, new in LEGACY_KEYS.items():
+        if old in types:
+            olds.setdefault(new, []).append(old)
+    values = {c: m for c, m in LEGACY_VALUES.items() if c in olds or types.get(c) == "VARCHAR"}
+    if not olds and not values:
+        return plain
+    cols, drop = [], []
+    for new in sorted(olds.keys() | values.keys()):
+        parts = olds.get(new, []) + ([new] if new in types else [])
+        drop += parts
+        expr = q(parts[0]) if len(parts) == 1 else f"COALESCE({', '.join(q(p) for p in parts)})"
+        if new in values and all(types[p] == "VARCHAR" for p in parts):
+            cases = " ".join(f"WHEN {lit(a)} THEN {lit(b)}" for a, b in values[new].items())
+            expr = f"CASE {expr} {cases} ELSE {expr} END"
+        cols.append(f"{expr} AS {q(new)}")
+    return f"SELECT * EXCLUDE ({', '.join(q(d) for d in drop)}), {', '.join(cols)} FROM {source}"
+
+
 def normalize(rec):
     """A record loaded from disk, with the English field names and values. An old key wins over a new one with the
     same meaning (in old OpenTelemetry rows the fixed Spanish fields come before the attributes)."""
@@ -1441,8 +1481,12 @@ def cli_51(action: str, args: list[str]) -> int | None:
         print(); _print_table(d["files"][:10], [("Most edited file", "file", 44), ("Ed", "edits", 4), ("+", "lines_added", 6), ("−", "lines_removed", 6)])
         return 0
     if action == "estimate":
-        by = opt("--by", "ticket"); days = int(opt("--days", "90"))
-        needle = next((a for a in args if not a.startswith("--") and a not in (by, str(days))), None)
+        by_arg = opt("--by", "ticket"); days = int(opt("--days", "90"))
+        # The values from before the rename (rama, proyecto) are still accepted as input.
+        by = {"rama": "branch", "proyecto": "project"}.get(by_arg, by_arg)
+        if by not in ("ticket", "branch", "project"):
+            print(f"--by {by_arg}: expected ticket, branch or project", file=sys.stderr); return 2
+        needle = next((a for a in args if not a.startswith("--") and a not in (by_arg, str(days))), None)
         rows = estimate(all_turns(), traces(dt.date.today() - dt.timedelta(days=days)), by, dt.date.today() - dt.timedelta(days=days))
         if needle:
             rows = [f for f in rows if needle.lower() in f["key"].lower() or needle.lower() in f["project"].lower()]
@@ -1547,8 +1591,9 @@ def main() -> int:
     if action == "sql":
         if not shutil.which("duckdb"):
             print("DuckDB is not installed (ws-tools install duckdb). Turns file:", DATA / "turns.jsonl"); return 1
+        tr = f"read_json_auto('{DATA / 'traces'}/*.jsonl*', union_by_name=true, ignore_errors=true)"
         os.execvp("duckdb", ["duckdb", "-cmd", f"CREATE VIEW turns AS SELECT * FROM read_json_auto('{DATA / 'turns.jsonl'}'); "
-                                         f"CREATE VIEW traces AS SELECT * FROM read_json_auto('{DATA / 'traces'}/*.jsonl*', union_by_name=true, ignore_errors=true);"])  # nosec B608
+                                         f"CREATE VIEW traces AS {_english_select(tr)};"])  # nosec B608
     print(__doc__); return 2
 
 

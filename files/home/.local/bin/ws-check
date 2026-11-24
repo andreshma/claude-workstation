@@ -25,8 +25,16 @@ echo "== Base (phases 1 and 2)"
 chk "claude-resume (restore)"            "grep -q 'claude->claude-resume' ~/.tmux.conf"
 chk "save every 1 min"                   "grep -q \"continuum-save-interval '1'\" ~/.tmux.conf"
 chk "MemPalace in WSL (5 hooks)"         "test \$(grep -c win-hook $S) -ge 5"
-chk "MCP microsoft-learn"                "claude mcp get microsoft-learn"
-chk "MCP ms-release-comms"               "claude mcp get ms-release-comms"
+# claude mcp get exits non-zero when a registered server fails to connect, so its exit code alone reported a
+# registered but unreachable server as MISSING. Registered and connected are told apart.
+mcp() {
+  local out; out="$(timeout 30 claude mcp get "$1" 2>&1)"
+  if [[ "$out" != *"Scope:"* ]]; then printf '%-42s %s\n' "MCP $1" MISSING
+  elif [[ "$out" == *"Connected"* && "$out" != *"Failed"* ]]; then printf '%-42s %s\n' "MCP $1" OK
+  else printf '%-42s %s\n' "MCP $1" "registered, not connected (claude mcp list)"; fi
+}
+mcp microsoft-learn
+mcp ms-release-comms
 chk "gh authenticated"                   "gh auth status"
 chk "default model configured"           "jq -e '.model | strings | length > 0' $S"
 echo "== Additional security"

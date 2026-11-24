@@ -52,7 +52,7 @@ win="$TMUX_PANE"
 reg="/tmp/claude-agents-$(id -u)/${win#%}"
 mkdir -p "$reg" 2>/dev/null
 
-opt() { tmux show -wv -t "$win" "$1" 2>/dev/null; }
+opt() { tmux show -wqv -t "$win" "$1" 2>/dev/null; }
 # put <option> <value> — writes the option only if it changes. Every write makes tmux redraw the status bar, and
 # with a menu or a popup open that redraw shows as flicker; a tool fires several events per second.
 put() { [[ "$(opt "$1")" == "$2" ]] || tmux set -w -t "$win" "$1" "$2" 2>/dev/null; }

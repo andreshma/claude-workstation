@@ -15,6 +15,8 @@
 set -euo pipefail
 profile="$HOME/.config/claude-solo/settings.json"
 CMD_SOLO="claude --permission-mode auto --settings '$profile'"
+# In an existing tab: claude-resume continues the folder's conversation and starts a new one when there is none
+# («claude -c» ends with «No conversation found to continue» in a tab where Claude never received a message).
 msg() { tmux display "$1"; }
 [[ -f "$profile" ]] || { msg "$profile is missing"; exit 1; }
 
@@ -60,12 +62,11 @@ case "$action" in
     win="$(tmux display -p -t "$pane" '#{window_id}')"
     name="$(tmux display -p -t "$pane" '#W')"; name="${name#🤖}"
     if [[ "$action" == this ]]; then
-      # -c resumes the most recent conversation in this folder.
-      restart_claude "$pane" "${CMD_SOLO/claude /claude -c }"
+      restart_claude "$pane" "${CMD_SOLO/claude /claude-resume }"
       tmux set -w -t "$win" @csolo 1; tmux rename-window -t "$win" "🤖$name"
       msg "Solo mode on $name: auto, no sandbox · it asks you about anything critical"
     else
-      restart_claude "$pane" "claude -c"
+      restart_claude "$pane" "claude-resume"
       tmux set -wu -t "$win" @csolo; tmux rename-window -t "$win" "$name"
       msg "$name back in normal mode (with sandbox)"
     fi

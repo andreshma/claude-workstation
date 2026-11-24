@@ -142,7 +142,7 @@ def p_tmux() -> None:
             res("ok" if v == expected else "warn", f"{option} = {v or '(not set)'}", "", reco)
         else:
             res("ok" if v.isdigit() and 1 <= int(v) <= 5 else "warn", f"{option} = {v}", "", reco)
-    hook = tmux("show -gv @resurrect-hook-post-save-all")
+    hook = tmux("show -gqv @resurrect-hook-post-save-all")
     res("ok" if "tmux-recover --validate" in hook else "fail", "save validation (resurrect)", hook[:90], "Patch 27: discards empty saves.")
     conf = (H / ".tmux.conf").read_text(errors="replace") if (H / ".tmux.conf").exists() else ""
     res("ok" if "--mark-startup" in conf and "--auto-startup" in conf else "fail", "backup restore at startup", "", "Patch 25/27.")

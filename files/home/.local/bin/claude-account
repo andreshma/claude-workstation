@@ -121,9 +121,10 @@ tab() {
     done
     (( i < 40 )) || { msg "Claude did not close; close it (/exit) and try again"; exit 1; }
   fi
-  # export/unset in the pane's shell: later resumes use the same account.
-  if [[ "$target" == personal ]]; then cmd="export CLAUDE_CONFIG_DIR='$P'; claude -c$extra"
-  else cmd="unset CLAUDE_CONFIG_DIR; claude -c$extra"; fi
+  # export/unset in the pane's shell: later resumes use the same account. claude-resume and not «claude -c»: both
+  # accounts share the conversations, and in a tab that never had one «claude -c» would only print an error.
+  if [[ "$target" == personal ]]; then cmd="export CLAUDE_CONFIG_DIR='$P'; claude-resume$extra"
+  else cmd="unset CLAUDE_CONFIG_DIR; claude-resume$extra"; fi
   tmux send-keys -t "$pane" -l "$cmd"; tmux send-keys -t "$pane" Enter
   tmux set -w -t "$win" @caccount "$target"
   name="$(tmux display -p -t "$win" '#W')"; name="${name%·P}"

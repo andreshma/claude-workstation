@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # tmux-level — Claude's protection level PER TAB (ADR-012). Restarts Claude on the tab with the chosen level
-# and resumes the conversation (claude -c). Menu → Claude → Protection.
+# and resumes the conversation (claude-resume: continues the folder's conversation, or starts a new one when the
+# tab never had one). Menu → Claude → Protection.
 #
 #   full      🔒  Claude Code sandbox on and with NO escape hatches (allowUnsandboxedCommands=false, no excluded
 #                commands) + all the kit's rules (allow, ask, deny, guard.sh). az, gh, git push, kubectl… stay
@@ -79,21 +80,23 @@ profile() {   # level [settings] [project folder] → JSON
 # The help is captured first: with pipefail, «claude --help | grep -q» fails when grep closes the pipe early.
 has_sources() { local h; h="$(claude --help 2>/dev/null)" || true; grep -q -- '--setting-sources' <<<"$h"; }
 
-command_for() {   # level [folder] → Claude command (resumes the folder's conversation)
+# claude-resume and not «claude -c»: in a tab where Claude never received a message, «claude -c» ends with «No
+# conversation found to continue» and the tab would be left marked with a level while no Claude runs.
+command_for() {   # level [folder] → Claude command (resumes the folder's conversation, or starts a new one)
   local f="$D/full.json"
   mkdir -p "$D" && chmod 700 "$D"
   case "$1" in
-    normal) echo "claude -c" ;;
+    normal) echo "claude-resume" ;;
     full)
       has_sources || { echo "✖ Your Claude has no --setting-sources: «full» cannot remove the commands excluded from the sandbox" >&2; return 1; }
       # With a folder, the profile is specific to that project (it carries its read paths).
       [[ -n "${2:-}" ]] && f="$D/full-$(printf '%s' "$2" | md5sum | cut -c1-12).json"
       profile full "" "${2:-}" > "$f"; chmod 600 "$f"
-      echo "claude -c --setting-sources project,local --settings '$f'" ;;
+      echo "claude-resume --setting-sources project,local --settings '$f'" ;;
     bare)
       has_sources || { echo "✖ Your Claude has no --setting-sources: «bare» cannot remove the user rules" >&2; return 1; }
       profile bare > "$D/bare.json"; chmod 600 "$D/bare.json"
-      echo "claude -c --setting-sources project,local --settings '$D/bare.json'" ;;
+      echo "claude-resume --setting-sources project,local --settings '$D/bare.json'" ;;
     *) echo "invalid level: $1" >&2; return 2 ;;
   esac
 }
@@ -104,7 +107,7 @@ case "${1:-}" in
   --profile) : "${2:?level}"; profile "$(canon "$2")" "${3:-}" "${4:-}"; exit $? ;;
   --command) : "${2:?level}"; command_for "$(canon "$2")" "${3:-}"; exit $? ;;
   full|normal|bare|completo|puro) ;;
-  *) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
 
 level="$(canon "$1")"; pane="${2:-$(tmux display -p '#{pane_id}')}"

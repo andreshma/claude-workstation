@@ -25,7 +25,8 @@ else bad "light backup or snapshot" "run ws-backup-lite (Menu → Workstation)";
 
 last="$HOME/.local/share/tmux/resurrect/last"
 saved="$(grep -c '^window' "$last" 2>/dev/null)"; saved="${saved:-0}"
-open="$(tmux list-windows -a 2>/dev/null | wc -l)"
+# Linked sessions (monitor 2, the finder's find-peek-*) repeat the tabs of their group: each tab is counted once.
+open="$(tmux list-windows -a -F '#{window_id}' 2>/dev/null | sort -u | wc -l)"
 if (( saved > 0 )) && (( open == 0 || saved == open )); then ok "tmux save up to date ($saved tabs)"
 else bad "tmux save up to date" "$saved saved vs $open open: Ctrl+b Ctrl+s"; fi
 # The save runs every minute and tmux-recover --validate refreshes the date of a good save: an old date with tmux
