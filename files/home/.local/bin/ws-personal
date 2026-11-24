@@ -10,7 +10,8 @@
 #   ws-personal sync [--quiet]  copies the paths in include.txt to the repo, scans for secrets, commit and push
 #   ws-personal status            what changed since the last commit and when the last push was
 #   ws-personal add <path>        adds a path (relative to ~) to include.txt and syncs
-#   ws-personal restore           copies from the repo to ~ (asks; backs up what it replaces as .bak.<date>)
+#   ws-personal restore           copies from the repo to ~ (asks; what it replaces is copied first to
+#                                 ~/.local/share/ws-kit/backup.<date>/, like install.sh does)
 # The repo: ~/code/workstation-personal (WS_PERSONAL_DIR). What is versioned: its include.txt file (one path per line,
 # relative to ~; folders end with /). Never: credentials, tokens, .credentials.json, ws-telegram/config.
 # Security: before every commit, gitleaks (if installed) and ws-redact; if anything looks like a secret, no commit.
@@ -29,10 +30,13 @@ msg() { (( quiet )) || echo "$@"; }
 die() { echo "✖ $*" >&2; exit 1; }
 FORBIDDEN='(^|/)(\.credentials\.json|credentials|\.env|.*\.pem|.*\.key|id_rsa.*|id_ed25519.*|ws-telegram/config|.*token.*|.*secret.*)$'
 
+# .config/ws-local/roots.txt (your own folder roots, read by tmux-open) is already inside .config/ws-local/; it is
+# listed by name too, so it stays versioned if the folder line is ever removed.
 default_include() {
   cat <<'EOF'
 # Paths (relative to ~) that ws-personal versions. Folders end with /. "#" = comment.
 .config/ws-local/
+.config/ws-local/roots.txt
 .config/ws-telemetry/budgets.conf
 .config/ws-routing/settings.conf
 .config/ws-routing/models.conf
@@ -131,12 +135,12 @@ case "${1:-status}" in
     grep -qxF "$r" "$INC" || echo "$r" >> "$INC"; sync ;;
   restore)
     [[ -d "$R/home" ]] || die "Nothing to restore in $R/home"
-    echo "This will be copied to ~ (whatever exists is backed up as .bak.<date>):"; ( cd "$R/home" && find . -type f | sed 's#^\./#  ~/#' )
+    st="$(date +%Y%m%d-%H%M%S)"; bk="$HOME/.local/share/ws-kit/backup.$st"
+    echo "This will be copied to ~ (whatever it replaces is copied first to ${bk/#"$HOME"/\~}):"; ( cd "$R/home" && find . -type f | sed 's#^\./#  ~/#' )
     read -r -p "Restore? [y/N] " s; [[ "$s" =~ ^([yY]([eE][sS])?|[sS]([iI]|í|Í)?)$ ]] || exit 0
-    st="$(date +%Y%m%d-%H%M%S)"
     ( cd "$R/home" && find . -type f -print0 ) | while IFS= read -r -d '' f; do
-      d="$HOME/${f#./}"; [[ -f "$d" ]] && ! cmp -s "$R/home/${f#./}" "$d" && cp -p "$d" "$d.bak.$st"
+      d="$HOME/${f#./}"; [[ -f "$d" ]] && ! cmp -s "$R/home/${f#./}" "$d" && install -D -p "$d" "$bk/${f#./}"
       install -D -m "$(stat -c %a "$R/home/${f#./}")" "$R/home/${f#./}" "$d"; echo "  done    ~/${f#./}"
     done ;;
-  *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

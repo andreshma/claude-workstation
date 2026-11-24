@@ -137,16 +137,28 @@ pane_with_claude() {
   echo "$p"
 }
 
+# conversation_in <folder> [no] — gives the folder a conversation Claude can continue (what claude-resume looks for);
+# with «no», removes it: a tab where Claude never received a message.
+conversation_in() {
+  local d; d="$TH/.claude/projects/${1//[^A-Za-z0-9]/-}"
+  if [[ "${2:-}" == no ]]; then rm -rf "$d"; else mkdir -p "$d" && echo '{"type":"user"}' > "$d/c1.jsonl"; fi
+}
+
 test_solo_mode() {
   use_socket solo_mode
   section "Solo mode"
   have tmux-solo || { warn "tmux-solo is not installed"; return; }
   : > "$T/claude.log"; local p; p="$(pane_with_claude api)"
+  # A tab where Claude never received a message: «claude -c» would end with «No conversation found to continue».
+  conversation_in "$T/repos" no
   E tmux-solo this "$p" >/dev/null 2>&1; sleep 2
   [[ "$(tm show -wqv -t dev: @csolo)" == 1 ]] && ok "switching to solo mode marks the tab" || fail "solo mode: no @csolo mark"
-  tail -1 "$T/claude.log" | grep -q -- '-c --permission-mode auto --settings' && ok "reopens Claude in auto without sandbox, resuming the conversation" || fail "solo mode: Claude was not reopened with the flags ($(tail -1 "$T/claude.log"))"
+  tail -1 "$T/claude.log" | grep -q -- 'args=--permission-mode auto --settings' && ok "in a tab without a conversation, solo mode starts a new Claude with the same flags" || fail "solo mode without a conversation ($(tail -1 "$T/claude.log"))"
+  conversation_in "$T/repos"
+  E tmux-solo this "$p" >/dev/null 2>&1; sleep 2
+  tail -1 "$T/claude.log" | grep -q -- 'args=--continue --permission-mode auto --settings' && ok "reopens Claude in auto without sandbox, resuming the conversation" || fail "solo mode: Claude was not reopened with the flags ($(tail -1 "$T/claude.log"))"
   E tmux-solo normal "$p" >/dev/null 2>&1; sleep 2
-  [[ -z "$(tm show -wqv -t dev: @csolo)" ]] && tail -1 "$T/claude.log" | grep -q 'args=-c$' && ok "going back to normal resumes with the sandbox" || fail "going back to normal"
+  [[ -z "$(tm show -wqv -t dev: @csolo)" ]] && tail -1 "$T/claude.log" | grep -q 'args=--continue$' && ok "going back to normal resumes with the sandbox" || fail "going back to normal ($(tail -1 "$T/claude.log"))"
   git -C "$T/repos" init -q -b main 2>/dev/null; git -C "$T/repos" -c user.email=t@t -c user.name=t -c core.hooksPath=/dev/null commit -q --allow-empty -m "chore: test repo"
   E tmux-solo worktree "$T/repos" >/dev/null 2>&1; sleep 1
   ls -d "$T"/repos.wt/solo-* >/dev/null 2>&1 && ok "worktree solo/<date> created" || fail "solo mode worktree"
@@ -163,10 +175,16 @@ test_accounts() {
   jq -e '.hasCompletedOnboarding' "$TH/.claude-personal/.claude.json" >/dev/null 2>&1 && ok "personal gets the startup state (no login screen)" || fail "personal without the startup state"
   echo x > "$TH/.claude-personal/.credentials.json"
   : > "$T/claude.log"; local p; p="$(pane_with_claude api)"
+  # A tab where Claude never received a message: the switch starts a new Claude instead of failing to continue.
+  conversation_in "$T/repos" no
   E claude-account tab "$p" >/dev/null 2>&1; sleep 2
-  tail -1 "$T/claude.log" | grep -q "cfg=$TH/.claude-personal args=-c" && ok "switching to personal reopens the same conversation with its login" || fail "switch to personal ($(tail -1 "$T/claude.log"))"
+  tail -1 "$T/claude.log" | grep -q "cfg=$TH/.claude-personal args=\$" && ok "in a tab without a conversation, switching account starts a new Claude with its login" || fail "switch without a conversation ($(tail -1 "$T/claude.log"))"
+  conversation_in "$T/repos"
   E claude-account tab "$p" >/dev/null 2>&1; sleep 2
-  tail -1 "$T/claude.log" | grep -q 'cfg=work args=-c' && ok "back to the work account" || fail "going back to the work account"
+  tail -1 "$T/claude.log" | grep -q 'cfg=work args=--continue' && ok "back to the work account" || fail "going back to the work account ($(tail -1 "$T/claude.log"))"
+  E claude-account tab "$p" >/dev/null 2>&1; sleep 2
+  tail -1 "$T/claude.log" | grep -q "cfg=$TH/.claude-personal args=--continue" && ok "switching to personal reopens the same conversation with its login" || fail "switch to personal ($(tail -1 "$T/claude.log"))"
+  E claude-account tab "$p" >/dev/null 2>&1; sleep 2   # the checks below start from the work account
   E ORG_PERSONAL=Company claude-account tab "$p" >/dev/null 2>&1
   [[ "$(tm show -wqv -t dev: @caccount)" == work ]] && ok "refuses if both accounts are in the same organization" || fail "organization safeguard"
   # Account per project: the shell that opens in the repo (or in one of its worktrees) takes the pinned account;
@@ -220,6 +238,7 @@ test_popups() {
   grep -q '^dev$' "$T/popup.out" 2>/dev/null && ok "inside, the commands control the outer tmux" || fail "popup: it does not see the outer tmux"
   if grep -q '^cwd=' "$T/popup.out" 2>/dev/null; then ok "runs in its own tmux session (scroll, copy, search)"
   else fail "popup: the inner session did not run"; cat "$T/popup.err" "$T/popup.typescript" 2>/dev/null | tr -d '\r'  | sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' | grep -v '^$' | tail -4 | sed 's/^/           /'; fi
+  [[ ! -e "$T/s/popups/tmux-$(id -u)/popup" ]] && ok "the popup server's socket file is removed when its last window closes" || fail "tmux-popup-run left its dead socket behind"
   local n=0 m; local -a missing=(); for m in "$TH"/.config/tmux-claude/menu*.tmux "$TH/.tmux.conf"; do [[ -f "$m" ]] || continue
     grep 'display-popup' "$m" | grep -v 'tmux -L\|tmux-popup-run\|tmux-scratch' | grep -q '\.local/bin/' && { n=$((n + 1)); missing+=("${m##*/}"); }; done
   (( n == 0 )) && ok "all the menus use interactive popups" || warn "popups without tmux-popup-run in: ${missing[*]}"
@@ -706,6 +725,18 @@ test_traces() {
     "$ses" "$now_utc" "$ses" "$now_utc" > "$d/$ses.jsonl"
   grep -q 'pytest' <<<"$(E ws-telemetry traces --days 1 2>&1)" && ok "ws-telemetry traces" || fail "ws-telemetry traces"
   grep -q 'EST-42' <<<"$(E ws-telemetry estimate 2>&1)" && ok "ws-telemetry estimate (per ticket)" || fail "ws-telemetry estimate"
+  r="$(E ws-telemetry estimate --by rama 2>&1)"
+  grep -q '^Estimation by branch' <<<"$r" && grep -q 'feature/EST-42' <<<"$r" && ! E ws-telemetry estimate --by other >/dev/null 2>&1 \
+    && ok "estimate --by still accepts the old values (rama, proyecto) and rejects an unknown one" || fail "estimate --by rama: ${r:0:200}"
+  # ws-telemetry sql: the view folds the Spanish column names of old days into the English ones. DuckDB is simulated:
+  # it answers the column list (DESCRIBE) and prints the view it is asked to create.
+  mkdir -p "$T/fduck"
+  # shellcheck disable=SC2016  # the fake's own $1 and $2
+  printf '%s\n' '#!/bin/bash' 'if [[ "$1" == -cmd ]]; then printf "%s\n" "$2"; exit 0; fi' \
+    'printf "%s\n" ts,VARCHAR evento,VARCHAR event,VARCHAR tipo,VARCHAR ms,BIGINT' > "$T/fduck/duckdb"; chmod +x "$T/fduck/duckdb"
+  r="$(E env PATH="$T/fduck:$TH/.local/bin:/usr/bin:/bin" ws-telemetry sql 2>&1)"
+  [[ "$r" == *'COALESCE("evento", "event")'*' AS "event"'* && "$r" == *"WHEN 'herramienta' THEN 'tool'"*' AS "type"'* && "$r" == *'EXCLUDE ('*'"tipo"'* ]] \
+    && ok "ws-telemetry sql: old days show under the English column names and values" || fail "ws-telemetry sql view: ${r:0:300}"
   grep -q '^# Week' <<<"$(E ws-telemetry week --current 2>&1)" && ok "ws-telemetry week (Markdown)" || fail "ws-telemetry week"
   printf 'estimate=1\n' > "$TH/.config/ws-telemetry/budgets.conf"
   grep -qP '^estimate\t\d+' <<<"$(E ws-telemetry budgets --alerts 2>&1)" && ok "an exceeded budget shows up in --alerts" || fail "budgets --alerts"
@@ -882,15 +913,20 @@ test_personal() {
   local P="$T/personal" g=(env WS_PERSONAL_DIR="$T/personal" GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t)
   mkdir -p "$TH/.config/ws-local/segments"; printf '#(echo x)\n' > "$TH/.config/ws-local/bar-extra.conf"
   printf 'echo MP\n' > "$TH/.config/ws-local/segments/mp.sh"; chmod 755 "$TH/.config/ws-local/segments/mp.sh"
+  printf 'mine|1|/srv/mine\n' > "$TH/.config/ws-local/roots.txt"
   E "${g[@]}" ws-personal init >/dev/null 2>&1
+  grep -qxF '.config/ws-local/roots.txt' "$P/include.txt" && [[ "$(cat "$P/home/.config/ws-local/roots.txt" 2>/dev/null)" == 'mine|1|/srv/mine' ]] \
+    && ok "your own folder roots (ws-local/roots.txt) are versioned by default" || fail "ws-personal does not version ws-local/roots.txt"
   [[ "$(git -C "$P" log --oneline 2>/dev/null | wc -l)" -ge 1 && -x "$P/home/.config/ws-local/segments/mp.sh" ]] \
     && ok "init: repo with your configuration (keeps execute permissions)" || fail "ws-personal init"
   printf 'x %s=abc12345\n' "pass""word" > "$TH/.config/ws-local/note.txt"
   ! E "${g[@]}" ws-personal sync >/dev/null 2>&1 && ! git -C "$P" ls-files | grep -q note.txt \
     && ok "with something that looks like a secret it does not commit" || fail "ws-personal stored a secret"
-  rm -f "$TH/.config/ws-local/note.txt" "$TH/.config/ws-local/bar-extra.conf"
+  rm -f "$TH/.config/ws-local/note.txt" "$TH/.config/ws-local/bar-extra.conf"; echo changed > "$TH/.config/ws-local/roots.txt"
   printf 'y\n' | E "${g[@]}" ws-personal restore >/dev/null 2>&1
   [[ -f "$TH/.config/ws-local/bar-extra.conf" ]] && ok "restore brings back what is versioned" || fail "ws-personal restore"
+  [[ "$(cat "$TH"/.local/share/ws-kit/backup.*/.config/ws-local/roots.txt 2>/dev/null)" == changed ]] && ! compgen -G "$TH/.config/ws-local/*.bak.*" >/dev/null \
+    && ok "restore copies what it replaces to ~/.local/share/ws-kit/backup.<date>/, not next to the file" || fail "ws-personal restore: no backup of the replaced file"
 }
 
 test_state() {
@@ -1168,12 +1204,22 @@ test_level() {
      "$RH/.claude/settings.json" >/dev/null && ok "settings: no az wildcards in allow and with the deny floor" || fail "settings without the ADR-013 floor"
   mkdir -p "$T/fc59"; printf '#!/bin/bash\n[[ "$1" == --help ]] && echo "  --setting-sources <sources>"\n' > "$T/fc59/claude"; chmod +x "$T/fc59/claude"
   r="$(E env PATH="$T/fc59:$TH/.local/bin:/usr/bin:/bin" WS_LEVELS_DIR="$T/levels" tmux-level --command bare)"
-  [[ "$r" == "claude -c --setting-sources project,local --settings '$T/levels/bare.json'" && "$(stat -c %a "$T/levels/bare.json")" == 600 ]] \
+  [[ "$r" == "claude-resume --setting-sources project,local --settings '$T/levels/bare.json'" && "$(stat -c %a "$T/levels/bare.json")" == 600 ]] \
     && ok "bare starts with --setting-sources project,local and its profile (0600)" || fail "bare command: $r"
-  tm -f /dev/null new-session -d -s dev "bash --norc --noprofile"; local p w; p="$(tm display -p -t dev '#{pane_id}')"; w="$(tm display -p -t dev '#{window_id}')"
-  E env PATH="$T/fc59:$TH/.local/bin:/usr/bin:/bin" WS_LEVELS_DIR="$T/levels" tmux-level full "$p" >/dev/null 2>&1; sleep 0.4
-  [[ "$(tm show -wqv -t "$w" @clevel)" == full && "$(tm capture-pane -p -t "$p")" == *"claude -c --setting-sources project,local --settings"*full*.json* ]] \
+  [[ "$(E tmux-level --command normal)" == claude-resume ]] && ok "normal starts through claude-resume (continues, or starts new when there is no conversation)" || fail "normal command: $(E tmux-level --command normal 2>&1)"
+  mkdir -p "$T/lvl"; conversation_in "$T/lvl" no; : > "$T/claude.log"
+  tm -f /dev/null new-session -d -s dev -c "$T/lvl" "bash --norc --noprofile"; local p w; p="$(tm display -p -t dev '#{pane_id}')"; w="$(tm display -p -t dev '#{window_id}')"
+  E env PATH="$T/fc59:$TH/.local/bin:/usr/bin:/bin" WS_LEVELS_DIR="$T/levels" tmux-level full "$p" >/dev/null 2>&1; sleep 1
+  [[ "$(tm show -wqv -t "$w" @clevel)" == full && "$(tm capture-pane -p -t "$p")" == *"claude-resume --setting-sources project,local --settings"*full*.json* ]] \
     && ok "switching level restarts Claude with its profile and marks the tab (🔒)" || fail "tmux-level full: level=$(tm show -wqv -t "$w" @clevel) · $(tm capture-pane -p -t "$p" | grep -v '^$' | tail -3)"
+  # A tab where Claude never received a message: the level still gets a running Claude, with the same flags.
+  tail -1 "$T/claude.log" | grep -q 'args=--setting-sources project,local --settings .*full' \
+    && ok "in a tab without a conversation, the level starts a new Claude with its profile" || fail "tmux-level without a conversation: $(tail -1 "$T/claude.log")"
+  # The simulated Claude is a bash script, which tmux-level takes for a shell: it is closed by hand before the switch.
+  conversation_in "$T/lvl"; tm send-keys -t "$p" /exit Enter; sleep 0.4
+  E env PATH="$T/fc59:$TH/.local/bin:/usr/bin:/bin" WS_LEVELS_DIR="$T/levels" tmux-level bare "$p" >/dev/null 2>&1; sleep 1
+  tail -1 "$T/claude.log" | grep -q 'args=--continue --setting-sources project,local --settings .*bare\.json' \
+    && ok "with a conversation, the level continues it with the same flags" || fail "tmux-level with a conversation: $(tail -1 "$T/claude.log")"
   tm kill-server 2>/dev/null
 }
 
@@ -1500,6 +1546,45 @@ test_lang() {
   rm -f "$lf"   # the isolated home ends as it started: without a saved language
 }
 
+# The checks ws-verify makes on the running server, against a throwaway one: TMUX_TMPDIR and HOME point it there.
+test_live_server() {
+  use_socket live
+  section "ws-verify --live: the running tmux server (PATH, save, tabs, scripts, sockets)"
+  have ws-verify && grep -q -- '--clean-sockets' "$TH/.local/bin/ws-verify" || { warn "ws-verify --live is not installed"; return; }
+  local R="$TH/.local/share/tmux/resurrect" sd r rc before; sd="$T/s/live/tmux-$(id -u)"
+  mkdir -p "$R"; before="$(readlink "$R/last" 2>/dev/null || true)"
+  plain() { sed 's/\x1b\[[0-9;]*m//g'; }
+  tm -f /dev/null new-session -d -s dev -n one; tm new-window -d -t dev -n two
+  tm new-session -d -t dev -s dev-m2                      # linked session (monitor 2): its tabs are the group's
+  printf 'window\tdev\t0\nwindow\tdev\t1\n' > "$R/tmux_resurrect_live.txt"; ln -sfn tmux_resurrect_live.txt "$R/last"
+  r="$(E ws-verify --live 2>&1 | plain)"; rc=${PIPESTATUS[0]}
+  [[ $rc == 0 && "$r" == *"ok     the server's PATH has ~/.local/bin"* && "$r" == *"ok     the save has the open tabs (2)"* && "$r" == *"· 0 failed"* ]] \
+    && ok "a healthy server passes, and a linked session does not count as more tabs" || fail "ws-verify --live on a healthy server (rc=$rc): $(grep -E 'FAIL|Result' <<<"$r" | head -3 | tr '\n' ' ')"
+  [[ "$r" == *"ok     save: the server started"* ]] && ok "the save is not judged in the first 5 minutes of the server" || fail "ws-verify --live judged the save of a server that just started"
+  # Everything wrong at once: no ~/.local/bin in the server's PATH, a tab that is not in the save, a finder session
+  # nobody is attached to, a key bound to a script that does not exist and the socket of a server that ended.
+  tm set-environment -g PATH /usr/bin:/bin; tm new-window -d -t dev -n three
+  tm new-session -d -t dev -s find-peek-77
+  # shellcheck disable=SC2088  # tmux expands the tilde when the key runs
+  tm bind-key F9 run-shell "~/.local/bin/ws-not-installed x"
+  tm -L wsdead -f /dev/null new-session -d -s x; tm -L wsdead kill-server; tm -L wslive -f /dev/null new-session -d -s x; sleep 0.3
+  r="$(E ws-verify --live 2>&1 | plain)"; rc=${PIPESTATUS[0]}
+  [[ $rc == 1 && "$r" == *"FAIL   the server's PATH lacks ~/.local/bin"*"→ tmux set-environment -g PATH"* ]] \
+    && ok "a server without ~/.local/bin in its PATH fails, with the command that fixes it" || fail "ws-verify --live did not see the server's PATH (rc=$rc)"
+  [[ "$r" == *"FAIL   the save has 2 tabs and 3 are open"* ]] && ok "a save that does not have the open tabs fails" || fail "ws-verify --live: tabs: $(grep 'the save has' <<<"$r")"
+  [[ "$r" == *"FAIL   leftover finder sessions without a client: find-peek-77"*"tmux kill-session -t =find-peek-77"* ]] \
+    && ok "a leftover find-peek-* session without a client fails" || fail "ws-verify --live did not see the leftover finder session"
+  [[ "$r" == *"FAIL   the status bar, a key or a hook calls scripts that are missing or not executable: ws-not-installed"* ]] \
+    && ok "a key bound to a script that is not installed fails" || fail "ws-verify --live did not see the missing script: $(grep 'scripts' <<<"$r")"
+  [[ "$r" == *"FAIL   1 stale tmux sockets in $sd: wsdead"*"→ ws-verify --clean-sockets"* ]] \
+    && ok "the socket of a server that ended is reported; a live one is not" || fail "ws-verify --live: sockets: $(grep -i 'socket' <<<"$r")"
+  r="$(E ws-verify --clean-sockets 2>&1)"
+  [[ "$r" == *"1 stale tmux sockets removed"* && ! -e "$sd/wsdead" && -S "$sd/wslive" && -S "$sd/default" ]] && tm has-session -t dev \
+    && ok "--clean-sockets removes only the sockets no server answers on" || fail "ws-verify --clean-sockets: $r · $(ls "$sd" | tr '\n' ' ')"
+  tm -L wslive kill-server 2>/dev/null; tm kill-server 2>/dev/null
+  rm -f "$R/tmux_resurrect_live.txt" "$R/last"; [[ -n "$before" ]] && ln -sfn "$before" "$R/last"
+}
+
 test_config
 test_menus_consistency
 test_lang
@@ -1527,6 +1612,7 @@ test_traces
 test_routing
 test_telegram
 test_groups
+test_live_server
 test_sandbox_placeholders
 (( AI )) && run_ai
 printf '\n\e[1mResult: %d ok · %d warnings · %d failed\e[0m\n' "$OK" "$WARNED" "$FAILED"

@@ -24,5 +24,17 @@ T=(tmux -L popup -f "$conf")
 
 (( persistent )) || "${T[@]}" kill-session -t "$name" 2>/dev/null
 # env -u TMUX: tmux refuses to nest sessions if it sees TMUX. Inside, the external TMUX is restored.
-exec env -u TMUX "${T[@]}" new-session -A -s "$name" -c "$PWD" \
+env -u TMUX "${T[@]}" new-session -A -s "$name" -c "$PWD" \
   "env TMUX='$outer' TMUX_PANE='$pane' WS_POPUP_SESSION='$name' $cmd"
+rc=$?
+# The popup server ends with its last session and tmux leaves its socket file behind: it is removed when tmux itself
+# says no server is there (never on a timeout or another error, and never while a persistent popup keeps it alive).
+# A server that is still shutting down answers something else for an instant: asked again, up to three times.
+sock="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/popup"
+for _ in 1 2 3; do
+  [[ -S "$sock" ]] || break
+  r="$(env -u TMUX timeout 5 tmux -S "$sock" list-sessions 2>&1)" && break
+  if [[ "$r" == "no server running"* ]]; then rm -f -- "$sock"; break; fi
+  sleep 0.2
+done
+exit "$rc"

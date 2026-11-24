@@ -125,6 +125,7 @@
 .config/tmux-claude/ux.tmux
 .config/tmux-claude/menu-views.tmux
 .config/tmux-claude/menu-usage.tmux
+.config/tmux-claude/menu-usage-reports.tmux
 .local/bin/tmux-recent
 .local/bin/tmux-level
 .config/tmux-claude/menu-claude-level.tmux

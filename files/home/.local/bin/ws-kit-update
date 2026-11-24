@@ -7,8 +7,9 @@
 #   ws-kit-update --check   only reports whether there is a new version (exit 10 = yes; 0 = no). ws-telegram runs it hourly.
 #   ws-kit-update --apply   applies without asking (for use from another script)
 #
-# Apply = git pull --ff-only → install.sh (backs up every file that changes) → ws-test. If ws-test fails,
-# it goes back to the previous commit and reinstalls; it reports the result over Telegram if configured.
+# Apply = git pull --ff-only → install.sh (copies every file that changes to ~/.local/share/ws-kit/backup.<date>/)
+# → ws-test. If ws-test fails, it goes back to the previous commit and reinstalls (the rollback is the kit's git
+# history, not the backup folders); it reports the result over Telegram if configured.
 # It touches nothing if you have uncommitted local changes or unpushed commits (on your main machine the kit
 # is usually ahead: there is nothing to pull there).
 set -uo pipefail
@@ -45,7 +46,7 @@ fi
 
 echo "==> Pulling $remote_ver"
 git pull -q --ff-only || die "git pull failed; nothing changed"
-echo "==> Installing (every file that changes is backed up as .bak.<date>)"
+echo "==> Installing (every file that changes is copied first to ~/.local/share/ws-kit/backup.<date>/)"
 if ! bash install.sh; then
   echo "✖ install.sh failed: going back to $local_ver"; git reset -q --hard "$local_"; bash install.sh >/dev/null 2>&1
   notify_tg "🔴 ws-kit-update: install.sh failed on $remote_ver; rolled back to $local_ver."; exit 1

@@ -7,7 +7,7 @@ cat <<TXT
 ${M}TMUX${R}  ${D}Ctrl+b and then the key · Alt+N without prefix${R}
   ${Y}m${R} or click on ${B}≡ menu${R} (status bar): menu with everything   ${Y}right click${R} on a tab: rename, close, move
   ${Y}o${R} open repo or folder    ${Y}f${R} finder             ${Y}D${R} dashboard        ${Y}A${R} subagents (v: reasoning)
-  ${M}Finder:${R} ${Y}f${R} tabs · ${Y}a${R} active · ${Y}F${R} favorites · ${Y}j${R} recent — inside: ${Y}Tab${R} view · ${Y}Ctrl+S${R} reply · ${Y}Alt+Y/N${R} approve/reject · ${Y}Ctrl+O${R} open here
+  ${M}Finder:${R} ${Y}f${R} tabs · ${Y}a${R} active · ${Y}F${R} favorites · ${Y}j${R} recent — inside: ${Y}Tab${R} view · ${Y}Ctrl+S${R} reply · ${Y}Alt+Y/N${R} approve/reject · ${Y}Ctrl+O${R} open here · ${Y}S${R} tree of groups
   ${Y}g${R} persistent shell       ${Y}P${R} PowerShell         ${Y}h${R} this help        ${Y}d${R} leave without closing anything
   ${M}No prefix:${R} ${Y}Alt+1…9${R} go · ${Y}Alt+←/→${R} previous/next · ${Y}Alt+0${R} last one used · ${Y}Alt+s${R} find · ${Y}Alt+Shift+←/→${R} move
   ${Y}'${R} go by number (e.g. 12)      ${Y},${R} rename           ${Y}&${R} close tab        ${D}mouse wheel on the status bar: switch${R}

@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 #
 # install.sh — applies the repo's configuration (files/) to this machine WITHOUT overwriting blindly:
-# every file that changes is backed up first as <file>.bak.<date>; what is already the same is left alone.
+# every file that changes is copied first to ~/.local/share/ws-kit/backup.<date>/<same path>; what is already the
+# same is left alone. The newest 10 backup folders are kept.
 #
 # Usage: bash install.sh [--dry-run] [--no-plugins] [--no-mcp] [--no-git-hooks] [--win-user USER] [--repos PATH]
 #        bash install.sh --remove-shims   deletes the wrappers left under the names used before 3.0
+#        bash install.sh --prune-backups [--dry-run]   moves the <file>.bak.<date> copies that earlier versions left
+#                           next to each file into ~/.local/share/ws-kit/backup.legacy/
 #   --dry-run          shows what would change (new / changed / same) without writing anything
 #   --no-plugins       does not install TPM or the tmux plugins
 #   --no-mcp           does not register MCP servers
@@ -16,20 +19,73 @@ set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/migrate.sh"
 
-DRY=0 PLUGINS=1 MCP=1 GITHOOKS=1 SHIMS=0 REPOS_DIR=""
+DRY=0 PLUGINS=1 MCP=1 GITHOOKS=1 SHIMS=0 PRUNE=0 REPOS_DIR=""
 STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP_ROOT="$HOME/.local/share/ws-kit"   # also holds pre-english.<date> (migrate.sh), which is never pruned
+BACKUP_DIR="$BACKUP_ROOT/backup.$STAMP"
+BACKUP_KEEP=10
 while (( $# )); do
   case "$1" in
     --dry-run) DRY=1 ;; --no-plugins) PLUGINS=0 ;; --no-mcp) MCP=0 ;; --no-git-hooks) GITHOOKS=0 ;;
     --remove-shims) SHIMS=1 ;;
+    --prune-backups) PRUNE=1 ;;
     --win-user) export WIN_USER="${2:?missing user}"; shift ;;
     --repos) REPOS_DIR="${2:?missing path}"; shift ;;
-    -h|--help) sed -n '3,15p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    -h|--help) sed -n '3,18p' "${BASH_SOURCE[0]}"; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
   shift
 done
+
+#######################################
+# Copies a file of $HOME into this run's backup folder, keeping its relative path. Used before a file is replaced
+# (apply_file) and by migrate.sh for ~/.bashrc. Does nothing in a dry run, and never replaces a copy already there.
+# Arguments: path relative to $HOME.
+#######################################
+backup_file() {
+  (( DRY )) && return 0
+  [[ -e "$BACKUP_DIR/$1" ]] && return 0
+  mkdir -p "$(dirname "$BACKUP_DIR/$1")" && cp -p "$HOME/$1" "$BACKUP_DIR/$1"
+}
+
+#######################################
+# Keeps the newest $BACKUP_KEEP backup.<date> folders and deletes the older ones. Only folders named by a date are
+# touched: pre-english.<date> and backup.legacy are never deleted.
+#######################################
+rotate_backups() {
+  local d
+  while IFS= read -r d; do rm -rf -- "$d"; done < <(
+    find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'backup.[0-9]*' 2>/dev/null | sort -r \
+      | tail -n +$((BACKUP_KEEP + 1))
+  )
+}
+
+#######################################
+# Moves the <file>.bak.<date> copies that versions before 3.0 left next to each file into
+# ~/.local/share/ws-kit/backup.legacy/<relative path>.<date>. Looks only at the kit's own paths: every manifest
+# path (files, and the files directly inside its folders), ~/.bashrc and the names used before 3.0 (renames.tsv).
+# Outputs: one line per file and the count. Uses DRY.
+#######################################
+prune_legacy_backups() {
+  local p f rel n=0 dest="$BACKUP_ROOT/backup.legacy"
+  while IFS= read -r f; do
+    [[ -f "$f" && "$f" =~ ^(.*)\.bak\.([0-9][0-9-]*)$ ]] || continue
+    rel="${BASH_REMATCH[1]#"$HOME"/}.${BASH_REMATCH[2]}"
+    printf '  moved   %s\n' "${f#"$HOME"/}"; n=$((n + 1))
+    (( DRY )) || { mkdir -p "$(dirname "$dest/$rel")" && mv -f -- "$f" "$dest/$rel"; }
+  done < <(
+    { manifest_paths; echo .bashrc; awk -F'\t' '$1 !~ /^#/ && NF >= 3 { print $2 }' "$KIT/renames.tsv"; } | sort -u \
+      | while IFS= read -r p; do
+          if [[ "$p" == */ ]]; then find "$HOME/${p%/}" -maxdepth 1 -type f -name '*.bak.*' 2>/dev/null || true
+          else compgen -G "$HOME/$p.bak.*" || true; fi
+        done | sort -u
+  )
+  if (( DRY )); then log "Dry run: $n backup files would be moved to ${dest/#"$HOME"/\~}"
+  else log "$n backup files moved to ${dest/#"$HOME"/\~}"; fi
+}
+
 if (( SHIMS )); then log "Wrappers of the old names"; remove_shims; exit 0; fi
+if (( PRUNE )); then log "Backups left next to the files (*.bak.<date>)"; prune_legacy_backups; exit 0; fi
 [[ -d "$FILES" ]] || die "There is no files/: run export.sh first on the source machine"
 
 WU="$(win_user)"
@@ -45,7 +101,7 @@ render_templates "$RENDER" "$WU" "$HOME" "$(id -un)"
 FILES="$RENDER/home"; MCP_FILE="$RENDER/mcp-servers.json"
 
 #######################################
-# Copies a file from the repo to $HOME, with a backup if it changes.
+# Copies a file from the repo to $HOME, with a backup (backup_file) if it changes.
 # Arguments: relative path. Outputs: status (new / changed / same).
 #######################################
 apply_file() {
@@ -56,7 +112,7 @@ apply_file() {
     printf '  same    %s\n' "$rel"; return 0
   else
     printf '  changed %s\n' "$rel"
-    (( DRY )) || cp -p "$dst" "$dst.bak.$STAMP"
+    backup_file "$rel"
   fi
   (( DRY )) || install -D -m "$(stat -c '%a' "$src")" "$src" "$dst"
 }
@@ -79,9 +135,10 @@ ensure_bashrc() {
 }
 
 migrate_names
-log "Files ($([[ $DRY -eq 1 ]] && echo 'dry run' || echo "backup: *.bak.$STAMP"))"
+log "Files ($([[ $DRY -eq 1 ]] && echo 'dry run' || echo "backup: ${BACKUP_DIR/#"$HOME"/\~}"))"
 while IFS= read -r rel; do apply_file "$rel"; done < <(manifest_files "$FILES")
 ensure_bashrc
+(( DRY )) || rotate_backups
 
 # Git gate: the kit's hooks (secrets, message, push to main) only run if git looks for them in
 # ~/.config/git/hooks. Set only if there is no other value: it does not override yours. --no-git-hooks skips it.

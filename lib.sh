@@ -22,7 +22,9 @@ manifest_paths() { grep -vE '^\s*(#|$)' "$KIT/manifest.txt"; }
 #######################################
 # Expands the manifest into concrete files under a given root.
 # Arguments: root ($HOME to export, $FILES to install).
-# Outputs: relative paths of existing files.
+# Outputs: relative paths of existing files. In a folder, *.bak.* files are skipped: the copies that installers
+# before 3.0 left next to each file (now they go to ~/.local/share/ws-kit/backup.<date>/; `install.sh
+# --prune-backups` moves the old ones away).
 #######################################
 manifest_files() {
   local root="$1" p

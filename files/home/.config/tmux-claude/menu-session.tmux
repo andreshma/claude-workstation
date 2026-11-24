@@ -6,7 +6,6 @@ set -g status-interval 0
 display-menu -O -T "#[align=centre] 🗂  Tabs and session · #S › #W " -x C -y C -- \
   "-#[nodim]── Move around ──" "" "" \
   "Go by number…" N "command-prompt -p 'Tab number:' \"select-window -t ':%%'\"" \
-  "Groups and tabs (Alt+←/→ tab, Alt+↑/↓ group)" S "choose-tree -sZ -O name" \
   "-#[nodim]── This tab ──" "" "" \
   "Summary: what, where and where it left off (double click)" i "display-popup -E -w 84% -h 70% -T ' Tab summary ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-summary\"" \
   "#{?@fav,Remove from favorites ☆,Add to favorites ★} (Ctrl+b *)" '*' "run-shell -b '~/.local/bin/tmux-favorites --toggle #{window_id}'" \
@@ -16,7 +15,7 @@ display-menu -O -T "#[align=centre] 🗂  Tabs and session · #S › #W " -x C -
   "-#[nodim]── Save and restore ──" "" "" \
   "Save session now" s "run-shell ~/.tmux/plugins/tmux-resurrect/scripts/save.sh" \
   "Restore tabs from a save…" R "display-popup -E -w 90% -h 70% -T ' Restore tabs ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-recover\"" \
-  "Bring recent conversations into tmux" t "display-popup -E -w 90% -h 80% -T ' Bring conversations ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-bring\"" \
+  "Bring many conversations at once…" t "display-popup -E -w 90% -h 80% -T ' Bring conversations ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-bring\"" \
   "Save this tab as a template" G "command-prompt -p 'Template name:' \"run-shell -b '~/.local/bin/tmux-template --save %% #{window_id}'\"" \
   '' \
   "‹ Back" BSpace "source-file ~/.config/tmux-claude/menu.tmux"

@@ -2,7 +2,8 @@
 #
 # tests/run.sh — tests of the kit in temporary HOMEs (does not touch your machine):
 # export captures the manifest, blocks secrets, install is idempotent, --dry-run does not write,
-# a modified file is backed up before it is replaced, .bashrc gets no duplicate lines and an installation
+# a modified file is backed up (under ~/.local/share/ws-kit/backup.<date>/) before it is replaced, the old
+# side-by-side *.bak.<date> copies are moved away by --prune-backups, .bashrc gets no duplicate lines and an installation
 # made with the Spanish names (before 3.0) is migrated without losing or overwriting anything.
 # If files/ exists (a real export), it also validates its JSON and lints its scripts.
 #
@@ -78,7 +79,35 @@ check ".bashrc without duplicates" test "$(grep -cF 'tmux-claude/functions.sh' "
 echo 'set -g status off' > "$B/.tmux.conf"
 HOME="$B" WIN_USER=other bash "$K/install.sh" --no-plugins --no-mcp > "$T/i3.log" 2>&1
 check "a changed file is reported" grep -q 'changed .tmux.conf' "$T/i3.log"
-check "and backed up before it is replaced" grep -rq 'status off' "$B"/.tmux.conf.bak.*
+check "and backed up before it is replaced, under ~/.local/share/ws-kit/backup.<date>/" grep -qx 'set -g status off' "$B"/.local/share/ws-kit/backup.*/.tmux.conf
+check "no backup is left next to the file" not compgen -G "$B/.tmux.conf.bak.*"
+check "the header names the backup folder once" test "$(grep -c 'backup: ~/.local/share/ws-kit/backup\.[0-9]*-[0-9]*)$' "$T/i3.log")" = 1
+check "an install that changes nothing creates no backup folder" test "$(find "$B/.local/share/ws-kit" -maxdepth 1 -name 'backup.*' | wc -l)" = 1
+# Rotation: the newest 10 backup.<date> folders stay; pre-english.<date> and backup.legacy are never deleted.
+for i in 01 02 03 04 05 06 07 08 09 10 11 12; do mkdir -p "$B/.local/share/ws-kit/backup.200001$i-000000"; done
+mkdir -p "$B/.local/share/ws-kit/pre-english.20000101-000000" "$B/.local/share/ws-kit/backup.legacy"
+echo 'set -g status on' > "$B/.tmux.conf"; sleep 1   # the folder is named to the second: this run gets its own
+HOME="$B" WIN_USER=other bash "$K/install.sh" --dry-run --no-plugins --no-mcp > "$T/i4.log" 2>&1
+check "--dry-run deletes no old backup folder" test "$(find "$B/.local/share/ws-kit" -maxdepth 1 -name 'backup.[0-9]*' | wc -l)" = 13
+HOME="$B" WIN_USER=other bash "$K/install.sh" --no-plugins --no-mcp > "$T/i5.log" 2>&1
+check "keeps the newest 10 backup folders" test "$(find "$B/.local/share/ws-kit" -maxdepth 1 -name 'backup.[0-9]*' | wc -l)" = 10
+check "deletes the oldest and keeps the newest" bash -c "[[ ! -e '$B/.local/share/ws-kit/backup.20000104-000000' && -d '$B/.local/share/ws-kit/backup.20000105-000000' ]] && grep -qx 'set -g status on' '$B'/.local/share/ws-kit/backup.20[1-9]*/.tmux.conf"
+check "never deletes pre-english.<date> or backup.legacy" test -d "$B/.local/share/ws-kit/pre-english.20000101-000000" -a -d "$B/.local/share/ws-kit/backup.legacy"
+# --prune-backups: the copies earlier versions left next to each file move to backup.legacy; nothing else is touched.
+L="$B/.local/share/ws-kit/backup.legacy"
+echo one > "$B/.tmux.conf.bak.20260101-101010"; echo two > "$B/.claude/hooks/guard.sh.bak.20260102-101010"
+echo three > "$B/.config/tmux-claude/menu-sesion.tmux.bak.20260103-101010"; echo four > "$B/.bashrc.bak.20260104-101010"
+echo mine > "$B/notes.txt.bak.20260101-101010"; echo mine > "$B/.config/tmux-claude/own.bak.txt"
+before="$(cd "$B" && find . -type f | sort)"
+HOME="$B" bash "$K/install.sh" --prune-backups --dry-run > "$T/p0.log" 2>&1
+check "--prune-backups --dry-run moves nothing and gives the count" bash -c "[[ \"\$(cd '$B' && find . -type f | sort)\" == \"\$1\" ]] && grep -q '4 backup files would be moved' '$T/p0.log'" _ "$before"
+HOME="$B" bash "$K/install.sh" --prune-backups > "$T/p1.log" 2>&1
+check "--prune-backups moves the copies of the manifest paths (files and folders)" bash -c "[[ \$(cat '$L/.tmux.conf.20260101-101010') == one && \$(cat '$L/.claude/hooks/guard.sh.20260102-101010') == two ]]"
+check "--prune-backups moves the copies of the names used before 3.0 and of .bashrc" bash -c "[[ \$(cat '$L/.config/tmux-claude/menu-sesion.tmux.20260103-101010') == three && \$(cat '$L/.bashrc.20260104-101010') == four ]]"
+check "--prune-backups prints the count and leaves none next to the files" bash -c "grep -q '^==> 4 backup files moved' '$T/p1.log' && ! compgen -G '$B/.tmux.conf.bak.*' && ! compgen -G '$B/.claude/hooks/*.bak.*'"
+check "--prune-backups leaves files that are not the kit's" bash -c "[[ -f '$B/notes.txt.bak.20260101-101010' && -f '$B/.config/tmux-claude/own.bak.txt' ]]"
+HOME="$B" bash "$K/install.sh" --prune-backups > "$T/p2.log" 2>&1
+check "--prune-backups again: nothing left to move" grep -q '^==> 0 backup files moved' "$T/p2.log"
 
 echo "5) migration of an installation made with the Spanish names (migrate.sh, renames.tsv)"
 MARK='# ws-kit shim: deprecated name, safe to delete'
@@ -111,7 +140,7 @@ check "old kit files are set aside, not deleted (commands)" grep -qx 'echo old-n
 check "old kit files are set aside, not deleted (menus)" grep -qx '# old menu' "$M"/.local/share/ws-kit/pre-english.*/.config/tmux-claude/menu-sesion.tmux
 check "and the old menu is gone from its folder" not test -e "$M/.config/tmux-claude/menu-sesion.tmux"
 check ".bashrc: the old line now loads accounts.sh" grep -qxF '[ -f ~/.config/tmux-claude/accounts.sh ] && . ~/.config/tmux-claude/accounts.sh' "$M/.bashrc"
-check ".bashrc: no line with the old name, no duplicate, and a backup" bash -c "! grep -q 'cuentas\.sh' '$M/.bashrc' && [[ \$(grep -c 'accounts\.sh' '$M/.bashrc') == 1 ]] && grep -q 'cuentas\.sh' '$M'/.bashrc.bak.*"
+check ".bashrc: no line with the old name, no duplicate, and a backup" bash -c "! grep -q 'cuentas\.sh' '$M/.bashrc' && [[ \$(grep -c 'accounts\.sh' '$M/.bashrc') == 1 ]] && grep -q 'cuentas\.sh' '$M'/.local/share/ws-kit/backup.*/.bashrc && ! compgen -G '$M/.bashrc.bak.*'"
 check "a migrated installation keeps Spanish (lang = es)" test "$(cat "$M/.config/tmux-claude/lang" 2>/dev/null)" = es
 check "a new installation does not set the language" not test -e "$B/.config/tmux-claude/lang"
 check "and is told to restart tmux only when names changed" bash -c "grep -q 'restart tmux' '$T/m1.log' && ! grep -q 'restart tmux' '$T/i1.log'"

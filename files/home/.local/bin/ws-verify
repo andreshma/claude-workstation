@@ -5,6 +5,10 @@
 #
 # Usage: ws-verify [--quick]
 #   --quick   skips the kit tests and the full repo review (ws-gate repo)
+#        ws-verify --live            only the checks of the running tmux server: PATH, save, tabs, leftover finder
+#                                    sessions, scripts the bar, keys and hooks call, stale sockets
+#        ws-verify --clean-sockets   deletes the tmux socket files no server answers on (the one mode that writes;
+#                                    never «default» or a socket with a live server, such as the popups')
 set -uo pipefail
 KIT="$HOME/code/claude-workstation"
 QUICK=0; [[ "${1:-}" == "--quick" ]] && QUICK=1
@@ -16,6 +20,102 @@ fail() { printf '  \e[31mFAIL\e[0m   %s\n' "$1"; FAILED=$((FAILED + 1)); FAILURE
 # detail <text> — shows up to 6 lines of the reason, indented.
 detail() { sed -n '1,6s/^/           /p' <<<"$1"; }
 section() { printf '\n\e[1m== %s\e[0m\n' "$1"; }
+
+# Where tmux keeps its sockets. TMUX_TMPDIR is tmux's own variable: the tests point it (and HOME) at temporary folders,
+# so every check below can run against a throwaway server.
+SOCKDIR="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
+
+#######################################
+# Prints the socket files in $SOCKDIR that no server answers on (test servers and old popups leave them behind:
+# tmux does not delete its socket when the server ends). Never «default», never the socket of the server this runs in.
+# A socket counts as stale only when tmux itself says «no server running»: a timeout or a permission error (inside
+# Claude's sandbox every socket is refused) proves nothing, and that socket is left alone.
+#######################################
+stale_sockets() {
+  local s r mine="${TMUX:-}"; mine="${mine%%,*}"
+  for s in "$SOCKDIR"/*; do
+    [[ -S "$s" && "${s##*/}" != default && "$s" != "$mine" ]] || continue
+    r="$(env -u TMUX timeout 5 tmux -S "$s" list-sessions 2>&1)" && continue
+    [[ "$r" == "no server running"* ]] && printf '%s\n' "$s"
+  done
+  return 0
+}
+
+#######################################
+# The REAL tmux server (the one a plain `tmux` reaches). ws-test uses isolated servers, so it cannot see a server
+# started without ~/.local/bin in its PATH, a save that stopped running or a restore that did not act.
+# Each failure prints its remedy on the next line.
+#######################################
+remedy() { printf '           → %s\n' "$1"; }
+live_checks() {
+  section "tmux: the running server"
+  local bin="$HOME/.local/bin" last="$HOME/.local/share/tmux/resurrect/last" path saved open age up s f
+  local -a peeks=() missing=() stale=()
+  if ! tmux list-sessions >/dev/null 2>&1; then warn "no tmux server is running: its checks are skipped"
+  else
+    path="$(tmux show-environment -g PATH 2>/dev/null)"; path="${path#PATH=}"
+    if [[ ":$path:" == *":$bin:"* ]]; then ok "the server's PATH has ~/.local/bin"
+    else
+      fail "the server's PATH lacks ~/.local/bin (menus and hooks do not find the kit's commands)"
+      # shellcheck disable=SC2016  # the command is shown for the user to run, not expanded here
+      remedy 'tmux set-environment -g PATH "$HOME/.local/bin:$PATH"; next time start tmux from a shell that has it'
+    fi
+    # Same rule as ws-health: the date of the save «last» points to is the last time it was confirmed.
+    age=$(( $(date +%s) - $(stat -c %Y "$(readlink -f "$last")" 2>/dev/null || echo 0) ))
+    up=$(( $(date +%s) - $(tmux display -p '#{start_time}' 2>/dev/null || date +%s) ))
+    if (( up < 300 )); then ok "save: the server started ${up}s ago (checked after the first 5 min)"
+    elif (( age < 300 )); then ok "save confirmed ${age}s ago"
+    else
+      if [[ -e "$last" ]]; then fail "the save was not confirmed in the last 5 min (last: $(( age / 60 )) min ago)"
+      else fail "there is no tmux save (${last/#"$HOME"/\~} is missing)"; fi
+      remedy "Ctrl+b Ctrl+s; if it stays old, run ~/.local/bin/tmux-save-now and check that continuum is loaded"
+    fi
+    # Linked sessions (monitor 2, the finder's find-peek-*) show the tabs of their group: every tab is counted once.
+    saved="$(grep -c '^window' "$last" 2>/dev/null)"; saved="${saved:-0}"
+    open="$(tmux list-windows -a -F '#{window_id}' 2>/dev/null | sort -u | wc -l)"
+    if (( saved > 0 && saved == open )); then ok "the save has the open tabs ($saved)"
+    else
+      fail "the save has $saved tabs and $open are open"
+      remedy "Ctrl+b Ctrl+s; tabs missing after a restart: Menu → Tabs and session → Restore tabs from a save"
+    fi
+    while IFS=$'\t' read -r s f; do
+      [[ "$s" == find-peek-* && "$f" == 0 ]] && peeks+=("$s")
+    done < <(tmux list-sessions -F '#{session_name}	#{session_attached}' 2>/dev/null)
+    if (( ${#peeks[@]} == 0 )); then ok "no leftover find-peek-* session"
+    else
+      fail "leftover finder sessions without a client: ${peeks[*]}"
+      remedy "$(printf 'tmux kill-session -t =%s; ' "${peeks[@]}")"
+    fi
+    while IFS= read -r f; do
+      [[ -x "$HOME/$f" ]] || missing+=("${f##*/}")
+    done < <({ tmux show -gqv status-right; tmux show -gqv status-left; tmux list-keys; tmux show-hooks -g; } 2>/dev/null \
+               | grep -oE '\.local/bin/[A-Za-z0-9_.-]+' | sort -u)
+    if (( ${#missing[@]} == 0 )); then ok "every script the status bar, the keys and the hooks call exists"
+    else
+      fail "the status bar, a key or a hook calls scripts that are missing or not executable: ${missing[*]}"
+      remedy "bash install.sh in the kit, then tmux source-file ~/.tmux.conf (a binding of an old name: restart tmux)"
+    fi
+  fi
+  mapfile -t stale < <(stale_sockets)
+  if (( ${#stale[@]} == 0 )); then ok "no stale tmux sockets in $SOCKDIR"
+  else
+    fail "${#stale[@]} stale tmux sockets in $SOCKDIR: $(printf '%s ' "${stale[@]##*/}")"
+    remedy "ws-verify --clean-sockets"
+  fi
+}
+
+summary() {
+  printf '\n\e[1mResult: %d ok · %d warnings · %d failed\e[0m\n' "$OK" "$WARNED" "$FAILED"
+  if (( FAILED )); then printf '  - %s\n' "${FAILURES[@]}"; exit 1; fi
+}
+
+case "${1:-}" in
+  --live) live_checks; summary; exit 0 ;;
+  --clean-sockets)
+    n=0
+    while IFS= read -r s; do rm -f -- "$s" && { printf '  removed %s\n' "$s"; n=$((n + 1)); }; done < <(stale_sockets)
+    echo "$n stale tmux sockets removed from $SOCKDIR"; exit 0 ;;
+esac
 
 #######################################
 # 1. Installed patches
@@ -53,6 +153,8 @@ section "tmux"
 # (catches invalid options) without the run lines: that way resurrect/continuum do not start there,
 # where they could overwrite the real save. The menus are only parsed (-n): they need a client.
 TS="wsverify-$$"; tmp_conf="$(mktemp)"
+# tmux leaves the socket file of a server that ended: this one is removed on the way out.
+trap 'tmux -L "$TS" kill-server 2>/dev/null; rm -f "$SOCKDIR/$TS"' EXIT
 grep -vE '^[[:space:]]*run(-shell)?\b' ~/.tmux.conf > "$tmp_conf"
 r=$(tmux -L "$TS" -f /dev/null new-session -d \; source-file "$tmp_conf" 2>&1)
 if [[ -z "$r" ]]; then ok ".tmux.conf loads without errors"; else fail ".tmux.conf"; detail "$r"; fi
@@ -62,7 +164,7 @@ for m in ~/.config/tmux-claude/*.tmux; do
   else r=$(tmux -L "$TS" source-file -n "$m" 2>&1); fi
   if [[ -z "$r" ]]; then ok "${m##*/}"; else fail "${m##*/}"; detail "$r"; fi
 done
-tmux -L "$TS" kill-server 2>/dev/null
+tmux -L "$TS" kill-server 2>/dev/null; rm -f "$SOCKDIR/$TS"
 if tmux has-session -t dev 2>/dev/null; then
   ok "dev session alive ($(tmux list-windows -t dev | wc -l) tabs)"
   last=$(readlink -f ~/.local/share/tmux/resurrect/last 2>/dev/null)
@@ -74,6 +176,7 @@ if tmux has-session -t dev 2>/dev/null; then
   else fail "there is no resurrect save"; fi
   [[ "$(tmux show -gqv @theme_mode)" =~ ^(dark|light|auto)$ ]] && ok "theme: $(tmux show -gqv @theme_mode)" || warn "theme not applied (Menu → Appearance)"
 else warn "the dev session is not running; state and save are skipped"; fi
+live_checks
 
 #######################################
 # 4. Screensaver: every scene draws without error
@@ -178,6 +281,5 @@ fi
 #######################################
 # Summary
 #######################################
-printf '\n\e[1mResult: %d ok · %d warnings · %d failed\e[0m\n' "$OK" "$WARNED" "$FAILED"
-if (( FAILED )); then printf '  - %s\n' "${FAILURES[@]}"; exit 1; fi
+summary
 echo "Ready to push."
