@@ -8,6 +8,7 @@
 # Grupos: si ya hay pestaña en cualquier grupo salta a ella; si no, la crea en la sesión de su grupo
 # (etiqueta de roots.txt). Para volver a todo en la sesión actual: grupos=off en ~/.config/tmux-claude/ajustes
 # Uso: tmux-open [--opus]   (--opus abre la pestaña nueva con Claude en Opus, función two)
+#      tmux-open --dir <carpeta>   abre esa carpeta sin preguntar (lo usa tmux-favoritos)
 # Internos (los usa fzf al navegar): --lista · --hijos <ruta> · --arriba <ruta> <etiqueta>
 set -euo pipefail
 conf="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-claude/roots.txt"
@@ -89,6 +90,9 @@ esac
 
 fn=tw; prompt='abrir> '
 [[ "${1:-}" == --opus ]] && { fn=two; prompt='abrir con Opus> '; }
+dir=""
+if [[ "${1:-}" == --dir ]]; then dir="$(realpath -e -- "${2:?carpeta}")" || exit 1; fi
+if [[ -z "$dir" ]]; then
 [[ -f "$conf" ]] || { echo "Falta $conf"; read -rsn1; exit 1; }
 yo="$(printf '%q' "$0")"
 sel="$(list_dirs | sort | fzf --reverse --delimiter="$TAB" --with-nth=1 --prompt="$prompt" \
@@ -97,6 +101,7 @@ sel="$(list_dirs | sort | fzf --reverse --delimiter="$TAB" --with-nth=1 --prompt
   --bind "left:reload($yo --arriba {2} {1})+clear-query" \
   --preview 'git -C {2} log --oneline -8 2>/dev/null; echo; ls -p {2} | head -40')" || exit 0
 dir="${sel#*"$TAB"}"
+fi
 
 # Pestaña existente en CUALQUIER grupo (sesión): salta a ella.
 destino="$(tmux list-windows -a -F "#{session_name}${TAB}#{window_id}${TAB}#{pane_current_path}" |

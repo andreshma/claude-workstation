@@ -79,6 +79,7 @@ Marcadores de plantilla: `@WINHOME@`, `@WIN_USER@`, `@HOME@`, `@LINUX_USER@`.
 | Entrar | `dev` en PowerShell, el acceso directo o Windows Terminal |
 | Abrir un repo con Claude | `Ctrl+b o` · `tw <carpeta>` |
 | Moverme entre pestañas | `Alt+1…9`, `Alt+←/→`, `Alt+0` (última), `Alt+s` (buscar), `Alt+↑/↓` (grupo) |
+| Pestañas favoritas | `Ctrl+b *` pone o quita la ★ · `Ctrl+b F` abre la lista (va a la pestaña o la abre) |
 | Menú con todo | `Ctrl+b m` o clic en `≡ menú` · paleta: `Ctrl+b Espacio` |
 | Ver qué me espera | Barra (`⚠`) · `Ctrl+b a` (activas) · `Ctrl+b D` (tablero) · Menú → `g` (ir a la siguiente que te espera) |
 | Elegir el modelo por tarea | `cr "tarea"` · Menú → Claude → Modelo · el ruteo pregunta antes de cambiar |

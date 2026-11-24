@@ -20,6 +20,7 @@ EXTRA="${WS_BARRA_EXTRA:-$HOME/.config/ws-local/barra-extra.conf}"
 barra() {
   [[ -x "$B/tmux-estado" ]] && "$B/tmux-estado" --todas   # estado de Claude con su tiempo (parche 56)
   [[ -x "$B/tmux-etiqueta" ]] && "$B/tmux-etiqueta" --barra
+  [[ -x "$B/tmux-favoritos" ]] && "$B/tmux-favoritos" --barra
   local o seg actual
   for o in window-status-format window-status-current-format; do
     [[ "$(tmux show -gv "$o" 2>/dev/null)" == *"@crama"* ]] || tmux set -ag "$o" '#{?@cgrab, #{@cgrab},}#{?@crama, #[dim]#{@crama}#[nodim],}'

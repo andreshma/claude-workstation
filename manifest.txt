@@ -95,6 +95,7 @@
 .local/bin/tmux-pregunta
 .local/bin/tmux-difundir
 .local/bin/tmux-etiqueta
+.local/bin/tmux-favoritos
 .local/bin/tmux-enfoque
 .local/bin/tmux-logs
 .local/bin/tmux-monitor2

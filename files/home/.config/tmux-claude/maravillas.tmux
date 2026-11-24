@@ -11,6 +11,11 @@ bind N run-shell -b "~/.local/bin/tmux-avisame '#{pane_id}'"
 bind u display-popup -E -w 85% -h 70% -T ' Extraer de la pantalla ' "~/.local/bin/tmux-flot-run ~/.local/bin/tmux-extraer '#{pane_id}'"
 bind ? display-popup -E -w 80% -h 70% -d "#{pane_current_path}" -T ' Pregunta rápida ' "~/.local/bin/tmux-flot-run ~/.local/bin/tmux-pregunta '#{pane_id}'"
 bind E run-shell -b "~/.local/bin/tmux-etiqueta --menu '#{window_id}'"
+# Favoritas: * pone o quita la pestaña actual, F abre la lista. La ★ se repone al abrir pestañas o conectar.
+bind * run-shell -b "~/.local/bin/tmux-favoritos --alternar '#{window_id}'"
+bind F display-popup -E -w 85% -h 70% -T ' Favoritas ' "~/.local/bin/tmux-flot-run ~/.local/bin/tmux-favoritos"
+set-hook -g 'after-new-window[62]' 'run-shell -b "~/.local/bin/tmux-favoritos --marcar"'
+set-hook -g 'client-attached[62]' 'run-shell -b "~/.local/bin/tmux-favoritos --marcar"'
 run-shell -b "~/.local/bin/tmux-fondo --barra"
 # Etiqueta, CI/PR y tus segmentos (~/.config/ws-local/barra-extra.conf) vuelven a la barra tras un cambio de tema.
 set-hook -g 'client-attached[52]' 'run-shell -b "~/.local/bin/tmux-fondo --barra"'
