@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #
-# ws-aviso — aviso de Windows (toast) y, si se pide, también por Telegram. Al hacer clic en el aviso, Windows
-# Terminal pasa al frente y tmux va a la pestaña del panel (protocolo ws-claude://foco/N del parche 31).
+# ws-aviso — Windows notification (toast) and, on request, a Telegram one too. Clicking the notification brings
+# Windows Terminal to the front and tmux goes to the pane's tab (ws-claude://foco/N protocol from patch 31).
 #
-# Uso: ws-aviso [--panel %N] [--telegram] [--forzar] "título" "texto"
-#   --panel     panel de tmux al que lleva el clic
-#   --telegram  además manda el aviso por Telegram (ws-telegram notificar), ya redactado
-#   --forzar    avisa aunque los avisos de Windows estén apagados o estés en modo enfoque
-# Título y texto se redactan (ws-redactar) y viajan a PowerShell en base64 dentro de -EncodedCommand: nunca se
-# interpretan como código. Registro sin el texto: ~/.local/share/ws-telemetria/avisos/AAAA-MM-DD.jsonl.
-# WS_AVISO_LOG=archivo: solo registra (pruebas).
+# Usage: ws-aviso [--panel %N] [--telegram] [--forzar] "title" "text"
+#   --panel     tmux pane the click leads to
+#   --telegram  also sends the notification over Telegram (ws-telegram notificar), already redacted
+#   --forzar    notifies even if Windows notifications are off or you are in focus mode
+# Title and text are redacted (ws-redactar) and travel to PowerShell as base64 inside -EncodedCommand: they are
+# never interpreted as code. Log without the text: ~/.local/share/ws-telemetria/avisos/YYYY-MM-DD.jsonl.
+# WS_AVISO_LOG=file: only logs (tests).
 set -uo pipefail
 panel="" tg=0 forzar=0
 while [[ $# -gt 0 ]]; do
@@ -21,7 +21,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 red() { ws-redactar <<<"$1" 2>/dev/null || printf '%s' "$1"; }
-titulo="$(red "${1:-Estación}")"; texto="$(red "${2:-}")"
+titulo="$(red "${1:-Workstation}")"; texto="$(red "${2:-}")"
 [[ "$panel" =~ ^[0-9]+$ ]] || panel=""
 d="$HOME/.local/share/ws-telemetria/avisos"; mkdir -p "$d" && chmod 700 "$d"
 jq -nc --arg t "$titulo" --arg p "$panel" --argjson tg "$tg" '{ts: (now | todate), titulo: $t, panel: $p, telegram: ($tg == 1)}' >> "$d/$(date +%F).jsonl" 2>/dev/null

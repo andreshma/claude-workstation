@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""ws-traspaso — exporta el trabajo de una pestaña para que OTRO Claude lo continúe (otra PC, claude.ai, un colega,
-otra cuenta). Menú → Claude → E.
+"""ws-traspaso — exports a tab's work so that ANOTHER Claude can continue it (another PC, claude.ai, a colleague,
+another account). Menu → Claude → E.
 
-Arma un paquete de traspaso en Markdown:
-  · resumen hecho por Claude (Sonnet, sin herramientas): objetivo, estado, decisiones, pendientes, archivos clave,
-    cómo continuar y riesgos — a partir de los mensajes de la conversación, REDACTADOS (ws-redactar)
-  · datos duros: carpeta, rama, cambios sin commit, últimos commits, diff contra la rama base, lista de tareas de
-    Claude y archivos que tocó
-  · con --conversacion, además la transcripción (.jsonl) para retomarla con `claude --resume` en otra PC
-Se guarda en %UserProfile%\\ws-telemetria\\traspasos\\ (y ~/.local/share/ws-telemetria/traspasos/) y se copia al
-portapapeles para pegarlo en claude.ai o en otro Claude.
-Uso: ws-traspaso [carpeta|%panel] [--conversacion] [--sin-ia]
+Builds a handoff package in Markdown:
+  · summary written by Claude (Sonnet, no tools): goal, status, decisions, pending items, key files, how to
+    continue and risks — from the conversation messages, REDACTED (ws-redactar)
+  · hard data: folder, branch, uncommitted changes, latest commits, diff against the base branch, Claude's task
+    list and the files it touched
+  · with --conversacion, also the transcript (.jsonl) to resume it with `claude --resume` on another PC
+It is saved in %UserProfile%\\ws-telemetria\\traspasos\\ (and ~/.local/share/ws-telemetria/traspasos/) and copied
+to the clipboard to paste it into claude.ai or another Claude.
+Usage: ws-traspaso [folder|%pane] [--conversacion] [--sin-ia]
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import json
 import os
 import re
 import shutil
-import subprocess  # nosec B404 — git, claude, tmux, ws-redactar, ws-copiar con argumentos fijos
+import subprocess  # nosec B404 — git, claude, tmux, ws-redactar, ws-copiar with fixed arguments
 import sys
 from pathlib import Path
 
@@ -68,7 +68,7 @@ def leer(f: Path) -> dict:
         if o.get("type") == "user" and not o.get("isMeta"):
             t = c if isinstance(c, str) else " ".join(b.get("text", "") for b in c or [] if isinstance(b, dict) and b.get("type") == "text")
             if t and not t.lstrip().startswith("<"):
-                msgs.append(("Tú", t))
+                msgs.append(("You", t))
         elif o.get("type") == "assistant":
             for b in c or []:
                 if not isinstance(b, dict):
@@ -97,16 +97,16 @@ def git(carpeta: Path) -> dict:
 
 def resumen_ia(msgs: list, carpeta: Path) -> str:
     if not shutil.which("claude"):
-        return "_(Claude no está disponible: va solo con los datos de abajo)_"
+        return "_(Claude is not available: only the data below is included)_"
     texto = "\n\n".join(f"### {q}\n{t[:4000]}" for q, t in msgs)[-60000:]
     texto = redactar(texto)
-    prompt = ("Vas a preparar un PAQUETE DE TRASPASO para que otra instancia de Claude (o una persona) continúe este "
-              f"trabajo en «{carpeta.name}». Con la conversación (stdin), escribe en Markdown, en español, con estas "
-              "secciones: Objetivo · Estado actual (qué quedó hecho) · Decisiones tomadas y por qué · Pendientes (en orden) · "
-              "Archivos y comandos clave · Cómo continuar (primer paso concreto) · Riesgos y supuestos. Sé concreto y breve; "
-              "no inventes nada que no esté en la conversación.")
+    prompt = ("You are preparing a HANDOFF PACKAGE so that another Claude instance (or a person) can continue this "
+              f"work in “{carpeta.name}”. From the conversation (stdin), write in Markdown, in English, with these "
+              "sections: Goal · Current status (what is done) · Decisions made and why · Pending items (in order) · "
+              "Key files and commands · How to continue (concrete first step) · Risks and assumptions. Be concrete and "
+              "brief; do not make up anything that is not in the conversation.")
     return sh("env", "-u", "TMUX_PANE", "-u", "TMUX", "claude", "-p", "--model", "sonnet", "--tools", "", "--no-session-persistence", prompt, entrada=texto, t=300) \
-        or "_(Claude no respondió: va solo con los datos de abajo)_"
+        or "_(Claude did not answer: only the data below is included)_"
 
 
 def main() -> int:
@@ -117,31 +117,31 @@ def main() -> int:
     datos = leer(f) if f else {"msgs": [], "tareas": [], "archivos": []}
     g = git(carpeta)
     hoy = dt.datetime.now().strftime("%Y-%m-%d_%H%M")
-    md = [f"# Traspaso: {carpeta.name} — {dt.datetime.now():%Y-%m-%d %H:%M}", "",
-          f"_Paquete para continuar este trabajo en otro Claude. Carpeta original: `{carpeta}`._", ""]
-    md += ["## Resumen", "", resumen_ia(datos["msgs"], carpeta) if datos["msgs"] and "--sin-ia" not in a else "_(sin resumen de Claude)_", ""]
+    md = [f"# Handoff: {carpeta.name} — {dt.datetime.now():%Y-%m-%d %H:%M}", "",
+          f"_Package to continue this work in another Claude. Original folder: `{carpeta}`._", ""]
+    md += ["## Summary", "", resumen_ia(datos["msgs"], carpeta) if datos["msgs"] and "--sin-ia" not in a else "_(no summary from Claude)_", ""]
     if datos["tareas"]:
-        md += ["## Lista de tareas de Claude", ""] + [f"- [{'x' if t.get('status') == 'completed' else ' '}] {t.get('content', '')}" for t in datos["tareas"]] + [""]
+        md += ["## Claude's task list", ""] + [f"- [{'x' if t.get('status') == 'completed' else ' '}] {t.get('content', '')}" for t in datos["tareas"]] + [""]
     if g:
-        md += ["## Repositorio", "", f"- Rama: `{g['rama']}` · remoto: `{g['remoto'] or '—'}`" + (f" · base: `{g['base']}`" if g["base"] else ""), "",
-               "Últimos commits:", "```", g["commits"] or "—", "```", "Cambios sin commit:", "```", g["estado"] or "(ninguno)", "```"]
+        md += ["## Repository", "", f"- Branch: `{g['rama']}` · remote: `{g['remoto'] or '—'}`" + (f" · base: `{g['base']}`" if g["base"] else ""), "",
+               "Latest commits:", "```", g["commits"] or "—", "```", "Uncommitted changes:", "```", g["estado"] or "(none)", "```"]
         if g["diff_base"]:
-            md += [f"Diferencia contra `{g['base']}`:", "```", g["diff_base"], "```"]
+            md += [f"Diff against `{g['base']}`:", "```", g["diff_base"], "```"]
         md.append("")
     if datos["archivos"]:
-        md += ["## Archivos que tocó Claude", ""] + [f"- `{os.path.relpath(p, carpeta) if p.startswith(str(carpeta)) else p}`" for p in datos["archivos"][-30:]] + [""]
+        md += ["## Files Claude touched", ""] + [f"- `{os.path.relpath(p, carpeta) if p.startswith(str(carpeta)) else p}`" for p in datos["archivos"][-30:]] + [""]
     if datos["msgs"]:
-        ult = [t for q, t in datos["msgs"] if q == "Tú"][-3:]
-        md += ["## Tus últimos pedidos", ""] + [f"> {redactar(t[:600]).strip()}" for t in ult] + [""]
+        ult = [t for q, t in datos["msgs"] if q == "You"][-3:]
+        md += ["## Your latest requests", ""] + [f"> {redactar(t[:600]).strip()}" for t in ult] + [""]
     out = DATOS / "traspasos"; out.mkdir(parents=True, exist_ok=True)
     nombre = f"{carpeta.name}-{hoy}"
     texto = "\n".join(md) + "\n"
     if "--conversacion" in a and f:
         shutil.copyfile(f, out / f"{nombre}.jsonl")
         clave = re.sub(r"[^A-Za-z0-9]", "-", str(carpeta))
-        texto += ("\n## Retomar la conversación en otra PC con Claude Code\n\n"
-                  f"1. Copia `{nombre}.jsonl` a `~/.claude/projects/<carpeta-codificada>/` (aquí era `{clave}`: cada carácter "
-                  "que no es letra ni número de la ruta se vuelve `-`).\n2. En esa carpeta: `claude --resume` y elígela.\n")
+        texto += ("\n## Resume the conversation on another PC with Claude Code\n\n"
+                  f"1. Copy `{nombre}.jsonl` to `~/.claude/projects/<encoded-folder>/` (here it was `{clave}`: every "
+                  "character of the path that is not a letter or a digit becomes `-`).\n2. In that folder: `claude --resume` and pick it.\n")
     (out / f"{nombre}.md").write_text(texto, encoding="utf-8")
     final = out / f"{nombre}.md"
     w = None if os.environ.get("WS_TRASPASO_SIN_WINDOWS") else sh("wslvar", "USERPROFILE")
@@ -157,7 +157,7 @@ def main() -> int:
             pass
     sh(str(BIN / "ws-copiar"), entrada=texto)
     print(texto)
-    print(f"Traspaso: {final}  (también en el portapapeles: pégalo en claude.ai o en otro Claude)")
+    print(f"Handoff: {final}  (also on the clipboard: paste it into claude.ai or another Claude)")
     return 0
 
 

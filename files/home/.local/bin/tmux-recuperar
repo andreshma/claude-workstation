@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 #
-# tmux-recuperar — recupera las pestañas de tmux desde cualquier guardado de tmux-resurrect.
+# tmux-recuperar — recovers the tmux tabs from any tmux-resurrect save.
 #
-# Uso:
-#   tmux-recuperar                 lista los guardados (hora, pestañas, nombres) y restaura el elegido
-#   tmux-recuperar --marcar-arranque   (lo llama .tmux.conf al arrancar el servidor) recuerda cuál era el
-#                                  último guardado ANTES de que algo pudiera pisarlo con una sesión vacía
-#   tmux-recuperar --auto-arranque     (lo llama .tmux.conf en segundo plano) si tras arrancar la sesión
-#                                  quedó vacía y el guardado del arranque tenía pestañas, lo restaura solo
-#   tmux-recuperar --validar       (hook post-save-all de resurrect) si un guardado salió vacío (pasa al
-#                                  cerrar tmux: los paneles se van cerrando mientras se guarda), lo borra
-#                                  y deja "last" en el último guardado con pestañas
-# Solo borra guardados vacíos; con los demás, cambia a cuál apunta "last" y usa la restauración de resurrect.
-# WS_RECUPERAR_ESPERA: segundos de espera antes de auto-restaurar (20; las pruebas usan menos).
+# Usage:
+#   tmux-recuperar                 lists the saves (time, tabs, names) and restores the chosen one
+#   tmux-recuperar --marcar-arranque   (called by .tmux.conf when the server starts) remembers which was the
+#                                  last save BEFORE anything could overwrite it with an empty session
+#   tmux-recuperar --auto-arranque     (called by .tmux.conf in the background) if after startup the session
+#                                  ended up empty and the startup save had tabs, it restores it by itself
+#   tmux-recuperar --validar       (resurrect post-save-all hook) if a save came out empty (it happens when
+#                                  closing tmux: panes close while it is saving), it deletes it
+#                                  and points "last" at the latest save with tabs
+# It only deletes empty saves; for the rest, it changes what "last" points to and uses resurrect's restore.
+# WS_RECUPERAR_ESPERA: seconds to wait before auto-restoring (20; the tests use less).
 set -uo pipefail
 R="$HOME/.local/share/tmux/resurrect"
 RESTORE="$HOME/.tmux/plugins/tmux-resurrect/scripts/restore.sh"
@@ -20,10 +20,10 @@ MARCA="$R/last-al-arrancar"
 
 edad_servidor() { echo $(( $(date +%s) - $(tmux display -p '#{start_time}' 2>/dev/null || echo 0) )); }
 pestanas() { local n; n="$(grep -c '^window' "$1" 2>/dev/null)"; echo "${n:-0}"; }
-# nombres <archivo> — nombres de las pestañas guardadas, separados por coma.
+# nombres <file> — names of the saved tabs, comma-separated.
 nombres() { awk -F'\t' '$1 == "window" { sub(/^:/, "", $4); printf "%s%s", (n++ ? ", " : ""), $4 }' "$1" 2>/dev/null; }
 
-# ultimo_valido [EXCLUIR] — el guardado más reciente que no está vacío y tiene al menos una pestaña.
+# ultimo_valido [EXCLUDE] — the most recent save that is not empty and has at least one tab.
 ultimo_valido() {
   local f
   while IFS= read -r f; do
@@ -35,16 +35,16 @@ ultimo_valido() {
 
 restaurar() {
   ln -sf "$1" "$R/last"
-  # -b: la restauración corre dentro del servidor tmux; quien la pide no se queda esperando
-  # (un run-shell síncrono desde un panel puede quedarse trabado mientras se recrean los paneles).
+  # -b: the restore runs inside the tmux server; the caller does not wait for it
+  # (a synchronous run-shell from a pane can hang while the panes are being recreated).
   tmux run-shell -b "$RESTORE"
-  tmux display "Restaurado: $(basename "$1") ($(pestanas "$1") pestañas)"
+  tmux display "Restored: $(basename "$1") ($(pestanas "$1") tabs)"
 }
 
 case "${1:-}" in
   --marcar-arranque)
-    # Solo en el arranque real del servidor (no al recargar la configuración). Si "last" quedó
-    # vacío (cierre a medias), se marca el último guardado con pestañas.
+    # Only on a real server start (not when reloading the configuration). If "last" ended up
+    # empty (interrupted shutdown), the latest save with tabs is marked.
     (( $(edad_servidor) < 30 )) || exit 0
     obj="$(readlink -f "$R/last" 2>/dev/null)"
     if [[ -s "$obj" ]] && (( $(pestanas "$obj") >= 1 )); then cp -P "$R/last" "$MARCA"
@@ -56,37 +56,37 @@ case "${1:-}" in
     [[ -n "$obj" ]] || exit 0
     if [[ ! -s "$obj" ]] || (( $(pestanas "$obj") == 0 )); then
       bueno="$(ultimo_valido "$obj")" && ln -sf "$bueno" "$R/last"
-      [[ -s "$obj" ]] || rm -f "$obj"                   # solo se borran guardados vacíos
+      [[ -s "$obj" ]] || rm -f "$obj"                   # only empty saves are deleted
     fi
     exit 0 ;;
 
   --auto-arranque)
-    sleep "${WS_RECUPERAR_ESPERA:-20}"   # deja terminar a continuum; si él restauró, aquí ya hay pestañas
+    sleep "${WS_RECUPERAR_ESPERA:-20}"   # lets continuum finish; if it restored, there are tabs by now
     obj="$(readlink -f "$MARCA" 2>/dev/null)"
     [[ -s "$obj" ]] || obj="$(ultimo_valido)" || exit 0
     abiertas="$(tmux list-windows -a 2>/dev/null | wc -l)"
     guardadas="$(pestanas "$obj")"
-    # Solo si la sesión quedó prácticamente vacía, el guardado tenía más y es de las últimas 24 h.
+    # Only if the session ended up practically empty, the save had more and it is from the last 24 h.
     if (( abiertas <= 1 && guardadas >= 2 )) && (( $(date +%s) - $(stat -c %Y "$obj") < 86400 )); then
       restaurar "$obj"
     fi
     exit 0 ;;
 esac
 
-# Interactivo: elegir guardado con fzf.
-command -v fzf >/dev/null || { echo "Falta fzf"; exit 1; }
+# Interactive: pick a save with fzf.
+command -v fzf >/dev/null || { echo "fzf is missing"; exit 1; }
 marca="$(readlink -f "$MARCA" 2>/dev/null || true)"
 elegido="$(
   find "$R" -maxdepth 1 -name 'tmux_resurrect_*.txt' -printf '%T@ %p\n' | sort -rn | head -40 | cut -d' ' -f2- |
   while IFS= read -r f; do
     t="$(basename "$f" .txt)"; t="${t#tmux_resurrect_}"
-    etiqueta=""; [[ "$f" == "$marca" ]] && etiqueta="  ← al arrancar"
-    printf '%s\t%s %s:%s  %2s pestañas  %s%s\n' "$f" "${t:0:4}-${t:4:2}-${t:6:2}" "${t:9:2}" "${t:11:2}" \
+    etiqueta=""; [[ "$f" == "$marca" ]] && etiqueta="  ← at startup"
+    printf '%s\t%s %s:%s  %2s tabs  %s%s\n' "$f" "${t:0:4}-${t:4:2}-${t:6:2}" "${t:9:2}" "${t:11:2}" \
       "$(pestanas "$f")" "$(nombres "$f" | cut -c1-70)" "$etiqueta"
   done | fzf --with-nth=2.. --delimiter='\t' --no-sort --reverse \
-      --header='Elige el guardado a restaurar (el más reciente con tus pestañas, antes del problema)' \
+      --header='Pick the save to restore (the most recent one with your tabs, before the problem)' \
   | cut -f1
 )"
 [[ -n "$elegido" ]] || exit 0
-read -rp "Restaurar $(basename "$elegido") ($(pestanas "$elegido") pestañas)? [s/N] " r
-[[ "$r" =~ ^[sS]$ ]] && restaurar "$elegido"
+read -rp "Restore $(basename "$elegido") ($(pestanas "$elegido") tabs)? [y/N] " r
+[[ "$r" =~ ^([yY]([eE][sS])?|[sS]([iIíÍ])?)$ ]] && restaurar "$elegido"

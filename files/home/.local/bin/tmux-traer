@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 #
-# tmux-traer — abre en tmux las conversaciones recientes de Claude que no tienen pestaña, organizadas en una
-# sesión tmux por grupo (las etiquetas de ~/.config/tmux-claude/roots.txt: repos, code, downloads…;
-# lo que no cae en ninguna va a «otros»).
+# tmux-traer — opens in tmux the recent Claude conversations that have no tab, organized in one
+# tmux session per group (the labels of ~/.config/tmux-claude/roots.txt: repos, code, downloads…;
+# whatever falls in none goes to «other»).
 #
-# Uso:
-#   tmux-traer                 muestra la lista (últimos 7 días) y pregunta antes de abrir
-#   tmux-traer --dias 14       otra ventana de tiempo
-#   tmux-traer --iniciar       arranca Claude en cada pestaña (por defecto la deja lista: escribe
-#                              `claude --resume <id>` y espera tu Enter, para no levantar 20 Claude a la vez)
-#   tmux-traer --reorganizar   además mueve las pestañas que ya tienes en «dev» a la sesión de su grupo
-#   tmux-traer --dry-run       solo muestra qué haría
-#   tmux-traer --windows       trae las del Claude de WINDOWS (C:\Users\…\.claude): copia cada conversación a WSL
-#                              (el original no se toca) y la abre aquí. Con muchas, eliges con fzf (Tab marca).
-#   tmux-traer --windows --solo-importar   copia todas a WSL sin abrir pestañas: quedan en `claude -r` de cada carpeta
-#   --max N                    máximo de pestañas a abrir sin preguntar una por una (por defecto 15)
-# Navegar: Alt+↑/↓ cambia de grupo, Ctrl+b S lista los grupos con sus pestañas, Alt+1…9 dentro del grupo.
+# Usage:
+#   tmux-traer                 shows the list (last 7 days) and asks before opening
+#   tmux-traer --dias 14       another time window
+#   tmux-traer --iniciar       starts Claude in each tab (by default it leaves it ready: it types
+#                              `claude --resume <id>` and waits for your Enter, so 20 Claudes do not start at once)
+#   tmux-traer --reorganizar   also moves the tabs you already have in «dev» to their group's session
+#   tmux-traer --dry-run       only shows what it would do
+#   tmux-traer --windows       brings the ones from the WINDOWS Claude (C:\Users\…\.claude): copies each conversation
+#                              to WSL (the original is untouched) and opens it here. With many, pick with fzf (Tab marks).
+#   tmux-traer --windows --solo-importar   copies all to WSL without opening tabs: they show in each folder's `claude -r`
+#   --max N                    maximum number of tabs to open without asking one by one (default 15)
+# Navigating: Alt+↑/↓ switches group, Ctrl+b S lists the groups with their tabs, Alt+1…9 inside the group.
 set -uo pipefail
 conf="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-claude/roots.txt"
 PROY="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"
@@ -23,50 +23,50 @@ TAB=$'\t'
 dias=7 iniciar=0 reorg=0 seco=0 win=0 solo_imp=0 max=15
 while (( $# )); do
   case "$1" in
-    --dias) dias="${2:?número de días}"; shift 2 ;;
+    --dias) dias="${2:?number of days}"; shift 2 ;;
     --iniciar) iniciar=1; shift ;;
     --reorganizar) reorg=1; shift ;;
     --dry-run) seco=1; shift ;;
     --windows) win=1; shift ;;
     --solo-importar) solo_imp=1; shift ;;
-    --max) max="${2:?número}"; shift 2 ;;
+    --max) max="${2:?number}"; shift 2 ;;
     *) sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
   esac
 done
-command -v tmux >/dev/null && tmux list-sessions >/dev/null 2>&1 || { echo "✖ tmux no está corriendo"; exit 1; }
+command -v tmux >/dev/null && tmux list-sessions >/dev/null 2>&1 || { echo "✖ tmux is not running"; exit 1; }
 
 #######################################
-# Grupo de una carpeta: la etiqueta de la raíz de roots.txt que la contiene (la más larga gana).
+# Group of a folder: the label of the roots.txt root that contains it (the longest one wins).
 #######################################
 grupo_de() {
   local d="$1" label root mejor="" largo=0
-  [[ -f "$conf" ]] || { echo otros; return; }
+  [[ -f "$conf" ]] || { echo other; return; }
   while IFS='|' read -r label _ root; do
     [[ -z "$label" || "$label" == \#* ]] && continue
     root="${root/#\~/$HOME}"
     if [[ "$d" == "$root" || "$d" == "$root"/* ]] && (( ${#root} > largo )); then mejor="$label"; largo=${#root}; fi
   done < "$conf"
-  echo "${mejor:-otros}"
+  echo "${mejor:-other}"
 }
-nombre_de() {   # repo o repo@rama para worktrees <repo>.wt/<rama>
+nombre_de() {   # repo or repo@branch for worktrees <repo>.wt/<branch>
   local d="$1"
   if [[ "$d" == *.wt/* ]]; then local r="${d%%.wt/*}"; echo "$(basename "$r")@$(basename "$d")"; else basename "$d"; fi
 }
 
-# Carpetas que ya tienen pestaña (en cualquier sesión)
+# Folders that already have a tab (in any session)
 declare -A abierta=()
 while IFS= read -r d; do [[ -n "$d" ]] && abierta["$d"]=1; done < <(tmux list-panes -a -F '#{pane_current_path}' 2>/dev/null)
 
-# Conversaciones recientes: la más reciente por carpeta de proyecto (la carpeta real sale del registro, campo cwd).
+# Recent conversations: the most recent one per project folder (the real folder comes from the log, cwd field).
 win_home() {
   local p=""; command -v wslvar >/dev/null && p="$(wslvar USERPROFILE 2>/dev/null || true)"
   [[ -n "$p" ]] || p="$( (cd /mnt/c 2>/dev/null && cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null) | tr -d '\r')"
   [[ -n "$p" ]] && wslpath -u "$p" 2>/dev/null
 }
-enc() { sed 's#[^A-Za-z0-9]#-#g' <<<"$1"; }   # nombre de carpeta de proyecto, como lo hace Claude
+enc() { sed 's#[^A-Za-z0-9]#-#g' <<<"$1"; }   # project folder name, the way Claude builds it
 ORIG="$PROY"
 if (( win )); then
-  ORIG="$(win_home)/.claude/projects"; [[ -d "$ORIG" ]] || { echo "✖ No encuentro $ORIG"; exit 1; }
+  ORIG="$(win_home)/.claude/projects"; [[ -d "$ORIG" ]] || { echo "✖ Cannot find $ORIG"; exit 1; }
 fi
 declare -A conv=() fecha=() archivo=()
 for pd in "$ORIG"/*/; do
@@ -75,7 +75,7 @@ for pd in "$ORIG"/*/; do
   cwd="$(tail -n 80 "$f" 2>/dev/null | jq -r 'select(.cwd != null) | .cwd' 2>/dev/null | tail -1)"
   [[ -n "$cwd" ]] || continue
   if (( win )); then
-    [[ "$cwd" =~ ^[A-Za-z]:\\ ]] || continue          # solo rutas de Windows (C:\…)
+    [[ "$cwd" =~ ^[A-Za-z]:\\ ]] || continue          # Windows paths only (C:\…)
     cwd="$(wslpath -u "$cwd" 2>/dev/null)" || continue
   fi
   [[ -d "$cwd" ]] || continue
@@ -84,7 +84,7 @@ for pd in "$ORIG"/*/; do
 done
 
 #######################################
-# Copia una conversación del Claude de Windows a WSL (y su carpeta de subagentes); no sobrescribe.
+# Copies a conversation from the Windows Claude to WSL (and its subagents folder); never overwrites.
 #######################################
 importar() {
   local f="$1" cwd="$2" d id; id="$(basename "$f" .jsonl)"; d="$PROY/$(enc "$cwd")"
@@ -100,12 +100,12 @@ if (( win && solo_imp )); then
       cwd="$(tail -n 80 "$f" 2>/dev/null | jq -r 'select(.cwd != null) | .cwd' 2>/dev/null | tail -1)"
       [[ "$cwd" =~ ^[A-Za-z]:\\ ]] || continue
       cwd="$(wslpath -u "$cwd" 2>/dev/null)" || continue
-      [[ -d "$cwd" ]] || continue                     # carpeta que ya no existe: no sirve en WSL
+      [[ -d "$cwd" ]] || continue                     # folder that no longer exists: useless in WSL
       importar "$f" "$cwd"; n=$((n + 1))
     done < <(find "$pd" -maxdepth 1 -name '*.jsonl' -mtime "-$dias" -print0 2>/dev/null)
   done
-  echo "✔ $n conversaciones del Claude de Windows copiadas a WSL (las ya copiadas no se tocan)."
-  echo "  En cada pestaña: claude -r para elegir una. El original en Windows no cambió."
+  echo "✔ $n conversations from the Windows Claude copied to WSL (already copied ones are untouched)."
+  echo "  In each tab: claude -r to pick one. The original on Windows did not change."
   exit 0
 fi
 
@@ -117,9 +117,9 @@ for cwd in "${!conv[@]}"; do
 done
 mapfile -t lista < <(printf '%s\n' "${lista[@]}" | sed '/^$/d' | sort -t "$TAB" -k1,1 -k2,2)
 
-if (( ${#lista[@]} == 0 )) && (( ! reorg )); then echo "✔ Todas las conversaciones de los últimos $dias días ya tienen pestaña."; exit 0; fi
+if (( ${#lista[@]} == 0 )) && (( ! reorg )); then echo "✔ All conversations from the last $dias days already have a tab."; exit 0; fi
 if (( ${#lista[@]} )); then
-  echo "Conversaciones de los últimos $dias días sin pestaña (${#lista[@]}):"
+  echo "Conversations from the last $dias days without a tab (${#lista[@]}):"
   g_ant=""
   for l in "${lista[@]}"; do
     IFS="$TAB" read -r g n d id m <<<"$l"
@@ -127,19 +127,19 @@ if (( ${#lista[@]} )); then
     printf '    %-34s %s\n' "$n" "$(date -d "@$m" '+%d/%m %H:%M')"
   done
 fi
-(( seco )) && { (( reorg )) && echo "(--reorganizar movería las pestañas de «dev» a su grupo)"; exit 0; }
+(( seco )) && { (( reorg )) && echo "(--reorganizar would move the tabs in «dev» to their group)"; exit 0; }
 if (( ${#lista[@]} > max )) && command -v fzf >/dev/null; then
-  echo "Son ${#lista[@]}: elige cuáles abrir (Tab marca, Ctrl+A todas, Enter abre)."
+  echo "There are ${#lista[@]}: pick which to open (Tab marks, Ctrl+A all, Enter opens)."
   mapfile -t lista < <(printf '%s\n' "${lista[@]}" | sort -t "$TAB" -k5,5nr \
     | fzf --multi --delimiter="$TAB" --with-nth=1,2 --bind 'ctrl-a:select-all' \
-          --header 'Tab marca · Ctrl+A todas · Enter abre' --prompt 'abrir> ' \
-          --preview 'echo {3}; echo; date -d @{5} "+última conversación: %d/%m/%Y %H:%M"')
-  (( ${#lista[@]} )) || { echo "Nada cambió."; exit 0; }
+          --header 'Tab marks · Ctrl+A all · Enter opens' --prompt 'open> ' \
+          --preview 'echo {3}; echo; date -d @{5} "+last conversation: %d/%m/%Y %H:%M"')
+  (( ${#lista[@]} )) || { echo "Nothing changed."; exit 0; }
 fi
-read -rp "¿Abrirlas $( (( iniciar )) && echo "y arrancar Claude en cada una" || echo "(listas para retomar con Enter)")? [s/N] " r
-[[ "$r" =~ ^[sS]$ ]] || { echo "Nada cambió."; exit 0; }
+read -rp "Open them $( (( iniciar )) && echo "and start Claude in each one" || echo "(ready to resume with Enter)")? [y/N] " r
+[[ "$r" =~ ^([yY]([eE][sS])?|[sS]([iIíÍ])?)$ ]] || { echo "Nothing changed."; exit 0; }
 
-asegura_sesion() {   # crea la sesión del grupo si no existe, con una pestaña inicial que se reemplaza
+asegura_sesion() {   # creates the group's session if missing, with an initial tab that gets replaced
   tmux has-session -t "=$1" 2>/dev/null && return 0
   tmux new-session -d -s "$1" -n "·$1" -c "$HOME"
 }
@@ -149,21 +149,21 @@ for l in "${lista[@]}"; do
   (( win )) && importar "${archivo[$d]}" "$d"
   w="$(tmux new-window -d -P -F '#{window_id}' -t "=$g:" -n "$n" -c "$d")"
   if (( iniciar )); then tmux send-keys -t "$w" "claude --resume $id" Enter
-  else tmux send-keys -t "$w" "claude --resume $id"; fi   # lista: Enter para retomar
-  echo "  abierta  [$g] $n"
+  else tmux send-keys -t "$w" "claude --resume $id"; fi   # ready: Enter to resume
+  echo "  opened   [$g] $n"
 done
 
 if (( reorg )); then
   while IFS="$TAB" read -r wid d; do
     g="$(grupo_de "$d")"; asegura_sesion "$g"
-    tmux move-window -d -s "$wid" -t "=$g:" 2>/dev/null && echo "  movida   [$g] $(tmux display -p -t "$wid" '#W')"
+    tmux move-window -d -s "$wid" -t "=$g:" 2>/dev/null && echo "  moved    [$g] $(tmux display -p -t "$wid" '#W')"
   done < <(tmux list-windows -t '=dev' -F "#{window_id}${TAB}#{pane_current_path}" 2>/dev/null | awk -F "$TAB" -v h="$HOME" '$2 != h')
 fi
 
-# Quita la pestaña inicial «·grupo» de las sesiones nuevas si ya tienen otras
+# Removes the initial «·group» tab from the new sessions if they already have others
 for s in $(tmux list-sessions -F '#S'); do
   w="$(tmux list-windows -t "=$s" -F '#{window_id} #W' | awk -v n="·$s" '$2 == n { print $1 }')"
   [[ -n "$w" ]] && (( $(tmux list-windows -t "=$s" | wc -l) > 1 )) && tmux kill-window -t "$w"
 done
-echo "✔ Listo. Grupos: $(tmux list-sessions -F '#S(#{session_windows})' | tr '\n' ' ')"
-echo "  Alt+↑/↓ cambia de grupo · Ctrl+b S lista grupos y pestañas · Alt+1…9 dentro del grupo"
+echo "✔ Done. Groups: $(tmux list-sessions -F '#S(#{session_windows})' | tr '\n' ' ')"
+echo "  Alt+↑/↓ switches group · Ctrl+b S lists groups and tabs · Alt+1…9 inside the group"

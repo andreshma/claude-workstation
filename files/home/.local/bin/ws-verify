@@ -1,39 +1,39 @@
 #!/usr/bin/env bash
 #
-# ws-verify — prueba de todo el setup ANTES de subir cambios del kit. Solo lee: no instala,
-# no hace commit ni push. Sale con 1 si hay alguna FALLA.
+# ws-verify — checks the whole setup BEFORE pushing changes to the kit. Read-only: it does not install,
+# commit or push. Exits with 1 if anything is marked FAIL.
 #
-# Uso: ws-verify [--rapido]
-#   --rapido   omite las pruebas del kit y la revisión completa del repo (ws-gate repo)
+# Usage: ws-verify [--rapido]
+#   --rapido   skips the kit tests and the full repo review (ws-gate repo)
 set -uo pipefail
 KIT="$HOME/code/claude-workstation"
 RAPIDO=0; [[ "${1:-}" == "--rapido" ]] && RAPIDO=1
 OK=0 AV=0 FA=0
 FALLAS=()
 ok()    { printf '  \e[32mok\e[0m     %s\n' "$1"; OK=$((OK + 1)); }
-aviso() { printf '  \e[33maviso\e[0m  %s\n' "$1"; AV=$((AV + 1)); }
-falla() { printf '  \e[31mFALLA\e[0m  %s\n' "$1"; FA=$((FA + 1)); FALLAS+=("$1"); }
-# detalle <texto> — muestra hasta 6 líneas del motivo, sangradas.
+aviso() { printf '  \e[33mwarn\e[0m   %s\n' "$1"; AV=$((AV + 1)); }
+falla() { printf '  \e[31mFAIL\e[0m   %s\n' "$1"; FA=$((FA + 1)); FALLAS+=("$1"); }
+# detalle <text> — shows up to 6 lines of the reason, indented.
 detalle() { sed -n '1,6s/^/           /p' <<<"$1"; }
 seccion() { printf '\n\e[1m== %s\e[0m\n' "$1"; }
 
 #######################################
-# 1. Parches instalados
+# 1. Installed patches
 #######################################
-seccion "Parches instalados"
+seccion "Installed patches"
 chk() { if eval "$2" >/dev/null 2>&1; then ok "$1"; else falla "$1"; fi; }
-chk "17 tema claro/oscuro (tmux-theme, temas)"   '[[ -x ~/.local/bin/tmux-theme && -f ~/.config/tmux-claude/theme-claro.tmux ]]'
-chk "17 menú Apariencia"                         '[[ -f ~/.config/tmux-claude/menu-apariencia.tmux ]]'
-chk "18 guardado continuo (tmux-save-now)"       '[[ -x ~/.local/bin/tmux-save-now ]] && grep -q tmux-save-now ~/.tmux.conf'
-chk "18 arreglo de fnm en .bashrc"               'grep -q "fnm_multishells" ~/.bashrc'
-chk "19 escenas nuevas del protector"            'grep -q serpiente ~/.local/bin/tmux-saver'
-chk "19 kit con plantillas (lib.sh)"             'grep -q render_templates "$KIT/lib.sh"'
+chk "17 light/dark theme (tmux-theme, themes)"   '[[ -x ~/.local/bin/tmux-theme && -f ~/.config/tmux-claude/theme-claro.tmux ]]'
+chk "17 Appearance menu"                         '[[ -f ~/.config/tmux-claude/menu-apariencia.tmux ]]'
+chk "18 continuous save (tmux-save-now)"         '[[ -x ~/.local/bin/tmux-save-now ]] && grep -q tmux-save-now ~/.tmux.conf'
+chk "18 fnm fix in .bashrc"                      'grep -q "fnm_multishells" ~/.bashrc'
+chk "19 new screensaver scenes"                  'grep -q hiperespacio ~/.local/bin/tmux-saver'
+chk "19 kit with templates (lib.sh)"             'grep -q render_templates "$KIT/lib.sh"'
 
 #######################################
-# 2. Scripts: sintaxis y shellcheck
+# 2. Scripts: syntax and shellcheck
 #######################################
 seccion "Scripts (bash -n + shellcheck)"
-if ! command -v shellcheck >/dev/null; then falla "shellcheck no está instalado"; else
+if ! command -v shellcheck >/dev/null; then falla "shellcheck is not installed"; else
   n=0; malos=()
   for f in ~/.local/bin/tmux-* ~/.local/bin/ws-* ~/.local/bin/claude-* ~/.claude/hooks/*.sh \
            ~/.claude/statusline*.sh ~/.config/tmux-claude/*.sh ~/.config/git/hooks/_chain; do
@@ -42,20 +42,20 @@ if ! command -v shellcheck >/dev/null; then falla "shellcheck no está instalado
     n=$((n + 1))
     if ! r=$(bash -n "$f" 2>&1 && shellcheck -S error -s bash "$f" 2>&1); then malos+=("$f"); detalle "$r"; fi
   done
-  if (( ${#malos[@]} == 0 )); then ok "$n scripts sin errores"; else falla "errores en: ${malos[*]/#"$HOME"/\~}"; fi
+  if (( ${#malos[@]} == 0 )); then ok "$n scripts without errors"; else falla "errors in: ${malos[*]/#"$HOME"/\~}"; fi
 fi
 
 #######################################
-# 3. tmux: configuración, menús y estado
+# 3. tmux: configuration, menus and state
 #######################################
 seccion "tmux"
-# Servidor desechable (-L) para no tocar la sesión dev. .tmux.conf y temas se cargan de verdad
-# (detecta opciones inválidas) sin las líneas run: así no arrancan resurrect/continuum ahí,
-# que podrían sobrescribir el guardado real. Los menús solo se analizan (-n): necesitan cliente.
+# Throwaway server (-L) so the dev session is not touched. .tmux.conf and the themes are really loaded
+# (catches invalid options) without the run lines: that way resurrect/continuum do not start there,
+# where they could overwrite the real save. The menus are only parsed (-n): they need a client.
 TS="wsverify-$$"; tmp_conf="$(mktemp)"
 grep -vE '^[[:space:]]*run(-shell)?\b' ~/.tmux.conf > "$tmp_conf"
 r=$(tmux -L "$TS" -f /dev/null new-session -d \; source-file "$tmp_conf" 2>&1)
-if [[ -z "$r" ]]; then ok ".tmux.conf carga sin errores"; else falla ".tmux.conf"; detalle "$r"; fi
+if [[ -z "$r" ]]; then ok ".tmux.conf loads without errors"; else falla ".tmux.conf"; detalle "$r"; fi
 rm -f "$tmp_conf"
 for m in ~/.config/tmux-claude/*.tmux; do
   if [[ "${m##*/}" == theme-* ]]; then r=$(tmux -L "$TS" source-file "$m" 2>&1)
@@ -64,119 +64,119 @@ for m in ~/.config/tmux-claude/*.tmux; do
 done
 tmux -L "$TS" kill-server 2>/dev/null
 if tmux has-session -t dev 2>/dev/null; then
-  ok "sesión dev viva ($(tmux list-windows -t dev | wc -l) pestañas)"
+  ok "dev session alive ($(tmux list-windows -t dev | wc -l) tabs)"
   last=$(readlink -f ~/.local/share/tmux/resurrect/last 2>/dev/null)
   if [[ -f "$last" ]]; then
-    # resurrect no toca "last" si nada cambió: se usa la hora del último guardado de continuum.
+    # resurrect does not touch "last" if nothing changed: the time of continuum's last save is used.
     ts=$(tmux show -gqv @continuum-save-last-timestamp)
     edad=$(( $(date +%s) - ${ts:-$(stat -c %Y "$last")} ))
-    if (( edad < 300 )); then ok "último guardado hace ${edad}s"; else aviso "último guardado hace $((edad / 60)) min (esperado < 5)"; fi
-  else falla "no hay guardado de resurrect"; fi
-  [[ "$(tmux show -gqv @theme_mode)" =~ ^(oscuro|claro|auto)$ ]] && ok "tema: $(tmux show -gqv @theme_mode)" || aviso "tema sin aplicar (Menú → Apariencia)"
-else aviso "la sesión dev no está corriendo; se omite estado y guardado"; fi
+    if (( edad < 300 )); then ok "last save ${edad}s ago"; else aviso "last save $((edad / 60)) min ago (expected < 5)"; fi
+  else falla "there is no resurrect save"; fi
+  [[ "$(tmux show -gqv @theme_mode)" =~ ^(oscuro|claro|auto)$ ]] && ok "theme: $(tmux show -gqv @theme_mode)" || aviso "theme not applied (Menu → Appearance)"
+else aviso "the dev session is not running; state and save are skipped"; fi
 
 #######################################
-# 4. Protector: cada escena dibuja sin error
+# 4. Screensaver: every scene draws without error
 #######################################
-seccion "Protector de pantalla"
+seccion "Screensaver"
 for s in $(~/.local/bin/tmux-arte --lista 2>/dev/null); do
   r=$(COLUMNS=100 LINES=30 timeout 60 bash ~/.local/bin/tmux-saver --test "$s" 8 2>&1 >/dev/null)
-  if [[ $? -eq 0 && -z "$r" ]]; then ok "$s"; else falla "escena $s"; detalle "$r"; fi
+  if [[ $? -eq 0 && -z "$r" ]]; then ok "$s"; else falla "scene $s"; detalle "$r"; fi
 done
 
 #######################################
-# 5. Claude Code: settings y hooks
+# 5. Claude Code: settings and hooks
 #######################################
 seccion "Claude Code"
 S=~/.claude/settings.json
-if jq empty "$S" 2>/dev/null; then ok "settings.json es JSON válido"; else falla "settings.json no es JSON válido"; fi
-[[ "$(jq -r '.sandbox.allowUnsandboxedCommands' "$S")" == "false" ]] && ok "sandbox sin salida" || falla "sandbox.allowUnsandboxedCommands no es false"
-jq -e '.env // {} | keys | map(select(startswith("OTEL_"))) | length == 0' "$S" >/dev/null && ok "sin OTEL_* en settings de usuario" || falla "hay OTEL_* en settings de usuario (lo pone la gobernanza)"
+if jq empty "$S" 2>/dev/null; then ok "settings.json is valid JSON"; else falla "settings.json is not valid JSON"; fi
+[[ "$(jq -r '.sandbox.allowUnsandboxedCommands' "$S")" == "false" ]] && ok "sandbox with no way out" || falla "sandbox.allowUnsandboxedCommands is not false"
+jq -e '.env // {} | keys | map(select(startswith("OTEL_"))) | length == 0' "$S" >/dev/null && ok "no OTEL_* in the user settings" || falla "there is OTEL_* in the user settings (governance sets it)"
 faltan=()
-# Toma de cada comando las rutas a scripts propios (~/…, $HOME/…, /home/…) y verifica que existan.
+# Takes from each command the paths to our own scripts (~/…, $HOME/…, /home/…) and checks that they exist.
 while IFS= read -r p; do
   p="${p/#\~/$HOME}"; p="${p//\$HOME/$HOME}"; p="${p//\"/}"
   [[ -f "$p" ]] || faltan+=("$p")
 done < <(jq -r '[.hooks[]?[]?.hooks[]?.command, .statusLine.command] | .[] | select(. != null)' "$S" \
          | grep -oE '(~|\$HOME|/home)/[^ ;|&]+\.(sh|py)|(~|\$HOME|/home)/\.local/bin/[^ ;|&]+' | sort -u)
-(( ${#faltan[@]} == 0 )) && ok "todos los scripts de hooks y la status line existen" || falla "hooks faltantes: ${faltan[*]}"
-command -v claude >/dev/null && ok "claude $(claude --version 2>/dev/null | head -1)" || falla "claude no está en PATH"
+(( ${#faltan[@]} == 0 )) && ok "all the hook scripts and the status line exist" || falla "missing hooks: ${faltan[*]}"
+command -v claude >/dev/null && ok "claude $(claude --version 2>/dev/null | head -1)" || falla "claude is not in PATH"
 
 #######################################
-# 6. Estación: ws-check y ws-health
+# 6. Workstation: ws-check and ws-health
 #######################################
-seccion "Estación"
-# Clasifica cada línea FALTA/FALLA: los commits del kit sin subir son justo lo que se va a
-# subir (se ignora); el snapshot vencido es resiliencia, no calidad del cambio (aviso);
-# cualquier otra cosa bloquea (FALLA).
+seccion "Workstation"
+# Classifies each MISSING/FAIL line: the unpushed kit commits are exactly what is about to be
+# pushed (ignored); an expired snapshot is resilience, not quality of the change (warn);
+# anything else blocks (FAIL).
 for t in ws-check ws-health; do
   r=$(timeout 180 "$t" </dev/null 2>&1); rc=$?
   (( rc == 0 )) && { ok "$t"; continue; }
-  malas=$(grep -E 'FALTA|FALLA|ERROR|✖' <<<"$r" | sed 's/\x1b\[[0-9;]*m//g')
+  malas=$(grep -E 'MISSING|FAIL|ERROR|✖' <<<"$r" | sed 's/\x1b\[[0-9;]*m//g')
   if [[ -z "$malas" ]]; then
-    if (( rc == 124 )); then malas="tardó más de 180 s (rc=124)"
-    else malas="sale con rc=$rc sin línea FALTA; últimas líneas: $(tail -2 <<<"$r" | tr '\n' ' ')"; fi
+    if (( rc == 124 )); then malas="took more than 180 s (rc=124)"
+    else malas="exits with rc=$rc and no MISSING/FAIL line; last lines: $(tail -2 <<<"$r" | tr '\n' ' ')"; fi
   fi
-  bloquea=$(grep -viE 'kit sin cambios pendientes|snapshot' <<<"$malas")
+  bloquea=$(grep -viE 'kit has no pending changes|snapshot' <<<"$malas")
   avisa=$(grep -iE 'snapshot' <<<"$malas")
   if [[ -n "$bloquea" ]]; then falla "$t"; detalle "$bloquea"
   elif [[ -n "$avisa" ]]; then aviso "$t: $(sed 's/  */ /g' <<<"$avisa" | head -1)"
-  else ok "$t (solo lo que se va a subir)"; fi
+  else ok "$t (only what is about to be pushed)"; fi
 done
 
 #######################################
-# 7. Kit: pruebas, datos personales, compuerta y remoto
+# 7. Kit: tests, personal data, gate and remote
 #######################################
 seccion "Kit claude-workstation"
-if [[ ! -d "$KIT/.git" ]]; then falla "no existe $KIT"; else
+if [[ ! -d "$KIT/.git" ]]; then falla "$KIT does not exist"; else
   cd "$KIT" || exit 1
-  if (( RAPIDO )); then aviso "pruebas del kit omitidas (--rapido)"
-  elif r=$(bash tests/run.sh 2>&1); then ok "pruebas: $(tail -1 <<<"$r")"
-  else falla "pruebas del kit"; detalle "$(grep -E 'FALLA|fall' <<<"$r")"; fi
+  if (( RAPIDO )); then aviso "kit tests skipped (--rapido)"
+  elif r=$(bash tests/run.sh 2>&1); then ok "tests: $(tail -1 <<<"$r")"
+  else falla "kit tests"; detalle "$(grep -E 'FAIL|failed' <<<"$r")"; fi
 
   wu=$(cmd.exe /c 'echo %USERNAME%' 2>/dev/null | tr -d '\r')
-  # Rutas fijas rompen la instalación en otra máquina (FALLA); nombres sueltos solo se avisan.
+  # Hard-coded paths break the install on another machine (FAIL); bare names only get a warning.
   rutas=$(grep -rnI -e "/mnt/c/Users/[A-Za-z]" -e 'C:\\Users\\[A-Za-z]' files/ windows/ 2>/dev/null | head -5)
-  [[ -z "$rutas" ]] && ok "sin rutas personales fijas en files/ ni windows/" || { falla "rutas personales fijas en el kit"; detalle "$rutas"; }
+  [[ -z "$rutas" ]] && ok "no hard-coded personal paths in files/ or windows/" || { falla "hard-coded personal paths in the kit"; detalle "$rutas"; }
   pers=$(grep -rnIi -e "\b$(id -un)\b" ${wu:+-e "\b$wu\b"} files/ windows/ 2>/dev/null | head -5)
-  [[ -z "$pers" ]] && ok "sin usuario personal en files/ ni windows/" || { aviso "aparece tu usuario en el kit (revisa si es intencional)"; detalle "$pers"; }
+  [[ -z "$pers" ]] && ok "no personal user in files/ or windows/" || { aviso "your user name appears in the kit (check whether it is intended)"; detalle "$pers"; }
 
-  # Solo la configuración capturada, sin los escáneres (contienen los patrones a propósito).
+  # Only the captured configuration, without the scanners (they contain the patterns on purpose).
   pat='(ghp_[A-Za-z0-9]{20}|github_pat_[A-Za-z0-9_]{20}|sk-ant-[a-z]+[0-9]{2}-[A-Za-z0-9_-]{20}|AKIA[0-9A-Z]{16}|AccountKey=[A-Za-z0-9+/]{20}|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
   sec=$(git grep --untracked -nIE "$pat" -- files windows ':!files/home/.local/bin/ws-verify' ':!files/home/.local/bin/ws-gate' 2>/dev/null | head -3)
-  [[ -z "$sec" ]] && ok "sin patrones de secretos en archivos versionados" || { falla "posibles secretos"; detalle "$sec"; }
+  [[ -z "$sec" ]] && ok "no secret patterns in versioned files" || { falla "possible secrets"; detalle "$sec"; }
 
   if (( ! RAPIDO )) && command -v ws-gate >/dev/null; then
-    if r=$(timeout 300 ws-gate repo 2>&1); then ok "ws-gate repo"; else aviso "ws-gate repo reporta hallazgos (revisa: ws-gate repo-view)"; detalle "$(grep -E '✖' <<<"$r")"; fi
+    if r=$(timeout 300 ws-gate repo 2>&1); then ok "ws-gate repo"; else aviso "ws-gate repo reports findings (check: ws-gate repo-view)"; detalle "$(grep -E '✖' <<<"$r")"; fi
   fi
 
   rama=$(git branch --show-current)
-  git fetch -q 2>/dev/null && ok "remoto accesible ($rama)" || falla "no pude leer el remoto (¿gh auth login?)"
+  git fetch -q 2>/dev/null && ok "remote reachable ($rama)" || falla "could not read the remote (gh auth login?)"
   read -r detras adelante < <(git rev-list --left-right --count "@{u}...HEAD" 2>/dev/null || echo "? ?")
-  [[ "$detras" == 0 ]] && ok "al día con origin (por subir: $adelante commits)" || aviso "origin tiene $detras commits que no tienes: git pull --rebase antes de subir"
+  [[ "$detras" == 0 ]] && ok "up to date with origin (to push: $adelante commits)" || aviso "origin has $detras commits you do not have: git pull --rebase before pushing"
   vis=$(gh repo view --json visibility -q .visibility 2>/dev/null || echo "?")
-  # El kit puede publicarse a propósito (git config ws.kit.publico true); sin esa marca, lo esperado es privado.
+  # The kit can be public on purpose (git config ws.kit.publico true); without that mark, private is expected.
   if [[ "$(git config --get ws.kit.publico 2>/dev/null)" == "true" ]]; then
-    [[ "$vis" == "PUBLIC" ]] && ok "repo público (ws.kit.publico)" || aviso "ws.kit.publico=true pero la visibilidad del repo es: $vis"
+    [[ "$vis" == "PUBLIC" ]] && ok "public repo (ws.kit.publico)" || aviso "ws.kit.publico=true but the repo visibility is: $vis"
   else
-    [[ "$vis" == "PRIVATE" ]] && ok "repo privado" || aviso "visibilidad del repo: $vis"
+    [[ "$vis" == "PRIVATE" ]] && ok "private repo" || aviso "repo visibility: $vis"
   fi
-  [[ -z "$(git status --porcelain)" ]] && ok "sin cambios sin commit" || aviso "hay cambios sin commit: $(git status --porcelain | wc -l) archivos"
+  [[ -z "$(git status --porcelain)" ]] && ok "no uncommitted changes" || aviso "there are uncommitted changes: $(git status --porcelain | wc -l) files"
 fi
 
 #######################################
-# 8. Pruebas de comportamiento (ws-test: aisladas, sin gastar uso)
+# 8. Behavior tests (ws-test: isolated, without spending usage)
 #######################################
-seccion "Pruebas de comportamiento"
-if (( RAPIDO )); then aviso "ws-test omitido (--rapido)"
+seccion "Behavior tests"
+if (( RAPIDO )); then aviso "ws-test skipped (--rapido)"
 elif command -v ws-test >/dev/null; then
   if r=$(ws-test 2>&1); then ok "ws-test: $(tail -1 <<<"$r" | sed 's/\x1b\[[0-9;]*m//g')"
-  else falla "ws-test"; detalle "$(grep 'FALLA' <<<"$r" | sed 's/\x1b\[[0-9;]*m//g')"; fi
+  else falla "ws-test"; detalle "$(grep 'FAIL' <<<"$r" | sed 's/\x1b\[[0-9;]*m//g')"; fi
 fi
 
 #######################################
-# Resumen
+# Summary
 #######################################
-printf '\n\e[1mResultado: %d ok · %d avisos · %d fallas\e[0m\n' "$OK" "$AV" "$FA"
+printf '\n\e[1mResult: %d ok · %d warnings · %d failed\e[0m\n' "$OK" "$AV" "$FA"
 if (( FA )); then printf '  - %s\n' "${FALLAS[@]}"; exit 1; fi
-echo "Listo para subir."
+echo "Ready to push."

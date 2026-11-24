@@ -1,19 +1,19 @@
-# menu-claude-mas.tmux — submenú: más atajos y comandos de Claude (se envían a la pestaña actual).
-# Mientras el menú está abierto la barra no se refresca: su refresco redibuja el menú encima y parpadea.
+# menu-claude-mas.tmux — submenu: more Claude shortcuts and commands (sent to the current tab).
+# While the menu is open the status bar does not refresh: a refresh redraws the menu on top and flickers.
 if -F '#{!=:#{status-interval},0}' 'set -gF @si_prev "#{status-interval}"'
 set -g status-interval 0
-display-menu -O -T "#[align=centre] Claude · más comandos " -x C -y C \
-  "Lista de tareas de Claude (Ctrl+T)"        d "send-keys C-t" \
-  "Editar el prompt en el editor (Ctrl+G)"    g "send-keys C-g" \
-  "Guardar o recuperar borrador (Ctrl+S)"     x "send-keys C-s" \
-  "Modo rápido sí/no (Alt+O)"                 f "send-keys M-o" \
-  "Detener subagentes en segundo plano"       K "send-keys C-x C-k" \
-  "Redibujar la pantalla (Ctrl+L)"            l "send-keys C-l" \
+display-menu -O -T "#[align=centre] Claude · more commands " -x C -y C \
+  "Claude task list (Ctrl+T)"                 d "send-keys C-t" \
+  "Edit the prompt in the editor (Ctrl+G)"    g "send-keys C-g" \
+  "Stash or restore the draft (Ctrl+S)"       x "send-keys C-s" \
+  "Fast mode on/off (Alt+O)"                  f "send-keys M-o" \
+  "Stop background subagents"                 K "send-keys C-x C-k" \
+  "Redraw the screen (Ctrl+L)"                l "send-keys C-l" \
   '' \
-  "Estado y cuenta (/status)"                 i "send-keys /status Enter" \
-  "Uso y límites (/usage)"                    u "send-keys /usage Enter" \
-  "Servidores MCP (/mcp)"                     m "send-keys /mcp Enter" \
-  "Esfuerzo (/effort)"                        E "send-keys /effort Enter" \
+  "Status and account (/status)"              i "send-keys /status Enter" \
+  "Usage and limits (/usage)"                 u "send-keys /usage Enter" \
+  "MCP servers (/mcp)"                        m "send-keys /mcp Enter" \
+  "Effort (/effort)"                          E "send-keys /effort Enter" \
   '' \
-  "‹ Volver"                                  BSpace "source-file ~/.config/tmux-claude/menu-claude.tmux"
+  "‹ Back"                                    BSpace "source-file ~/.config/tmux-claude/menu-claude.tmux"
 set -gF status-interval '#{?@si_prev,#{@si_prev},15}'

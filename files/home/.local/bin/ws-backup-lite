@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 #
-# ws-backup-lite — respaldo ligero del entorno de Claude y la estación (en lugar del snapshot
-# completo de la distro). El setup ya vive en el kit (GitHub); esto guarda los DATOS:
-#   · ~/.claude: conversaciones (y de subagentes), todos, planes, puntos de /rewind, historial
-#     de prompts, memoria, agentes, auditoría (sin login ni cachés)
-#   · guardados de tmux (pestañas, paneles y conversación de cada una) y ~/.config/tmux-claude
-#   · MemPalace (si existe) y rutas extra de ~/.config/ws-backup/extra.txt
-#   · inventario para reinstalar: apt, pipx, az, npm -g, cargo, versiones, contextos de kube
-#   · aviso de repos en ~/code con cambios sin commit o commits sin subir
-# Nunca incluye credenciales (~/.claude/.credentials.json, ~/.azure, ~/.kube, ~/.aws, gh).
-# Destino: %UserProfile%\WSL-Backups\lite (disco local, no OneDrive). Rotación: WS_BACKUP_KEEP (14).
-# Cifrado opcional con age si existe ~/.config/ws-backup/age-recipients.
+# ws-backup-lite — light backup of the Claude environment and the workstation (instead of the full
+# distro snapshot). The setup already lives in the kit (GitHub); this saves the DATA:
+#   · ~/.claude: conversations (subagents too), todos, plans, /rewind checkpoints, prompt
+#     history, memory, agents, audit log (no login, no caches)
+#   · tmux saves (tabs, panes and the conversation of each one) and ~/.config/tmux-claude
+#   · MemPalace (if present) and extra paths from ~/.config/ws-backup/extra.txt
+#   · inventory for reinstalling: apt, pipx, az, npm -g, cargo, versions, kube contexts
+#   · warning about repos in ~/code with uncommitted changes or unpushed commits
+# Never includes credentials (~/.claude/.credentials.json, ~/.azure, ~/.kube, ~/.aws, gh).
+# Destination: %UserProfile%\WSL-Backups\lite (local disk, not OneDrive). Rotation: WS_BACKUP_KEEP (14).
+# Optional encryption with age if ~/.config/ws-backup/age-recipients exists.
 #
-# Uso: ws-backup-lite [--ahora | --si-toca]
-#   --ahora    (por defecto) respalda ya
-#   --si-toca  solo si el último respaldo tiene más de 20 h (lo llama tmux-backup)
+# Usage: ws-backup-lite [--ahora | --si-toca]
+#   --ahora    (default) back up now
+#   --si-toca  only if the last backup is more than 20 h old (called by tmux-backup)
 set -euo pipefail
 umask 077
 MODO="${1:---ahora}"
@@ -23,7 +23,7 @@ CONF="$HOME/.config/ws-backup"
 LOG="$HOME/.local/state/ws-backup-lite.log"
 mkdir -p "$(dirname "$LOG")"
 
-# win_home — carpeta de usuario de Windows vista desde WSL (sin rutas fijas).
+# win_home — Windows user folder as seen from WSL (no hard-coded paths).
 win_home() {
   if [[ -n "${WS_BACKUP_DEST:-}" ]]; then return; fi
   local p=""
@@ -32,10 +32,10 @@ win_home() {
   [[ -n "$p" ]] && wslpath -u "$p"
 }
 DEST="${WS_BACKUP_DEST:-$(win_home)/WSL-Backups/lite}"
-[[ "$DEST" == /* ]] || { echo "✖ No encontré la carpeta de Windows; define WS_BACKUP_DEST" >&2; exit 1; }
+[[ "$DEST" == /* ]] || { echo "✖ Windows folder not found; set WS_BACKUP_DEST" >&2; exit 1; }
 
-# Un solo respaldo a la vez (tmux puede dispararlo varias veces seguidas).
-# WS_BACKUP_LOCK: candado propio (ws-test lo usa para no chocar con tu respaldo de verdad)
+# One backup at a time (tmux can trigger it several times in a row).
+# WS_BACKUP_LOCK: its own lock (ws-test uses it so it does not collide with your real backup)
 exec 9>"${WS_BACKUP_LOCK:-/tmp/ws-backup-lite-$UID.lock}"
 flock -n 9 || exit 0
 
@@ -47,13 +47,13 @@ fi
 mkdir -p "$DEST"
 libre_gb=$(df -BG --output=avail "$DEST" | tail -1 | tr -dc '0-9')
 min_gb="${WS_BACKUP_MIN_GB:-5}"
-(( libre_gb >= min_gb )) || { echo "✖ Solo $libre_gb GB libres en el destino (mínimo $min_gb)" | tee -a "$LOG" >&2; exit 1; }
+(( libre_gb >= min_gb )) || { echo "✖ Only $libre_gb GB free at the destination (minimum $min_gb)" | tee -a "$LOG" >&2; exit 1; }
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 INV="$TMP/inventario"; mkdir -p "$INV"
 
 #######################################
-# Qué se incluye (rutas relativas a $HOME). Solo las que existen.
+# What is included (paths relative to $HOME). Only the ones that exist.
 #######################################
 rutas=(.claude .local/share/tmux/resurrect .config/tmux-claude .config/ws-backup .config/starship.toml)
 for m in .mempalace .local/share/mempalace mempalace; do [[ -e "$HOME/$m" ]] && rutas+=("$m"); done
@@ -63,7 +63,7 @@ fi
 existentes=(); for r in "${rutas[@]}"; do [[ -e "$HOME/$r" ]] && existentes+=("$r"); done
 printf '%s\n' "${existentes[@]}" > "$INV/incluido.txt"
 
-# Credenciales y cachés regenerables fuera. Las credenciales se recuperan con login, nunca de un respaldo.
+# Credentials and regenerable caches stay out. Credentials are recovered by logging in, never from a backup.
 excl=(--exclude='.claude/.credentials.json' --exclude='.claude/statsig' --exclude='.claude/shell-snapshots'
       --exclude='.claude/debug' --exclude='.claude/ide' --exclude='.claude/cache' --exclude='.claude/local'
       --exclude='.claude/downloads' --exclude='.claude/telemetry' --exclude='.claude/plugins/cache'
@@ -71,7 +71,7 @@ excl=(--exclude='.claude/.credentials.json' --exclude='.claude/statsig' --exclud
       --exclude='.config/ws-backup/age-identity*')
 
 #######################################
-# Inventario para reinstalar (cada comando es opcional).
+# Inventory for reinstalling (every command is optional).
 #######################################
 inv() { local f="$1"; shift; timeout 60 "$@" > "$INV/$f" 2>/dev/null || rm -f "$INV/$f"; }
 inv apt-manual.txt     apt-mark showmanual
@@ -82,24 +82,24 @@ inv az-extensiones.txt az extension list --query '[].name' -o tsv
 inv kube-contextos.txt kubectl config get-contexts -o name
 inv ws-tools.txt       "$HOME/.local/bin/ws-tools"
 {
-  echo "fecha: $(date -Is)"; echo "host: $(hostname)"; echo "usuario: $(id -un)"
+  echo "date: $(date -Is)"; echo "host: $(hostname)"; echo "user: $(id -un)"
   echo "ubuntu: $(lsb_release -ds 2>/dev/null)"; echo "claude: $(claude --version 2>/dev/null | head -1)"
   echo "node: $(node -v 2>/dev/null)"; echo "tmux: $(tmux -V 2>/dev/null)"
   echo "kit: $(git -C "$HOME/code/claude-workstation" describe --tags --always 2>/dev/null)"
 } > "$INV/versiones.txt"
 
-# Repos dentro de WSL: no se copian (están en GitHub), pero se avisa qué se perdería.
+# Repos inside WSL: they are not copied (they are on GitHub), but it warns about what would be lost.
 pend=0
 while IFS= read -r g; do
   d="${g%/.git}"; s=""
-  [[ -n "$(git -C "$d" status --porcelain 2>/dev/null | head -1)" ]] && s+=" cambios-sin-commit"
-  a="$(git -C "$d" rev-list --count '@{u}..HEAD' 2>/dev/null || echo "sin-upstream")"
-  [[ "$a" != 0 ]] && s+=" por-subir:$a"
+  [[ -n "$(git -C "$d" status --porcelain 2>/dev/null | head -1)" ]] && s+=" uncommitted-changes"
+  a="$(git -C "$d" rev-list --count '@{u}..HEAD' 2>/dev/null || echo "no-upstream")"
+  [[ "$a" != 0 ]] && s+=" unpushed:$a"
   [[ -n "$s" ]] && { echo "${d/#"$HOME"/\~}:$s"; pend=$((pend + 1)); }
 done < <(find "$HOME/code" -maxdepth 3 -name .git -type d 2>/dev/null) > "$INV/repos-pendientes.txt"
 
 #######################################
-# Empaquetar → verificar → publicar (atómico) → rotar.
+# Pack → verify → publish (atomic) → rotate.
 #######################################
 stamp="$(date +%Y%m%d-%H%M)"
 if command -v zstd >/dev/null; then ext="tar.zst"; comp=(zstd -q -T0 -10); else ext="tar.gz"; comp=(gzip -6); fi
@@ -107,28 +107,28 @@ nombre="claude-lite-$stamp.$ext"
 age_r="$CONF/age-recipients"
 cifrar=0; [[ -s "$age_r" ]] && command -v age >/dev/null && { cifrar=1; nombre+=".age"; }
 part="$DEST/.$nombre.partial"
-trap 'rm -rf "$TMP" "$part"' EXIT   # si algo falla a medias, no queda un archivo incompleto
+trap 'rm -rf "$TMP" "$part"' EXIT   # if something fails halfway, no incomplete file is left behind
 
 {
   nice -n 19 tar -C "$HOME" "${excl[@]}" --warning=no-file-changed --ignore-failed-read -cf - "${existentes[@]}" -C "$TMP" inventario \
-    || [[ $? -eq 1 ]]   # 1 = archivos que cambiaron durante la copia (conversaciones activas): aceptable
+    || [[ $? -eq 1 ]]   # 1 = files that changed during the copy (active conversations): acceptable
 } | "${comp[@]}" | if (( cifrar )); then age -R "$age_r"; else cat; fi > "$part"
 
-# Verificación: se puede leer completo y trae conversaciones (salvo cifrado: solo tamaño).
+# Verification: it reads end to end and contains conversations (unless encrypted: size only).
 if (( ! cifrar )); then
   n=$(tar -tf "$part" 2>/dev/null | grep -v '/subagents/' | grep -c '^\.claude/projects/.*\.jsonl$' || true)
-  if ! tar -tf "$part" >/dev/null 2>&1; then rm -f "$part"; echo "✖ $(date -Is) archivo ilegible; no se rotó nada" | tee -a "$LOG" >&2; exit 1; fi
+  if ! tar -tf "$part" >/dev/null 2>&1; then rm -f "$part"; echo "✖ $(date -Is) unreadable file; nothing was rotated" | tee -a "$LOG" >&2; exit 1; fi
 else n="?"; fi
-[[ -s "$part" ]] || { rm -f "$part"; echo "✖ respaldo vacío" | tee -a "$LOG" >&2; exit 1; }
+[[ -s "$part" ]] || { rm -f "$part"; echo "✖ empty backup" | tee -a "$LOG" >&2; exit 1; }
 mv "$part" "$DEST/$nombre"
 ( cd "$DEST" && sha256sum "$nombre" > "$nombre.sha256" )
 
-# Rotación solo después de un respaldo verificado.
+# Rotation only after a verified backup.
 find "$DEST" -maxdepth 1 -name 'claude-lite-*.tar.*' ! -name '*.sha256' -printf '%T@ %p\n' | sort -rn | tail -n +"$((KEEP + 1))" \
   | cut -d' ' -f2- | while IFS= read -r v; do rm -f "$v" "$v.sha256"; done
 
 tam="$(du -h "$DEST/$nombre" | cut -f1)"
-msg="$(date -Is) ok $nombre ($tam, $n conversaciones, repos con pendientes: $pend)"
+msg="$(date -Is) ok $nombre ($tam, $n conversations, repos with pending work: $pend)"
 echo "$msg" >> "$LOG"
-[[ "$MODO" == "--si-toca" ]] || { echo "✔ $DEST/$nombre ($tam) · $n conversaciones · repos con pendientes: $pend"; (( pend )) && sed 's/^/  ⚠ /' "$INV/repos-pendientes.txt"; }
+[[ "$MODO" == "--si-toca" ]] || { echo "✔ $DEST/$nombre ($tam) · $n conversations · repos with pending work: $pend"; (( pend )) && sed 's/^/  ⚠ /' "$INV/repos-pendientes.txt"; }
 exit 0

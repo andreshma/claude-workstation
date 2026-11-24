@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 #
-# tmux-rama — estado de la rama de cada pestaña en la barra: CI (✔ verde · ✖ rojo · ● corriendo), PR (#12, ✓
-# aprobado, ✎ cambios pedidos, 📝 borrador) y ticket (ABC-123). GitHub (gh) y Azure DevOps (az repos/pipelines).
-# Lo corre tmux-fondo cada minuto; consulta cada repo+rama como máximo cada 3 min (caché) y con tiempo límite.
-# Uso: tmux-rama --actualizar      todas las pestañas → opción @crama de cada una (la barra la muestra)
-#      tmux set -g @rama_barra off  la apaga (on o vacío: encendida)
-#      tmux-rama <carpeta>         imprime el estado de esa carpeta (pruebas y diagnóstico)
-# Sin gh/az o sin sesión: no muestra nada (nunca bloquea la barra).
+# tmux-rama — branch status of each tab in the status bar: CI (✔ green · ✖ red · ● running), PR (#12, ✓
+# approved, ✎ changes requested, 📝 draft) and ticket (ABC-123). GitHub (gh) and Azure DevOps (az repos/pipelines).
+# Run by tmux-fondo every minute; it queries each repo+branch at most every 3 min (cache) and with a timeout.
+# Usage: tmux-rama --actualizar    all tabs → each one's @crama option (shown by the bar)
+#      tmux set -g @rama_barra off  turns it off (on or empty: enabled)
+#      tmux-rama <folder>          prints that folder's status (tests and diagnostics)
+# Without gh/az or without a session: shows nothing (it never blocks the bar).
 set -uo pipefail
 CACHE="${XDG_RUNTIME_DIR:-/tmp}/tmux-rama-$(id -u)"; mkdir -p "$CACHE" 2>/dev/null && chmod 700 "$CACHE"
 TTL="${WS_RAMA_TTL:-180}"
 g() { GIT_OPTIONAL_LOCKS=0 timeout 2 git -C "$dir" "$@" 2>/dev/null; }
 
-estado() {   # carpeta → texto corto para la barra
+estado() {   # folder → short text for the bar
   local dir="$1" b url c k ci="" pr="" t=""
   b="$(g branch --show-current)" || return 0
   [[ -n "$b" ]] || return 0
@@ -45,7 +45,7 @@ estado() {   # carpeta → texto corto para la barra
 }
 
 if [[ "${1:-}" == --actualizar ]]; then
-  # En paralelo: con muchas pestañas sin caché, una tras otra pasaría del minuto.
+  # In parallel: with many uncached tabs, one after another would take over a minute.
   while IFS=$'\t' read -r w d; do
     ( v="$(estado "$d")"
       if [[ -n "$v" ]]; then tmux set -w -t "$w" @crama "$v"; else tmux set -wu -t "$w" @crama; fi ) &

@@ -1,25 +1,26 @@
 #!/usr/bin/env bash
 #
-# cr — ruteo de modelos desde la terminal (ADR-009). Clasifica la tarea, te dice qué nivel y por qué, y
-# con tu confirmación la manda a Claude de esta pestaña con el modelo correcto (o abre Claude con él).
+# cr — model routing from the terminal (ADR-009). Classifies the task, tells you which level and why, and
+# with your confirmation sends it to the Claude on this tab with the right model (or opens Claude with it).
 #
-# Uso:
-#   cr "tarea"                 clasifica, pregunta [S/n] y la envía
-#   cr -t sonnet "tarea"       fuerza el nivel (fable · opus · sonnet · haiku)
-#   cr --explica "tarea"       además muestra la regla y el modelo
-#   cr --dry-run "tarea"       solo clasifica; no envía nada
-#   cr --sin-ia "tarea"        sin regla que coincida → opus, sin consultar a Haiku
-#   cr --cambiar <nivel>       cambia el modelo del Claude de esta pestaña (lo usa el menú)
-#   cr --probar                corre las 20 tareas etiquetadas contra las reglas (sin IA); exit 1 si < 90 %
-# Sin regla que coincida y con el copiloto configurado (ws-copiloto), consulta a Haiku:
-# {nivel, confianza}; con confianza < 0.7 sube un nivel. El texto va redactado (sin secretos).
+# Usage:
+#   cr "task"                  classifies, asks [Y/n] and sends it
+#   cr -t sonnet "task"        forces the level (fable · opus · sonnet · haiku)
+#   cr --explica "task"        also shows the rule and the model
+#   cr --dry-run "task"        only classifies; sends nothing
+#   cr --sin-ia "task"         no matching rule → opus, without asking Haiku
+#   cr --cambiar <level>       changes the model of the Claude on this tab (used by the menu)
+#   cr --probar                runs the 20 labelled tasks against the rules (no AI); exit 1 if < 90 %
+# With no matching rule and the copilot configured (ws-copiloto), it asks Haiku:
+# {nivel, confianza}; with confianza < 0.7 it goes up one level. The text is sent redacted (no secrets).
 set -uo pipefail
 # shellcheck source=/dev/null
-source "$HOME/.local/lib/ws-ruteo.sh" || { echo "✖ falta ~/.local/lib/ws-ruteo.sh" >&2; exit 1; }
+source "$HOME/.local/lib/ws-ruteo.sh" || { echo "✖ ~/.local/lib/ws-ruteo.sh is missing" >&2; exit 1; }
 
 forzado="" explica=0 seco=0 ia=1
 uso() { sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
+# Spanish on purpose: the labelled tasks are fixtures for rules that match prompts typed in Spanish.
 probar() {
   local ok=0 total=0 esperado tarea obtenido
   while IFS='|' read -r esperado tarea; do
@@ -49,17 +50,17 @@ haiku|lista los archivos de pruebas del módulo de pagos
 haiku|cuántos endpoints tiene el controlador de órdenes
 EOF
   local pct=$(( ok * 100 / total ))
-  echo "Reglas: $ok/$total tareas etiquetadas en su nivel ($pct %)"
+  echo "Rules: $ok/$total labelled tasks at their level ($pct %)"
   (( pct >= 90 ))
 }
 
-clasificar_ia() {   # $1 tarea → "nivel confianza" o nada
+clasificar_ia() {   # $1 task → "nivel confianza" or nothing
   local f="$HOME/.config/tmux-claude/ai-shell.sh" r
   [[ -f "$f" ]] || return 1
   r="$( (
     # shellcheck source=/dev/null
     source "$f" 2>/dev/null; _ai_cargar_llave 2>/dev/null || exit 1
-    printf '%s' "$1" | _ai_redact | _ai_api 'Clasifica la tarea de programación en un nivel de modelo: fable (arquitectura, ADR, análisis exhaustivo, cambios de muchos archivos), opus (desarrollo diario, depuración, seguridad, entregas), sonnet (SQL, cambios acotados, textos cortos), haiku (búsquedas y preguntas simples). Responde SOLO JSON: {"nivel":"...","confianza":0.0}' 60 8
+    printf '%s' "$1" | _ai_redact | _ai_api 'Classify the programming task into a model level: fable (architecture, ADR, exhaustive analysis, changes across many files), opus (daily development, debugging, security, releases), sonnet (SQL, narrowly scoped changes, short texts), haiku (searches and simple questions). Answer ONLY with JSON: {"nivel":"...","confianza":0.0}' 60 8
   ) 2>/dev/null)" || return 1
   r="$(grep -o '{[^}]*}' <<<"$r" | head -1)"
   jq -r 'select(.nivel|test("^(fable|opus|sonnet|haiku)$")) | "\(.nivel) \(.confianza // 0)"' <<<"$r" 2>/dev/null
@@ -73,14 +74,14 @@ while (( $# )); do
     --sin-ia) ia=0; shift ;;
     --probar) probar; exit $? ;;
     --cambiar)
-      nv="${2:-}"; ruteo_modelo "$nv" >/dev/null || { echo "✖ nivel inválido: $nv" >&2; exit 2; }
+      nv="${2:-}"; ruteo_modelo "$nv" >/dev/null || { echo "✖ invalid level: $nv" >&2; exit 2; }
       pc="$(ruteo_panel_claude "$(tmux display -p '#{window_id}')")"
-      [[ -n "$pc" ]] || { tmux display-message "No hay Claude en esta pestaña"; exit 1; }
+      [[ -n "$pc" ]] || { tmux display-message "There is no Claude on this tab"; exit 1; }
       ruteo_cambiar "$pc" "$nv"; ruteo_registrar menu "$nv" manual "" manual 0
-      tmux display-message "Modelo de esta pestaña: $(ruteo_modelo "$nv")"; exit 0 ;;
+      tmux display-message "Model of this tab: $(ruteo_modelo "$nv")"; exit 0 ;;
     -h|--help) uso ;;
     --) shift; break ;;
-    -*) echo "✖ opción desconocida: $1" >&2; uso 2 ;;
+    -*) echo "✖ unknown option: $1" >&2; uso 2 ;;
     *) break ;;
   esac
 done
@@ -88,7 +89,7 @@ tarea="$*"; [[ -n "$tarea" ]] || { [[ -t 0 ]] && uso 2; tarea="$(cat)"; }
 [[ -n "$tarea" ]] || uso 2
 
 if [[ -n "$forzado" ]]; then
-  ruteo_modelo "$forzado" >/dev/null || { echo "✖ nivel inválido: $forzado" >&2; exit 2; }
+  ruteo_modelo "$forzado" >/dev/null || { echo "✖ invalid level: $forzado" >&2; exit 2; }
   nivel="$forzado" regla="manual"
 else
   read -r nivel regla <<<"$(ruteo_clasificar "$tarea")"
@@ -98,22 +99,22 @@ else
   fi
 fi
 id="$(ruteo_modelo "$nivel")"
-printf 'Nivel: \e[1m%s\e[0m → %s' "$nivel" "$id"; (( explica )) && printf '   (regla: %s)' "$regla"; echo
+printf 'Level: \e[1m%s\e[0m → %s' "$nivel" "$id"; (( explica )) && printf '   (rule: %s)' "$regla"; echo
 (( seco )) && { ruteo_registrar cr "$nivel" "$regla" "" simulado "${#tarea}"; exit 0; }
 
 pc=""; [[ -n "${TMUX_PANE:-}" ]] && pc="$(ruteo_panel_claude "$(tmux display -p -t "$TMUX_PANE" '#{window_id}')")"
 if [[ -n "$pc" ]]; then
   actual="$(ruteo_nivel_de "$(tmux show -wqv -t "$pc" @cmodel)")"
-  read -rp "¿Enviar a Claude de esta pestaña${actual:+ (ahora $actual)} con $nivel? [S/n] " r
+  read -rp "Send to the Claude on this tab${actual:+ (now $actual)} with $nivel? [Y/n] " r
   [[ "$r" =~ ^[nN]$ ]] && { ruteo_registrar cr "$nivel" "$regla" "$actual" rechazado "${#tarea}"; exit 0; }
   [[ "$actual" != "$nivel" ]] && ruteo_cambiar "$pc" "$nivel"
   f="$(umask 077; mkdir -p "$WS_RUTEO_RUN"; mktemp "$WS_RUTEO_RUN/cr-XXXXXX")"; printf '%s' "$tarea" > "$f"
   ruteo_pegar "$pc" "$f" enviar; tmux select-pane -t "$pc"
   ruteo_registrar cr "$nivel" "$regla" "$actual" aceptado "${#tarea}"
 else
-  read -rp "¿Abrir Claude aquí con $nivel ($id)? [S/n] " r
+  read -rp "Open Claude here with $nivel ($id)? [Y/n] " r
   [[ "$r" =~ ^[nN]$ ]] && { ruteo_registrar cr "$nivel" "$regla" "" rechazado "${#tarea}"; exit 0; }
   ruteo_registrar cr "$nivel" "$regla" "" aceptado "${#tarea}"
-  # --model aplica solo a esta sesión: no cambia tu modelo por defecto.
+  # --model applies to this session only: it does not change your default model.
   exec claude --model "$id" "$tarea"
 fi

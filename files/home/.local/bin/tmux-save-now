@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 #
-# tmux-save-now — guarda la sesión de tmux en cuanto cambia su estructura (pestaña nueva,
-# cerrada, renombrada, panel nuevo o cerrado). Lo llaman hooks de tmux; agrupa los cambios
-# seguidos: guarda como máximo una vez cada 10 s y en segundo plano. Complementa el
-# guardado automático de continuum (cada minuto).
+# tmux-save-now — saves the tmux session as soon as its structure changes (tab created,
+# closed, renamed, pane created or closed). Called by tmux hooks; it batches consecutive
+# changes: it saves at most once every 10 s and in the background. Complements
+# continuum's automatic save (every minute).
 set -uo pipefail
-# Recién arrancado el servidor, tmux todavía restaura: guardar ahora pisaría el último guardado
-# bueno con una sesión vacía (pasó el 2026-11-14). continuum se encarga después.
+# Right after the server starts, tmux is still restoring: saving now would overwrite the last good
+# save with an empty session (it happened on 2026-11-14). continuum takes over afterwards.
 inicio="$(tmux display -p '#{start_time}' 2>/dev/null || echo 0)"
 (( $(date +%s) - inicio >= 180 )) || exit 0
 stamp="/tmp/tmux-save-now-$(id -u)"
 now="$(date +%s)"; last="$(cat "$stamp" 2>/dev/null || echo 0)"
 (( now - last >= 10 )) || exit 0
 echo "$now" > "$stamp"
-sleep 2   # deja que tmux termine de aplicar el cambio antes de guardar
+sleep 2   # let tmux finish applying the change before saving
 "$HOME/.tmux/plugins/tmux-resurrect/scripts/save.sh" quiet >/dev/null 2>&1
 exit 0

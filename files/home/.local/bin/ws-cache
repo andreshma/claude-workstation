@@ -1,33 +1,33 @@
 #!/usr/bin/env bash
 #
-# ws-cache — corre un comando como máximo cada N segundos y devuelve su última salida guardada. Pensado para
-# segmentos de la barra de tmux (#(...)) que son lentos (leen /mnt/c, llaman a .exe, consultan la red).
-#   · Fresco (< N s): devuelve lo guardado al instante.
-#   · Viejo: devuelve lo guardado y lo actualiza en segundo plano (la barra nunca espera).
-#   · Sin nada guardado: lo corre ahora (máximo 10 s).
-# También sirve para hooks lentos de SessionStart (p. ej. el chequeo de salud de MemPalace): la sesión recibe el
-# último resultado al instante y el chequeo corre detrás.
-# Uso: ws-cache [--max S] [--tope S] <segundos> <comando> [args…]
-#   p. ej. #(~/.local/bin/ws-cache 30 ~/bin/mi-segmento.sh)
-#   --max S    si lo guardado tiene más de S segundos ya no se confía en él: se corre ahora y se espera
-#   --tope S   límite de cada corrida (10 s por defecto)
-# Caché: ${XDG_RUNTIME_DIR:-/tmp}/ws-cache-<uid>/ (0700), una entrada por comando+argumentos.
+# ws-cache — runs a command at most every N seconds and returns its last saved output. Meant for
+# tmux status bar segments (#(...)) that are slow (they read /mnt/c, call an .exe, query the network).
+#   · Fresh (< N s): returns the saved output instantly.
+#   · Stale: returns the saved output and refreshes it in the background (the bar never waits).
+#   · Nothing saved: runs it now (10 s at most).
+# Also useful for slow SessionStart hooks (e.g. the MemPalace health check): the session gets the
+# last result instantly and the check runs behind it.
+# Usage: ws-cache [--max S] [--tope S] <seconds> <command> [args…]
+#   e.g. #(~/.local/bin/ws-cache 30 ~/bin/mi-segmento.sh)
+#   --max S    if the saved output is older than S seconds it is no longer trusted: runs now and waits
+#   --tope S   limit for each run (10 s by default)
+# Cache: ${XDG_RUNTIME_DIR:-/tmp}/ws-cache-<uid>/ (0700), one entry per command+arguments.
 set -uo pipefail
 max=0; tope=10
 while [[ "${1:-}" == --* ]]; do
   case "$1" in
     --max)  max="${2:-}";  shift 2 ;;
     --tope) tope="${2:-}"; shift 2 ;;
-    *) echo "ws-cache: opción desconocida: $1" >&2; exit 2 ;;
+    *) echo "ws-cache: unknown option: $1" >&2; exit 2 ;;
   esac
 done
-[[ "$max" =~ ^[0-9]+$ && "$tope" =~ ^[0-9]+$ ]] || { echo "ws-cache: --max y --tope van en segundos" >&2; exit 2; }
-ttl="${1:?segundos}"; shift; [[ "$ttl" =~ ^[0-9]+$ ]] || { echo "ws-cache: segundos inválidos" >&2; exit 2; }
-(( $# )) || { echo "ws-cache: falta el comando" >&2; exit 2; }
+[[ "$max" =~ ^[0-9]+$ && "$tope" =~ ^[0-9]+$ ]] || { echo "ws-cache: --max and --tope take seconds" >&2; exit 2; }
+ttl="${1:?seconds}"; shift; [[ "$ttl" =~ ^[0-9]+$ ]] || { echo "ws-cache: invalid seconds" >&2; exit 2; }
+(( $# )) || { echo "ws-cache: missing command" >&2; exit 2; }
 d="${XDG_RUNTIME_DIR:-/tmp}/ws-cache-$(id -u)"; mkdir -p "$d" 2>/dev/null && chmod 700 "$d"
 k="$d/$(printf '%s\0' "$@" | md5sum | cut -c1-16)"
 
-refrescar() {   # corre el comando y guarda su salida de forma atómica (un refresco a la vez por comando)
+refrescar() {   # runs the command and saves its output atomically (one refresh at a time per command)
   exec 9>"$k.lock"; flock -n 9 || return 0
   timeout "$tope" "$@" > "$k.tmp" 2>/dev/null && mv -f "$k.tmp" "$k" || rm -f "$k.tmp"
 }

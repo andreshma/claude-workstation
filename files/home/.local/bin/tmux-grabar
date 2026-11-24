@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 #
-# tmux-grabar — graba un panel YA abierto (no hay que empezar de nuevo) como evidencia o demo. Menú → g → r
-# (otra vez: detiene). Mientras graba, la pestaña muestra ⏺ en la barra.
-# Deja en %UserProfile%\Videos\Claude:
-#   AAAA-MM-DD_HHMM_<pestaña>.cast  grabación reproducible (asciinema play, o el reproductor web de asciinema)
-#   AAAA-MM-DD_HHMM_<pestaña>.txt   el texto final de la pantalla, limpio y redactado (para adjuntar a un bug)
-#   AAAA-MM-DD_HHMM_<pestaña>.gif   si tienes agg instalado (ws-tools install agg)
-# Usa pipe-pane: mientras graba, ese panel no puede usar otra captura (Ctrl+b H o el historial buscable).
-# El .cast guarda lo que se vio en pantalla tal cual: no grabes paneles con secretos a la vista.
-# Destino: WS_GRABAR_DIR si está definida (pruebas).
-# Uso: tmux-grabar <panel>   ·   tmux-grabar --escribir <archivo.cast> <ancho> <alto>  (interno: lo usa pipe-pane)
+# tmux-grabar — records an ALREADY open pane (no need to start over) as evidence or a demo. Menu → Views → r
+# (again: stops). While recording, the tab shows ⏺ in the status bar.
+# Leaves in %UserProfile%\Videos\Claude:
+#   YYYY-MM-DD_HHMM_<tab>.cast  replayable recording (asciinema play, or the asciinema web player)
+#   YYYY-MM-DD_HHMM_<tab>.txt   the final screen text, clean and redacted (to attach to a bug)
+#   YYYY-MM-DD_HHMM_<tab>.gif   if you have agg installed (ws-tools install agg)
+# Uses pipe-pane: while recording, that pane cannot use another capture (Ctrl+b H or the searchable history).
+# The .cast stores what was on screen as is: do not record panes with secrets in view.
+# Destination: WS_GRABAR_DIR if set (tests).
+# Usage: tmux-grabar <pane>   ·   tmux-grabar --escribir <file.cast> <width> <height>  (internal: used by pipe-pane)
 set -uo pipefail
 
-if [[ "${1:-}" == --escribir ]]; then   # stdin crudo del panel → asciicast v2 con tiempos
+if [[ "${1:-}" == --escribir ]]; then   # raw pane stdin → asciicast v2 with timings
   exec python3 -u -c '
 import json, sys, time
 f, w, h = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
@@ -28,7 +28,7 @@ with open(f, "w", encoding="utf-8") as out:
 ' "$2" "$3" "$4"
 fi
 
-p="${1:?panel}"
+p="${1:?pane}"
 destino_win() { local u; u="$(wslvar USERPROFILE 2>/dev/null)"; [[ -n "$u" ]] && wslpath -u "$u" 2>/dev/null; }
 base="$(destino_win)"; dir="${base:+$base/Videos/Claude}"; dir="${WS_GRABAR_DIR:-${dir:-$HOME/grabaciones}}"; mkdir -p "$dir"
 
@@ -40,16 +40,16 @@ if [[ -n "$actual" ]]; then
   tmux capture-pane -p -J -t "$p" -S -2000 | sed -e 's/[[:space:]]*$//' | ws-redactar > "$txt"
   if command -v agg >/dev/null; then ( agg --quiet "$actual" "${actual%.cast}.gif" >/dev/null 2>&1 & ); fi
   n=$(( $(wc -l < "$actual") - 1 ))
-  tmux display -d 4000 "⏹ Grabación guardada en Videos\\Claude: $(basename "$actual") ($n eventos) + .txt"
+  tmux display -d 4000 "⏹ Recording saved in Videos\\Claude: $(basename "$actual") ($n events) + .txt"
   exit 0
 fi
 [[ -n "$(tmux display -p -t "$p" '#{pane_pipe}')" && "$(tmux display -p -t "$p" '#{pane_pipe}')" != 0 ]] && {
-  tmux display -d 4000 "Este panel ya tiene una captura activa (Ctrl+b H o historial): apágala primero"; exit 1; }
+  tmux display -d 4000 "This pane already has an active capture (Ctrl+b H or history): turn it off first"; exit 1; }
 nom="$(tmux display -p -t "$p" '#{window_name}' | tr -c 'A-Za-z0-9_.-' '_' | cut -c1-30)"
 f="$dir/$(date +%F_%H%M)_${nom}.cast"
 w="$(tmux display -p -t "$p" '#{pane_width}')"; h="$(tmux display -p -t "$p" '#{pane_height}')"
 tmux set -p -t "$p" @grabando "$f"; tmux set -w -t "$p" @cgrab "⏺"
 tmux pipe-pane -o -t "$p" "exec '$0' --escribir '$f' $w $h"
-# Primera imagen: lo que ya hay en pantalla, para que la grabación no empiece en negro.
+# First frame: what is already on screen, so the recording does not start black.
 tmux send-keys -t "$p" -X cancel 2>/dev/null; tmux refresh-client 2>/dev/null
-tmux display -d 3000 "⏺ Grabando este panel (${w}x${h}). Menú → g → r para detener"
+tmux display -d 3000 "⏺ Recording this pane (${w}x${h}). Menu → Views → r to stop"

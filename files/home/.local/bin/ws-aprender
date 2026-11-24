@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""ws-aprender — que Claude aprenda de ti, con tu visto bueno (HITL). Menú → Consumo → a / k.
+"""ws-aprender — lets Claude learn from you, with your approval (HITL). Menu → Usage → a / k.
 
-  ws-aprender hechos [--dias 14]  Claude (con las herramientas de MemPalace, solo lectura) revisa tu diario y tus
-                                  sesiones recientes y PROPONE hechos estables sobre ti: preferencias, convenciones,
-                                  decisiones de arquitectura, herramientas, proyectos. Tú eliges cuáles; solo esos se
-                                  guardan en el grafo de MemPalace (mempalace_kg_add). Así cualquier Claude con
-                                  MemPalace los consulta antes de responder.
-  ws-aprender comandos            de los pedidos que repites (ws-informe), Claude propone comandos «/» propios
-                                  (~/.claude/commands/<nombre>.md). Tú eliges cuáles se crean; nunca sobrescribe.
-Registro de lo aprendido: ~/.local/share/ws-telemetria/aprendizaje/AAAA-MM-DD.jsonl.
+  ws-aprender hechos [--dias 14]  Claude (with the MemPalace tools, read-only) reviews your diary and your recent
+                                  sessions and PROPOSES stable facts about you: preferences, conventions,
+                                  architecture decisions, tools, projects. You choose which ones; only those are
+                                  saved to the MemPalace graph (mempalace_kg_add). That way any Claude with
+                                  MemPalace looks them up before answering.
+  ws-aprender comandos            from the requests you repeat (ws-informe), Claude proposes your own slash commands
+                                  (~/.claude/commands/<name>.md). You choose which are created; never overwrites.
+Log of what was learned: ~/.local/share/ws-telemetria/aprendizaje/YYYY-MM-DD.jsonl.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import json
 import os
 import re
 import shutil
-import subprocess  # nosec B404 — claude, ws-informe, fzf con argumentos fijos
+import subprocess  # nosec B404 — claude, ws-informe, fzf with fixed arguments
 import sys
 from pathlib import Path
 
@@ -31,14 +31,14 @@ ESCRIBIR = "mcp__mempalace__mempalace_kg_add"
 
 def claude(prompt: str, herramientas: str = "", entrada: str = "", t: int = 600) -> str:
     if not shutil.which("claude"):
-        sys.exit("✖ Claude no está en PATH")
-    # Sin TMUX_PANE: los hooks de la pestaña (ruteo, estado) no deben tratar esta llamada como un mensaje tuyo.
+        sys.exit("✖ Claude is not in PATH")
+    # No TMUX_PANE: the tab's hooks (routing, state) must not treat this call as a message of yours.
     args = ["env", "-u", "TMUX_PANE", "-u", "TMUX", "claude", "-p", "--model", "sonnet", "--no-session-persistence",
             *(["--allowedTools", herramientas] if herramientas else ["--tools", ""]), prompt]
     try:
         return subprocess.run(args, input=entrada, capture_output=True, text=True, timeout=t).stdout  # nosec B603
     except (OSError, subprocess.SubprocessError) as e:
-        sys.exit(f"✖ Claude no respondió: {e}")
+        sys.exit(f"✖ Claude did not answer: {e}")
 
 
 def json_de(texto: str):
@@ -50,17 +50,17 @@ def json_de(texto: str):
 
 
 def elegir(opciones: list[str]) -> list[int]:
-    """Índices elegidos: fzf multi (Tab) si hay terminal; si no, una línea con números (p. ej. «1 3 4» o «todos»)."""
+    """Chosen indexes: fzf multi (Tab) if there is a terminal; otherwise a line of numbers (e.g. "1 3 4" or "all")."""
     if not opciones:
         return []
     if sys.stdin.isatty() and shutil.which("fzf"):
-        r = subprocess.run(["fzf", "--multi", "--reverse", "--prompt", "guardar> ", "--header", "Tab marca · Enter guarda los marcados · Esc no guarda nada"],  # nosec B603 B607
+        r = subprocess.run(["fzf", "--multi", "--reverse", "--prompt", "save> ", "--header", "Tab marks · Enter saves the marked ones · Esc saves nothing"],  # nosec B603 B607
                            input="\n".join(f"{i + 1}\t{o}" for i, o in enumerate(opciones)), capture_output=True, text=True).stdout
         return [int(l.split("\t", 1)[0]) - 1 for l in r.splitlines() if l.strip()]
     for i, o in enumerate(opciones, 1):
         print(f"  {i}. {o}")
-    r = input("¿Cuáles guardo? (números separados por espacio, «todos» o Enter para ninguno): ").strip().lower()
-    if r == "todos":
+    r = input("Which ones do I save? (numbers separated by spaces, \"all\" or Enter for none): ").strip().lower()
+    if r in ("all", "todos"):
         return list(range(len(opciones)))
     return [int(x) - 1 for x in r.split() if x.isdigit() and 0 < int(x) <= len(opciones)]
 
@@ -72,25 +72,25 @@ def registrar(tipo: str, datos) -> None:
 
 
 def hechos(dias: int) -> int:
-    print(f"Claude está revisando tu diario y sesiones de los últimos {dias} días en MemPalace (solo lectura)…")
-    r = claude(f"Usa las herramientas de MemPalace (diary_read, search, kg_query, kg_stats) para revisar lo de los últimos {dias} días "
-               "del usuario Andrés (wing andres y los proyectos). Propón HECHOS ESTABLES sobre él que valga la pena recordar: "
-               "preferencias de trabajo, convenciones, decisiones de arquitectura vigentes, herramientas y proyectos activos. "
-               "Omite lo que ya esté en el grafo (consúltalo) y lo pasajero. Nada de secretos ni datos personales sensibles. "
-               "Responde SOLO un arreglo JSON: [{\"sujeto\":\"Andrés\",\"predicado\":\"prefiere\",\"objeto\":\"…\",\"evidencia\":\"…\"}] "
-               "con máximo 15 elementos.", LEER)
+    print(f"Claude is reviewing your diary and sessions from the last {dias} days in MemPalace (read-only)…")
+    r = claude(f"Use the MemPalace tools (diary_read, search, kg_query, kg_stats) to review the last {dias} days of the user "
+               "Andrés (wing andres and the projects). Propose STABLE FACTS about him that are worth remembering: "
+               "work preferences, conventions, architecture decisions in force, tools and active projects. "
+               "Skip what is already in the graph (query it) and anything short-lived. No secrets or sensitive personal data. "
+               "Answer ONLY with a JSON array: [{\"sujeto\":\"Andrés\",\"predicado\":\"prefers\",\"objeto\":\"…\",\"evidencia\":\"…\"}] "
+               "with at most 15 items.", LEER)
     props = [h for h in json_de(r) if isinstance(h, dict) and h.get("sujeto") and h.get("predicado") and h.get("objeto")]
     if not props:
-        print("Claude no propuso hechos nuevos."); return 0
+        print("Claude proposed no new facts."); return 0
     elegidos = elegir([f"{h['sujeto']} · {h['predicado']} · {h['objeto']}  ({h.get('evidencia', '')[:80]})" for h in props])
     if not elegidos:
-        print("No se guardó nada."); return 0
+        print("Nothing was saved."); return 0
     sel = [props[i] for i in elegidos]
-    out = claude("Guarda EXACTAMENTE estos hechos en el grafo de MemPalace, uno por uno, con mempalace_kg_add "
-                 "(subject, predicate, object; source = 'ws-aprender'). No agregues ni cambies nada. Al final di cuántos guardaste.",
+    out = claude("Save EXACTLY these facts to the MemPalace graph, one by one, with mempalace_kg_add "
+                 "(subject, predicate, object; source = 'ws-aprender'). Do not add or change anything. At the end say how many you saved.",
                  ESCRIBIR, json.dumps(sel, ensure_ascii=False))
     registrar("hechos", sel)
-    print(out.strip() or f"Guardados {len(sel)} hechos.")
+    print(out.strip() or f"Saved {len(sel)} facts.")
     return 0
 
 
@@ -98,28 +98,28 @@ def comandos() -> int:
     try:
         d = json.loads(subprocess.run([str(BIN / "ws-informe"), "--json"], capture_output=True, text=True, timeout=600).stdout)  # nosec B603
     except (OSError, subprocess.SubprocessError, ValueError):
-        sys.exit("✖ No pude leer los pedidos recurrentes (ws-informe --json)")
+        sys.exit("✖ Could not read the recurring requests (ws-informe --json)")
     rec = d.get("recurrentes") or []
     if not rec:
-        print("No hay pedidos que se repitan lo suficiente (3 o más veces)."); return 0
-    r = claude("Estos son inicios de pedidos que el usuario repite en Claude Code (normalizados). Propón comandos «/» "
-               "personales que los resuelvan de una vez. Responde SOLO un arreglo JSON: [{\"nombre\":\"revisa-pr\","
-               "\"descripcion\":\"…\",\"prompt\":\"texto del comando en Markdown; usa $ARGUMENTS donde vaya lo variable\"}] "
-               "con máximo 8. Nombres en minúsculas con guiones.", "", json.dumps(rec, ensure_ascii=False))
+        print("No request is repeated often enough (3 or more times)."); return 0
+    r = claude("These are the openings of requests the user repeats in Claude Code (normalized). Propose personal slash "
+               "commands that solve them in one go. Answer ONLY with a JSON array: [{\"nombre\":\"review-pr\","
+               "\"descripcion\":\"…\",\"prompt\":\"command text in Markdown; use $ARGUMENTS where the variable part goes\"}] "
+               "with at most 8. Lowercase names with hyphens.", "", json.dumps(rec, ensure_ascii=False))
     props = [c for c in json_de(r) if isinstance(c, dict) and re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", str(c.get("nombre", "")))]
     if not props:
-        print("Claude no propuso comandos."); return 0
+        print("Claude proposed no commands."); return 0
     elegidos = elegir([f"/{c['nombre']} — {c.get('descripcion', '')}" for c in props])
     CMDS.mkdir(parents=True, exist_ok=True); hechos_ = []
     for i in elegidos:
         c = props[i]; f = CMDS / f"{c['nombre']}.md"
         if f.exists():
-            print(f"  omito   /{c['nombre']} (ya existe {f})"); continue
+            print(f"  skipped /{c['nombre']} ({f} already exists)"); continue
         f.write_text(f"---\ndescription: {c.get('descripcion', '')}\n---\n\n{c['prompt']}\n", encoding="utf-8")
-        print(f"  listo   /{c['nombre']} → {f}"); hechos_.append(c["nombre"])
+        print(f"  done    /{c['nombre']} → {f}"); hechos_.append(c["nombre"])
     registrar("comandos", hechos_)
     if hechos_:
-        print("Úsalos en cualquier Claude: /" + " · /".join(hechos_) + "  (ws-personal agregar .claude/commands/ para versionarlos)")
+        print("Use them in any Claude: /" + " · /".join(hechos_) + "  (ws-personal agregar .claude/commands/ to version them)")
     return 0
 
 

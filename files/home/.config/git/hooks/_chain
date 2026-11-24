@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# _chain <hook> [args] — despachador de los hooks globales de git (core.hooksPath).
-# 1) corre la compuerta de la estación (ws-gate) en pre-commit, commit-msg y pre-push;
-# 2) después, el hook propio del repo (.git/hooks/<hook>), si existe; así los repos que usan
-#    pre-commit, husky u otros siguen funcionando.
-# Ojo: un repo con core.hooksPath local (p. ej. husky) reemplaza este despachador.
+# _chain <hook> [args] — dispatcher for the global git hooks (core.hooksPath).
+# 1) runs the workstation gate (ws-gate) on pre-commit, commit-msg and pre-push;
+# 2) then the repo's own hook (.git/hooks/<hook>), if it exists; that way repos that use
+#    pre-commit, husky or others keep working.
+# Note: a repo with a local core.hooksPath (e.g. husky) replaces this dispatcher.
 hook="${1:?hook}"; shift
 gate="$HOME/.local/bin/ws-gate"
 input=""

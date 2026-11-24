@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-"""ws-telemetria — consumo de Claude por sesión, turno, proyecto y modelo, y recursos por proyecto.
+"""ws-telemetria — Claude usage by session, turn, project and model, and resources by project.
 
-Implementa ADR-008 (telemetría local primero). Fuentes, todas locales y de solo lectura:
-  · transcripciones de Claude Code (~/.claude/projects/**.jsonl): tokens exactos por respuesta
-    (entrada, salida, caché escrita/leída, razonamiento), modelo, sesión, carpeta, rama, subagentes
-  · uso del copiloto de la terminal (raw/AAAA-MM-DD.jsonl, lo escribe ai-shell.sh)
-  · muestras de procesos de Claude (/proc): CPU, memoria y operaciones de disco por proyecto
-Nunca guarda el texto de prompts ni respuestas: solo longitudes, conteos y nombres de herramientas.
-El costo es el EQUIVALENTE A PRECIOS DE LA API (tu plan Team no se cobra por token); la tabla de
-precios está en PRECIOS y se puede sobrescribir en ~/.config/ws-telemetria/precios.json.
+Implements ADR-008 (local telemetry first). Sources, all local and read-only:
+  · Claude Code transcripts (~/.claude/projects/**.jsonl): exact tokens per response
+    (input, output, cache written/read, reasoning), model, session, folder, branch, subagents
+  · terminal copilot usage (raw/YYYY-MM-DD.jsonl, written by ai-shell.sh)
+  · samples of Claude processes (/proc): CPU, memory and disk operations by project
+It never stores the text of prompts or responses: only lengths, counts and tool names.
+The cost is the EQUIVALENT AT API PRICES (your Team plan is not billed per token); the price
+table is in PRECIOS and can be overridden in ~/.config/ws-telemetria/precios.json.
 
-Uso:
-  ws-telemetria build [--si-toca]   procesa y regenera el tablero (con --si-toca: si pasó ≥ 1 min)
-  ws-telemetria abrir               regenera y abre el tablero en el navegador de Windows
-  ws-telemetria resumen             resumen en la terminal (hoy y 7 días, por proyecto)
-  ws-telemetria sql                 consulta turnos y trazas con DuckDB (si está instalado)
-  ws-telemetria trazas [--dias 7] [--json]          herramientas: usos, tiempos, errores, costo aprox., Bash, MCP, archivos
-  ws-telemetria estimar [--por ticket|rama|proyecto] [--dias 90] [--csv|--json] [filtro]
-                                                    horas activas, turnos, costo, modelo, líneas y commits por ticket
-  ws-telemetria semana [AAAA-Www] [--actual] [--telegram]   reporte semanal en Markdown (contra la semana anterior)
-  ws-telemetria presupuestos [--alertas]            gasto del mes contra ~/.config/ws-telemetria/presupuestos.conf
-  ws-telemetria exportar                            CSV de turnos, trazas y estimación para Excel o Power BI
+Usage:
+  ws-telemetria build [--si-toca]   processes and regenerates the dashboard (with --si-toca: if ≥ 1 min has passed)
+  ws-telemetria abrir               regenerates and opens the dashboard in the Windows browser
+  ws-telemetria resumen             summary in the terminal (today and 7 days, by project)
+  ws-telemetria sql                 queries turns and traces with DuckDB (if installed)
+  ws-telemetria trazas [--dias 7] [--json]          tools: uses, times, errors, approx. cost, Bash, MCP, files
+  ws-telemetria estimar [--por ticket|rama|proyecto] [--dias 90] [--csv|--json] [filter]
+                                                    active hours, turns, cost, model, lines and commits by ticket
+  ws-telemetria semana [YYYY-Www] [--actual] [--telegram]   weekly report in Markdown (against the previous week)
+  ws-telemetria presupuestos [--alertas]            month's spend against ~/.config/ws-telemetria/presupuestos.conf
+  ws-telemetria exportar                            CSV of turns, traces and estimation for Excel or Power BI
 """
 from __future__ import annotations
 
@@ -41,13 +41,13 @@ HOME = Path.home()
 CLAUDE = Path(os.environ.get("WS_TELEMETRIA_CLAUDE", HOME / ".claude"))
 DATOS = Path(os.environ.get("WS_TELEMETRIA_DIR", HOME / ".local/share/ws-telemetria"))
 RAW, CACHE = DATOS / "raw", DATOS / "cache"
-RETENCION_DIAS = 395            # 13 meses
+RETENCION_DIAS = 395            # 13 months
 REFRESCO_S = 60
 
-# USD por millón de tokens (fuente: platform.claude.com/docs/en/about-claude/pricing, 2026-11-17).
-# entrada, salida, escritura de caché 5 min, escritura de caché 1 h, lectura de caché.
+# USD per million tokens (source: platform.claude.com/docs/en/about-claude/pricing, 2026-11-17).
+# input, output, 5 min cache write, 1 h cache write, cache read.
 PRECIOS = {
-    "claude-fable-5": (10.0, 50.0, 12.50, 20.0, 0.25),      # Fable 5.x (5.2 sin precio publicado: se asume igual a 5.1)
+    "claude-fable-5": (10.0, 50.0, 12.50, 20.0, 0.25),      # Fable 5.x (5.2 has no published price: assumed equal to 5.1)
     "claude-opus-5-5": (4.0, 20.0, 5.0, 8.0, 0.20),
     "claude-sonnet-5-5": (2.0, 10.0, 2.50, 4.0, 0.10),
     "claude-haiku-5-5": (0.10, 0.50, 0.125, 0.20, 0.01),
@@ -70,7 +70,7 @@ def precios() -> dict:
 
 
 def precio_de(modelo: str, tabla: dict) -> tuple[tuple, bool]:
-    """Precio por prefijo más largo; devuelve (precio, es_estimado)."""
+    """Price by longest prefix; returns (price, is_estimated)."""
     m = (modelo or "").lower()
     for k in sorted(tabla, key=len, reverse=True):
         if m.startswith(k):
@@ -85,10 +85,10 @@ def costo(u: dict, modelo: str, tabla: dict) -> float:
 
 
 # ---------------------------------------------------------------------------------------------
-# Transcripciones → turnos
+# Transcripts → turns
 # ---------------------------------------------------------------------------------------------
 def es_prompt(o: dict) -> bool:
-    """Un mensaje del usuario que inicia turno (no un resultado de herramienta)."""
+    """A user message that starts a turn (not a tool result)."""
     c = (o.get("message") or {}).get("content")
     if isinstance(c, str):
         return bool(c.strip())
@@ -98,15 +98,15 @@ def es_prompt(o: dict) -> bool:
     return False
 
 
-# Entradas «user» que no escribiste tú: salida de comandos locales, comandos «/», avisos del sistema, el resumen
-# automático al continuar una sesión y el aviso de interrupción. No abren turno ni cuentan como palabras tuyas.
+# "user" entries you did not write: output of local commands, "/" commands, system notices, the automatic
+# summary when a session is continued and the interruption notice. They neither open a turn nor count as your words.
 NO_HUMANO = ("<local-command", "<command-name>", "<command-message>", "<system-reminder>", "<task-notification>", "<bash-input>",
              "<bash-stdout>", "<bash-stderr>", "<user-prompt-submit-hook>", "Caveat: The messages below", "[Request interrupted",
              "This session is being continued")
 
 
 def es_humano(o: dict) -> bool:
-    """¿El prompt lo escribió la persona? (no es meta, ni resumen de compactación, ni texto generado por Claude Code)."""
+    """Did the person write the prompt? (not meta, not a compaction summary, not text generated by Claude Code)."""
     if o.get("isMeta") or o.get("isCompactSummary") or o.get("isVisibleInTranscriptOnly"):
         return False
     c = (o.get("message") or {}).get("content")
@@ -125,7 +125,7 @@ PALABRA = re.compile(r"\w+")
 
 
 def palabras_de(o: dict) -> int:
-    """Palabras del texto de un mensaje. Solo se cuentan; el texto no se guarda."""
+    """Words in a message's text. They are only counted; the text is not stored."""
     c = (o.get("message") or {}).get("content")
     if isinstance(c, str):
         return len(PALABRA.findall(c))
@@ -133,7 +133,7 @@ def palabras_de(o: dict) -> int:
 
 
 def procesar_archivo(f: Path) -> list[dict]:
-    """Turnos de un archivo de transcripción. Deduplica respuestas por id de mensaje."""
+    """Turns in a transcript file. Deduplicates responses by message id."""
     sub = "/subagents/" in str(f)
     vistos: set[str] = set()
     textos: set = set()
@@ -149,14 +149,14 @@ def procesar_archivo(f: Path) -> list[dict]:
             tipo = o.get("type")
             if tipo == "user" and es_prompt(o) and not sub:
                 if not es_humano(o):
-                    # Un aviso de tarea en segundo plano, una entrada meta o un resumen de compactación: si Claude
-                    # responde, ese trabajo va en un turno automático (cuenta su costo, no como turno tuyo).
+                    # A background task notice, a meta entry or a compaction summary: if Claude responds,
+                    # that work goes into an automatic turn (its cost counts, but not as a turn of yours).
                     t, auto_ts = None, o.get("timestamp")
                     continue
                 auto_ts = None
                 if t is not None and not t["respuestas"] and not t["subagente"]:
-                    # Otro mensaje tuyo antes de que Claude respondiera (interrumpiste o corregiste): es el mismo turno.
-                    # Cuenta desde el último mensaje, que es el que Claude contesta.
+                    # Another message of yours before Claude responded (you interrupted or corrected): same turn.
+                    # It counts from the last message, which is the one Claude answers.
                     t["inicio"] = t["fin"] = o.get("timestamp") or t["inicio"]
                     t["prompt_chars"] += largo_prompt(o); t["prompt_palabras"] += palabras_de(o)
                     continue
@@ -168,11 +168,11 @@ def procesar_archivo(f: Path) -> list[dict]:
             elif tipo == "assistant":
                 m = o.get("message") or {}
                 mid = m.get("id") or o.get("requestId")
-                # Si Claude vuelve a responder mucho después (sesión retomada, tarea en segundo plano), es trabajo aparte:
-                # no se alarga el turno anterior por horas o días.
+                # If Claude responds again much later (resumed session, background task), it is separate work:
+                # the previous turn is not stretched by hours or days.
                 if t is not None and not sub and t["respuestas"] and _ts(o.get("timestamp")) - _ts(t["fin"]) > 1800:
                     t, auto_ts = None, None
-                if t is None:   # archivo de subagente, transcripción sin prompt visible o turno automático
+                if t is None:   # subagent file, transcript with no visible prompt, or automatic turn
                     t = {"sesion": o.get("sessionId", f.parent.parent.name if sub else f.stem), "inicio": (auto_ts if not sub else None) or o.get("timestamp"),
                          "fin": o.get("timestamp"), "carpeta": o.get("cwd", ""), "rama": o.get("gitBranch", ""),
                          "prompt_chars": 0, "prompt_palabras": 0, "resp_palabras": 0, "modelos": defaultdict(lambda: defaultdict(int)),
@@ -183,7 +183,7 @@ def procesar_archivo(f: Path) -> list[dict]:
                     if isinstance(b, dict) and b.get("type") == "tool_use":
                         t["herramientas"][b.get("name", "?")] += 1
                     elif isinstance(b, dict) and b.get("type") == "text":
-                        h = (mid, hash(b.get("text", "")))       # el streaming puede repetir un bloque
+                        h = (mid, hash(b.get("text", "")))       # streaming can repeat a block
                         if h not in textos:
                             textos.add(h); t["resp_palabras"] += len(PALABRA.findall(b.get("text", "")))
                 if not mid or mid in vistos:
@@ -192,7 +192,7 @@ def procesar_archivo(f: Path) -> list[dict]:
                 u = m.get("usage") or {}
                 cc = u.get("cache_creation") or {}
                 modelo = m.get("model", "?")
-                if modelo.startswith("<"):          # mensajes sintéticos de Claude Code (errores, avisos)
+                if modelo.startswith("<"):          # synthetic Claude Code messages (errors, notices)
                     continue
                 d = t["modelos"][modelo]
                 d["n"] += 1
@@ -207,9 +207,9 @@ def procesar_archivo(f: Path) -> list[dict]:
     for t in turnos:
         t["modelos"] = {k: dict(v) for k, v in t["modelos"].items()}
         t["herramientas"] = dict(t["herramientas"])
-        # basename de la carpeta, también para rutas de Windows (C:\\...\\repo)
+        # basename of the folder, also for Windows paths (C:\\...\\repo)
         t["proyecto"] = re.split(r"[\\/]", (t["carpeta"] or "").rstrip("\\/"))[-1] or "?"
-        t["carpeta"] = ""                          # no se guarda la ruta completa
+        t["carpeta"] = ""                          # the full path is not stored
         salida.append(t)
     return salida
 
@@ -224,10 +224,10 @@ def turnos_todos() -> list[dict]:
             st = p.stat()
         except OSError:
             continue
-        clave = hashlib.sha1(f.encode(), usedforsecurity=False).hexdigest()  # solo nombra el archivo de caché
+        clave = hashlib.sha1(f.encode(), usedforsecurity=False).hexdigest()  # only names the cache file
         vivos.add(clave)
         c = CACHE / f"{clave}.json"
-        firma = f"v5:{st.st_mtime_ns}:{st.st_size}"   # v4: solo tus prompts abren turno; lo demás va en turnos automáticos
+        firma = f"v5:{st.st_mtime_ns}:{st.st_size}"   # v4: only your prompts open a turn; the rest goes into automatic turns
         if c.exists():
             try:
                 d = json.loads(c.read_text())
@@ -238,14 +238,14 @@ def turnos_todos() -> list[dict]:
         ts = procesar_archivo(p)
         c.write_text(json.dumps({"firma": firma, "turnos": ts}))
         todos.extend(ts)
-    for c in CACHE.glob("*.json"):            # transcripciones borradas por Claude: su caché también
+    for c in CACHE.glob("*.json"):            # transcripts deleted by Claude: their cache too
         if c.stem not in vivos:
             c.unlink(missing_ok=True)
     return todos
 
 
 # ---------------------------------------------------------------------------------------------
-# Recursos: muestra de procesos de Claude
+# Resources: sample of Claude processes
 # ---------------------------------------------------------------------------------------------
 def muestrear_recursos() -> None:
     RAW.mkdir(parents=True, exist_ok=True)
@@ -280,7 +280,7 @@ def muestrear_recursos() -> None:
 
 
 def recursos_24h() -> dict:
-    """Por proyecto: CPU % media, RAM máx, operaciones de disco/s y MB leídos/escritos (últimas 24 h)."""
+    """By project: mean CPU %, max RAM, disk operations/s and MB read/written (last 24 h)."""
     desde = time.time() - 86400
     por_pid: dict[int, list] = defaultdict(list)
     for f in sorted(RAW.glob("recursos-*.jsonl"))[-2:]:
@@ -331,7 +331,7 @@ def limpiar_viejos() -> None:
 
 
 # ---------------------------------------------------------------------------------------------
-# Agregación y tablero
+# Aggregation and dashboard
 # ---------------------------------------------------------------------------------------------
 def agregar(turnos: list[dict], cop: list[dict], rec: dict) -> dict:
     tabla = precios()
@@ -347,7 +347,7 @@ def agregar(turnos: list[dict], cop: list[dict], rec: dict) -> dict:
     for t in turnos:
         if not t.get("inicio") or t["inicio"] < limite:
             continue
-        dia = dia_local(t["inicio"]) or t["inicio"][:10]      # día LOCAL: «Hoy» y la barra del día cuadran con tu reloj
+        dia = dia_local(t["inicio"]) or t["inicio"][:10]      # LOCAL day: "Today" and the day's bar match your clock
         tk = sum(m["in"] + m["out"] + m["cw"] + m["cr"] for m in t["modelos"].values())
         c = sum(costo(m, k, tabla) for k, m in t["modelos"].items())
         if not t["subagente"] and not t.get("auto"):
@@ -421,7 +421,7 @@ def ventana_windows() -> Path | None:
 
 
 def _eventos(sub: str, dias: int = 30) -> list[dict]:
-    """Eventos de DATOS/<sub>/AAAA-MM-DD.jsonl de los últimos `dias` días; borra los que pasan la retención."""
+    """Events from DATOS/<sub>/YYYY-MM-DD.jsonl for the last `dias` days; deletes those past retention."""
     d = DATOS / sub
     if not d.is_dir():
         return []
@@ -441,7 +441,7 @@ def _eventos(sub: str, dias: int = 30) -> list[dict]:
 
 
 def extras() -> dict:
-    """Ruteo de modelos (ADR-009) y Telegram (ADR-010) para el tablero: solo conteos, sin texto de tareas."""
+    """Model routing (ADR-009) and Telegram (ADR-010) for the dashboard: counts only, no task text."""
     from collections import Counter, defaultdict as dd
     ru = _eventos("ruteo")
     dec = Counter(r.get("decision", "") for r in ru)
@@ -468,11 +468,11 @@ def extras() -> dict:
     return {"ruteo": ruteo if ru else None, "telegram": telegram if tg else None}
 
 
-BYTES_POR_TOKEN = 4   # aproximación del texto que viaja en cada solicitud (contexto completo) y respuesta
+BYTES_POR_TOKEN = 4   # approximation of the text that travels in each request (full context) and response
 
 
 def muestrear_red() -> None:
-    """Bytes recibidos y enviados por WSL (todas las interfaces menos lo), una muestra por minuto."""
+    """Bytes received and sent by WSL (all interfaces except lo), one sample per minute."""
     rx = tx = 0
     try:
         for linea in open("/proc/net/dev").read().splitlines()[2:]:
@@ -487,7 +487,7 @@ def muestrear_red() -> None:
 
 
 def red_24h(turnos: list[dict]) -> dict:
-    """Red de las últimas 24 h: total de WSL medido y lo de Claude por proyecto estimado desde los tokens."""
+    """Network over the last 24 h: measured WSL total and Claude's share by project estimated from tokens."""
     desde = time.time() - 86400
     m = []
     for f in sorted(RAW.glob("red-*.jsonl"))[-2:]:
@@ -500,7 +500,7 @@ def red_24h(turnos: list[dict]) -> dict:
                 m.append(r)
     m.sort(key=lambda r: r["ts"])
     rx = tx = 0
-    for a, b in zip(m, m[1:]):            # los contadores vuelven a 0 al reiniciar WSL: solo diferencias positivas
+    for a, b in zip(m, m[1:]):            # counters go back to 0 when WSL restarts: positive differences only
         rx += max(0, b["rx"] - a["rx"]); tx += max(0, b["tx"] - a["tx"])
     lim = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=1)).isoformat()
     por = defaultdict(lambda: {"sube": 0, "baja": 0})
@@ -516,7 +516,7 @@ def red_24h(turnos: list[dict]) -> dict:
 
 
 def palabras_resumen(turnos: list[dict]) -> dict:
-    """Palabras escritas y respondidas en los últimos 30 días (turnos principales, sin subagentes)."""
+    """Words written and answered in the last 30 days (main turns, no subagents)."""
     lim = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)).isoformat()
     tot = {"turnos": 0, "prompt": 0, "resp": 0, "out": 0}
     por = defaultdict(lambda: {"turnos": 0, "prompt": 0, "resp": 0})
@@ -535,23 +535,23 @@ def palabras_resumen(turnos: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------------------------
-# Trazas por herramienta, estimación, reporte semanal y presupuestos (parche 51; ADR-008 F2)
-# Fuente nueva: DATOS/trazas/AAAA-MM-DD.jsonl(.gz), la escribe el hook ~/.claude/hooks/ws-trazas.sh.
+# Traces by tool, estimation, weekly report and budgets (patch 51; ADR-008 F2)
+# New source: DATOS/trazas/YYYY-MM-DD.jsonl(.gz), written by the hook ~/.claude/hooks/ws-trazas.sh.
 # ---------------------------------------------------------------------------------------------
 TICKET_RE = re.compile(r"[A-Z][A-Z0-9]+-[0-9]+")
-INACTIVO_S = 15 * 60          # huecos de más de 15 min entre turnos no cuentan como horas activas
+INACTIVO_S = 15 * 60          # gaps of more than 15 min between turns do not count as active hours
 COMPRIMIR_DIAS = 35
-CATEGORIAS_BASH = [           # (categoría, regex sobre la acción resumida «programa subcomando»)
-    ("pruebas", r"^(pytest|jest|vitest|mocha|bats|k6|playwright|ws-test|go test|cargo test|dotnet test|mvn test|gradle test"
+CATEGORIAS_BASH = [           # (category, regex over the summarized action "program subcommand")
+    ("tests", r"^(pytest|jest|vitest|mocha|bats|k6|playwright|ws-test|go test|cargo test|dotnet test|mvn test|gradle test"
                 r"|(npm|pnpm|yarn|bun) test|python3? pytest|npx (jest|vitest|playwright))"),
-    ("compilar", r"^(make|cmake|tsc|dotnet build|mvn|gradle|go build|cargo build|(npm|pnpm|yarn|bun) run|npx tsc|webpack|vite)"),
+    ("build", r"^(make|cmake|tsc|dotnet build|mvn|gradle|go build|cargo build|(npm|pnpm|yarn|bun) run|npx tsc|webpack|vite)"),
     ("lint", r"^(eslint|ruff|flake8|pylint|black|prettier|shellcheck|bandit|semgrep|gitleaks|tflint|checkov|trivy|npx (eslint|prettier))"),
     ("git", r"^(git|gh)\b"),
     ("infra", r"^(terraform|tofu|pulumi|az|aws|gcloud|kubectl|helm|azd|ansible|bicep|kustomize|argocd|flux)\b"),
-    ("contenedores", r"^(docker|podman|compose|docker-compose)\b"),
-    ("paquetes", r"^((npm|pnpm|yarn|bun) (install|add|ci|update)|pip3?|uv|poetry|dotnet (add|restore)|apt|apt-get|brew|cargo add)"),
-    ("datos", r"^(psql|mysql|sqlcmd|duckdb|sqlite3|jq|yq|python3?|node)\b"),
-    ("explorar", r"^(ls|cat|head|tail|grep|rg|find|fd|tree|wc|sed|awk|less|stat|file|du|df|echo|pwd|which)\b"),
+    ("containers", r"^(docker|podman|compose|docker-compose)\b"),
+    ("packages", r"^((npm|pnpm|yarn|bun) (install|add|ci|update)|pip3?|uv|poetry|dotnet (add|restore)|apt|apt-get|brew|cargo add)"),
+    ("data", r"^(psql|mysql|sqlcmd|duckdb|sqlite3|jq|yq|python3?|node)\b"),
+    ("explore", r"^(ls|cat|head|tail|grep|rg|find|fd|tree|wc|sed|awk|less|stat|file|du|df|echo|pwd|which)\b"),
 ]
 
 
@@ -559,11 +559,11 @@ def categoria_bash(accion: str) -> str:
     for cat, rx in CATEGORIAS_BASH:
         if re.match(rx, accion or ""):
             return cat
-    return "otro"
+    return "other"
 
 
 def _ts(s: str | None) -> float:
-    """ISO 8601 (con Z) → epoch; 0 si no se puede leer."""
+    """ISO 8601 (with Z) → epoch; 0 if it cannot be parsed."""
     try:
         return dt.datetime.fromisoformat((s or "").replace("Z", "+00:00")).timestamp()
     except ValueError:
@@ -571,8 +571,8 @@ def _ts(s: str | None) -> float:
 
 
 def dia_local(s) -> str:
-    """Fecha LOCAL (AAAA-MM-DD) de un instante ISO en UTC: las ventanas por día son en tu hora, no en UTC
-    (a las 18:00 en México ya es «mañana» en UTC y lo de hoy quedaba fuera)."""
+    """LOCAL date (YYYY-MM-DD) of an ISO instant in UTC: per-day windows use your time, not UTC
+    (at 18:00 in Mexico it is already "tomorrow" in UTC and today's data was left out)."""
     e = _ts(s)
     return dt.datetime.fromtimestamp(e).date().isoformat() if e else ""
 
@@ -584,12 +584,12 @@ def _pct(vals: list, p: float):
     return v[min(len(v) - 1, int(round(p / 100 * (len(v) - 1))))]
 
 
-MAX_TURNO_S = 3600            # un turno cuenta como mucho 1 h de actividad (el 99 % dura menos de 45 min)
+MAX_TURNO_S = 3600            # a turn counts for at most 1 h of activity (99 % last less than 45 min)
 
 
 def _horas(intervalos: list[tuple[float, float]]) -> float:
-    """Horas activas: une intervalos (inicio, fin) cuando el hueco entre ellos es ≤ INACTIVO_S. Cada intervalo se
-    recorta a MAX_TURNO_S: un turno que quedó abierto (una pestaña retomada días después) no cuenta como días de trabajo."""
+    """Active hours: merges (start, end) intervals when the gap between them is ≤ INACTIVO_S. Each interval is
+    clipped to MAX_TURNO_S: a turn left open (a tab resumed days later) does not count as days of work."""
     total, ini, fin = 0.0, None, None
     for a, b in sorted(intervalos):
         b = min(b, a + MAX_TURNO_S)
@@ -605,7 +605,7 @@ def _horas(intervalos: list[tuple[float, float]]) -> float:
 
 
 def mantener_trazas() -> None:
-    """Comprime (gzip) los días de más de COMPRIMIR_DIAS y borra los que pasan la retención."""
+    """Compresses (gzip) days older than COMPRIMIR_DIAS and deletes those past retention."""
     import gzip
     d = DATOS / "trazas"
     if not d.is_dir():
@@ -622,7 +622,7 @@ def mantener_trazas() -> None:
 
 
 def trazas(desde: dt.date, hasta: dt.date | None = None) -> list[dict]:
-    """Trazas entre `desde` y `hasta` (incluidos, fechas locales del nombre del archivo)."""
+    """Traces between `desde` and `hasta` (inclusive, local dates from the file name)."""
     import gzip
     d = DATOS / "trazas"
     hasta = hasta or dt.date.today()
@@ -643,8 +643,8 @@ def trazas(desde: dt.date, hasta: dt.date | None = None) -> list[dict]:
 
 
 def detalle_herramientas(tr: list[dict], turnos: list[dict] | None = None) -> dict:
-    """Uso, duración (sin tu espera), errores y costo aproximado por herramienta; Bash por acción y categoría;
-    MCP; archivos y lenguajes; skills; subagentes; espera humana; denegados; compactaciones; prompts."""
+    """Usage, duration (without your wait), errors and approximate cost by tool; Bash by action and category;
+    MCP; files and languages; skills; subagents; human wait; denials; compactions; prompts."""
     from collections import Counter
     H = [t for t in tr if t.get("tipo") == "herramienta"]
     neto = lambda t: None if t.get("dur_ms") is None else max(0, t["dur_ms"] - (t.get("espera_ms") or 0))  # noqa: E731
@@ -678,7 +678,7 @@ def detalle_herramientas(tr: list[dict], turnos: list[dict] | None = None) -> di
     arch = defaultdict(lambda: {"ediciones": 0, "lineas_mas": 0, "lineas_menos": 0})
     leng = defaultdict(lambda: {"ediciones": 0, "lineas_mas": 0, "lineas_menos": 0})
     for t in ed:
-        for d, clave in ((arch, f"{t.get('proyecto', '')}/{t.get('accion', '')}"), (leng, t.get("ext") or "(sin ext)")):
+        for d, clave in ((arch, f"{t.get('proyecto', '')}/{t.get('accion', '')}"), (leng, t.get("ext") or "(no ext)")):
             d[clave]["ediciones"] += 1
             d[clave]["lineas_mas"] += t.get("lineas_mas") or 0; d[clave]["lineas_menos"] += t.get("lineas_menos") or 0
     esperas = [t["espera_ms"] for t in H if t.get("espera_ms")]
@@ -692,7 +692,7 @@ def detalle_herramientas(tr: list[dict], turnos: list[dict] | None = None) -> di
             subs[t.get("agente") or "?"].append(t.get("dur_ms"))
     for t in H:
         if t.get("herramienta") in ("Task", "Agent") and not subs.get(t.get("accion")):
-            subs.setdefault("(por llamada) " + (t.get("accion") or "?"), []).append(neto(t))
+            subs.setdefault("(per call) " + (t.get("accion") or "?"), []).append(neto(t))
     pr = [t for t in tr if t.get("tipo") == "prompt"]
     ses_fin = [t for t in tr if t.get("tipo") == "sesion" and t.get("fase") == "fin"]
     return {
@@ -704,7 +704,7 @@ def detalle_herramientas(tr: list[dict], turnos: list[dict] | None = None) -> di
         "lenguajes": sorted(({"ext": k, **v} for k, v in leng.items()), key=lambda x: -(x["lineas_mas"] + x["lineas_menos"]))[:12],
         "skills": [{"nombre": k, "usos": n} for k, n in Counter(t.get("accion") for t in H if t.get("herramienta") == "Skill").most_common(10)],
         "subagentes": sorted(({"nombre": k, "usos": len(v), "med_ms": _pct(v, 50)} for k, v in subs.items()), key=lambda x: -x["usos"])[:10],
-        "errores_tipo": [{"tipo": k, "n": n} for k, n in Counter(t.get("error_tipo") or "sin_detalle" for t in H if not t.get("ok", True)).most_common()],
+        "errores_tipo": [{"tipo": k, "n": n} for k, n in Counter(t.get("error_tipo") or "no_detail" for t in H if not t.get("ok", True)).most_common()],
         "espera": {"n": len(esperas), "med_s": round((_pct(esperas, 50) or 0) / 1000, 1), "p95_s": round((_pct(esperas, 95) or 0) / 1000, 1),
                    "total_min": round(sum(esperas) / 60000, 1),
                    "por_herramienta": sorted(({"nombre": k, "n": len(v), "med_s": round(_pct(v, 50) / 1000, 1)} for k, v in esp_h.items()), key=lambda x: -x["n"])[:8]},
@@ -719,8 +719,8 @@ def detalle_herramientas(tr: list[dict], turnos: list[dict] | None = None) -> di
 
 
 def costo_por_herramienta(turnos: list[dict], H: list[dict]) -> dict:
-    """Reparte el costo de cada turno entre las herramientas que usó (por partes iguales). Aproximado: el costo
-    real es de los tokens del turno, no de la herramienta; sirve para ver qué tipo de trabajo consume más."""
+    """Splits the cost of each turn among the tools it used (in equal parts). Approximate: the real cost
+    belongs to the turn's tokens, not the tool; it shows which kind of work consumes the most."""
     if not turnos or not H:
         return {}
     tabla = precios()
@@ -742,7 +742,7 @@ def costo_por_herramienta(turnos: list[dict], H: list[dict]) -> dict:
         i, j = bisect.bisect_left(lst, (a, "")), bisect.bisect_right(lst, (b, "￿"))
         dentro = [h for _, h in lst[i:j]]
         if not dentro:
-            out["(sin herramientas)"] += c; continue
+            out["(no tools)"] += c; continue
         for h in dentro:
             out[h] += c / len(dentro)
     return dict(out)
@@ -752,16 +752,16 @@ def _clave(t: dict, por: str) -> str:
     rama = t.get("rama") or ""
     if por == "ticket":
         m = TICKET_RE.search(rama)
-        return m.group(0) if m else f"{t.get('proyecto', '?')} · {rama or 'sin rama'}"
+        return m.group(0) if m else f"{t.get('proyecto', '?')} · {rama or 'no branch'}"
     if por == "rama":
-        return f"{t.get('proyecto', '?')} · {rama or 'sin rama'}"
+        return f"{t.get('proyecto', '?')} · {rama or 'no branch'}"
     return t.get("proyecto", "?")
 
 
 def estimacion(turnos: list[dict], tr: list[dict], por: str = "ticket", desde: dt.date | None = None,
                hasta: dt.date | None = None) -> list[dict]:
-    """Datos para estimar: por ticket (de la rama), rama o proyecto. Horas activas = turnos unidos si el hueco es
-    ≤ 15 min (tu tiempo frente a Claude); horas Claude = suma de la duración de los turnos."""
+    """Data for estimating: by ticket (from the branch), branch or project. Active hours = turns merged if the gap
+    is ≤ 15 min (your time in front of Claude); Claude hours = sum of the turns' durations."""
     tabla = precios()
     d0 = (desde or dt.date.today() - dt.timedelta(days=90)).isoformat()
     d1 = (hasta or dt.date.today()).isoformat()
@@ -808,14 +808,14 @@ def estimacion(turnos: list[dict], tr: list[dict], por: str = "ticket", desde: d
                       "modelo": next(iter(mezcla), ""), "mezcla": mezcla,
                       "herramientas": X["herramientas"], "errores": X["errores"],
                       "lineas_mas": X["lineas_mas"], "lineas_menos": X["lineas_menos"], "archivos": len(X["archivos"]),
-                      # los que hizo Claude (comandos git commit) o los que se ven al cerrar la sesión: el mayor, sin sumar dos veces
+                      # those Claude made (git commit commands) or those seen when the session closes: the larger, not counted twice
                       "commits": max(X["commits"], X["commits_cmd"]), "espera_min": round(X["espera_ms"] / 60000, 1), "compactaciones": X["compactaciones"]})
     return sorted(filas, key=lambda f: -f["costo"])
 
 
 def presupuestos(turnos: list[dict]) -> list[dict]:
-    """~/.config/ws-telemetria/presupuestos.conf: líneas «proyecto=usd_mes» (equivalente API); «*=usd» = total.
-    Gasto del mes en curso, % usado y proyección lineal a fin de mes."""
+    """~/.config/ws-telemetria/presupuestos.conf: lines "project=usd_per_month" (API equivalent); "*=usd" = total.
+    Current month's spend, % used and linear projection to the end of the month."""
     conf = HOME / ".config/ws-telemetria/presupuestos.conf"
     if not conf.exists():
         return []
@@ -846,7 +846,7 @@ def presupuestos(turnos: list[dict]) -> list[dict]:
 
 
 def _semana_rango(iso: str | None, actual: bool = False) -> tuple[dt.date, dt.date, str]:
-    """(lunes, domingo, «AAAA-Www»). Sin argumento: la última semana completa (o la actual con actual=True)."""
+    """(monday, sunday, "YYYY-Www"). No argument: the last full week (or the current one with actual=True)."""
     if iso:
         a, w = iso.upper().split("-W")
         lunes = dt.date.fromisocalendar(int(a), int(w), 1)
@@ -877,8 +877,8 @@ def _totales(turnos: list[dict], tr: list[dict], a: dt.date, b: dt.date) -> dict
 
 
 def semana(iso: str | None = None, actual: bool = False) -> tuple[str, str, Path]:
-    """Reporte semanal en Markdown (con comparación contra la semana anterior). Devuelve (markdown, texto corto
-    para Telegram, ruta). Se guarda en DATOS/reportes/ y en %UserProfile%\\ws-telemetria\\."""
+    """Weekly report in Markdown (compared against the previous week). Returns (markdown, short text
+    for Telegram, path). It is saved in DATOS/reportes/ and in %UserProfile%\\ws-telemetria\\."""
     a, b, nombre = _semana_rango(iso, actual)
     pa, pb = a - dt.timedelta(days=7), b - dt.timedelta(days=7)
     turnos = turnos_todos()
@@ -895,36 +895,36 @@ def semana(iso: str | None = None, actual: bool = False) -> tuple[str, str, Path
     est_p = estimacion(turnos, tr_s, "proyecto", a, b)
     est_t = [e for e in estimacion(turnos, tr_s, "ticket", a, b) if TICKET_RE.fullmatch(e["clave"])]
     det = detalle_herramientas(tr_s, [t for t in turnos if a.isoformat() <= dia_local(t.get("inicio")) <= b.isoformat()])
-    md = [f"# Semana {nombre} ({a:%d/%m} – {b:%d/%m/%Y})", "",
-          "Costo = equivalente a precios de la API (el plan Team no cobra por token). Entre paréntesis: contra la semana anterior.", "",
-          "| Indicador | Semana | Anterior |", "|---|---:|---:|",
-          f"| Costo equivalente | ${delta('costo', '{:,.2f}')} | ${P['costo']:,.2f} |",
-          f"| Horas activas | {delta('horas', '{:,.1f}')} | {P['horas']:,.1f} |",
-          f"| Turnos | {delta('turnos')} | {P['turnos']:,} |", f"| Sesiones | {delta('sesiones')} | {P['sesiones']:,} |",
-          f"| Tokens | {delta('tokens')} | {P['tokens']:,} |", f"| Caché | {S['cache_pct']} % | {P['cache_pct']} % |",
-          f"| Llamadas a herramientas | {delta('herramientas')} | {P['herramientas']:,} |",
-          f"| Errores de herramientas | {S['error_pct']} % | {P['error_pct']} % |",
-          f"| Tu espera para aprobar | {S['espera_min']} min | {P['espera_min']} min |",
-          f"| Commits en sesiones | {delta('commits')} | {P['commits']:,} |",
-          f"| Líneas cambiadas (+/−) | {delta('lineas')} | {P['lineas']:,} |", ""]
-    md += ["## Por proyecto", "", "| Proyecto | Costo | Horas activas | Turnos | Modelo principal | Líneas +/− | Commits |", "|---|---:|---:|---:|---|---:|---:|"]
-    md += [f"| {e['clave']} | ${e['costo']:,.2f} | {e['horas_activas']} | {e['turnos']} | {e['modelo']} | +{e['lineas_mas']}/−{e['lineas_menos']} | {e['commits']} |" for e in est_p[:12]] or ["| (sin datos) | | | | | | |"]
-    md += ["", "## Por ticket (de la rama)", "", "| Ticket | Proyecto | Costo | Horas activas | Días | Turnos |", "|---|---|---:|---:|---:|---:|"]
-    md += [f"| {e['clave']} | {e['proyecto']} | ${e['costo']:,.2f} | {e['horas_activas']} | {e['dias']} | {e['turnos']} |" for e in est_t[:15]] or ["| (ninguna rama con ticket) | | | | | |"]
-    md += ["", "## Herramientas", "", "| Herramienta | Usos | Errores | Mediana | p95 | Costo aprox. |", "|---|---:|---:|---:|---:|---:|"]
-    md += [f"| {h['nombre']} | {h['usos']} | {h['errores']} | {(h['med_ms'] or 0) / 1000:.1f} s | {(h['p95_ms'] or 0) / 1000:.1f} s | ${h['costo']:,.2f} |" for h in det["herramientas"][:10]] or ["| (sin trazas) | | | | | |"]
-    md += ["", "## Tiempo de Bash por tipo de trabajo", "", "| Tipo | Usos | Minutos | Errores |", "|---|---:|---:|---:|"]
-    md += [f"| {c['nombre']} | {c['usos']} | {c['total_min']} | {c['errores']} |" for c in det["bash_categorias"]] or ["| (sin trazas) | | | |"]
+    md = [f"# Week {nombre} ({a:%d/%m} – {b:%d/%m/%Y})", "",
+          "Cost = equivalent at API prices (the Team plan is not billed per token). In parentheses: against the previous week.", "",
+          "| Indicator | Week | Previous |", "|---|---:|---:|",
+          f"| Equivalent cost | ${delta('costo', '{:,.2f}')} | ${P['costo']:,.2f} |",
+          f"| Active hours | {delta('horas', '{:,.1f}')} | {P['horas']:,.1f} |",
+          f"| Turns | {delta('turnos')} | {P['turnos']:,} |", f"| Sessions | {delta('sesiones')} | {P['sesiones']:,} |",
+          f"| Tokens | {delta('tokens')} | {P['tokens']:,} |", f"| Cache | {S['cache_pct']} % | {P['cache_pct']} % |",
+          f"| Tool calls | {delta('herramientas')} | {P['herramientas']:,} |",
+          f"| Tool errors | {S['error_pct']} % | {P['error_pct']} % |",
+          f"| Your wait to approve | {S['espera_min']} min | {P['espera_min']} min |",
+          f"| Commits in sessions | {delta('commits')} | {P['commits']:,} |",
+          f"| Lines changed (+/−) | {delta('lineas')} | {P['lineas']:,} |", ""]
+    md += ["## By project", "", "| Project | Cost | Active hours | Turns | Main model | Lines +/− | Commits |", "|---|---:|---:|---:|---|---:|---:|"]
+    md += [f"| {e['clave']} | ${e['costo']:,.2f} | {e['horas_activas']} | {e['turnos']} | {e['modelo']} | +{e['lineas_mas']}/−{e['lineas_menos']} | {e['commits']} |" for e in est_p[:12]] or ["| (no data) | | | | | | |"]
+    md += ["", "## By ticket (from the branch)", "", "| Ticket | Project | Cost | Active hours | Days | Turns |", "|---|---|---:|---:|---:|---:|"]
+    md += [f"| {e['clave']} | {e['proyecto']} | ${e['costo']:,.2f} | {e['horas_activas']} | {e['dias']} | {e['turnos']} |" for e in est_t[:15]] or ["| (no branch with a ticket) | | | | | |"]
+    md += ["", "## Tools", "", "| Tool | Uses | Errors | Median | p95 | Approx. cost |", "|---|---:|---:|---:|---:|---:|"]
+    md += [f"| {h['nombre']} | {h['usos']} | {h['errores']} | {(h['med_ms'] or 0) / 1000:.1f} s | {(h['p95_ms'] or 0) / 1000:.1f} s | ${h['costo']:,.2f} |" for h in det["herramientas"][:10]] or ["| (no traces) | | | | | |"]
+    md += ["", "## Bash time by type of work", "", "| Type | Uses | Minutes | Errors |", "|---|---:|---:|---:|"]
+    md += [f"| {c['nombre']} | {c['usos']} | {c['total_min']} | {c['errores']} |" for c in det["bash_categorias"]] or ["| (no traces) | | | |"]
     if det["errores_tipo"]:
-        md += ["", "## Errores por tipo", "", *[f"- {e['tipo']}: {e['n']}" for e in det["errores_tipo"]]]
+        md += ["", "## Errors by type", "", *[f"- {e['tipo']}: {e['n']}" for e in det["errores_tipo"]]]
     if det["denegados"]:
-        md += ["", "## Permisos denegados", "", *[f"- `{d['accion']}`: {d['n']}" for d in det["denegados"]]]
-    md += ["", f"_Generado {dt.datetime.now():%Y-%m-%d %H:%M} por `ws-telemetria semana`. Datos locales; sin texto de conversaciones._", ""]
+        md += ["", "## Denied permissions", "", *[f"- `{d['accion']}`: {d['n']}" for d in det["denegados"]]]
+    md += ["", f"_Generated {dt.datetime.now():%Y-%m-%d %H:%M} by `ws-telemetria semana`. Local data; no conversation text._", ""]
     texto = "\n".join(md)
-    top = ", ".join(f"{e['clave']} ${e['costo']:,.0f}" for e in est_p[:3]) or "sin actividad"
-    corto = (f"📊 Semana {nombre}: ${delta('costo', '{:,.2f}')} equivalente · {delta('horas', '{:,.1f}')} h activas · "
-             f"{delta('turnos')} turnos · {S['commits']} commits\nTop: {top}\n"
-             f"Herramientas: {S['herramientas']:,} llamadas, {S['error_pct']} % con error · tu espera para aprobar: {S['espera_min']} min")
+    top = ", ".join(f"{e['clave']} ${e['costo']:,.0f}" for e in est_p[:3]) or "no activity"
+    corto = (f"📊 Week {nombre}: ${delta('costo', '{:,.2f}')} equivalent · {delta('horas', '{:,.1f}')} active h · "
+             f"{delta('turnos')} turns · {S['commits']} commits\nTop: {top}\n"
+             f"Tools: {S['herramientas']:,} calls, {S['error_pct']} % with errors · your wait to approve: {S['espera_min']} min")
     out = DATOS / "reportes"; out.mkdir(parents=True, exist_ok=True)
     ruta = out / f"semana-{nombre}.md"; ruta.write_text(texto, encoding="utf-8")
     w = ventana_windows()
@@ -937,7 +937,7 @@ def semana(iso: str | None = None, actual: bool = False) -> tuple[str, str, Path
 
 
 def exportar() -> Path:
-    """CSV para Excel / Power BI: turnos, trazas (90 días), estimación por ticket y por proyecto."""
+    """CSV for Excel / Power BI: turns, traces (90 days), estimation by ticket and by project."""
     import csv
     w = ventana_windows() or DATOS
     d = w / "datos"; d.mkdir(parents=True, exist_ok=True)
@@ -966,19 +966,19 @@ def exportar() -> Path:
 
 
 # ---------------------------------------------------------------------------------------------
-# Tendencias: lo mismo que el tablero ya suma, pero en el tiempo (semanas, días y horas LOCALES)
+# Trends: the same the dashboard already adds up, but over time (LOCAL weeks, days and hours)
 # ---------------------------------------------------------------------------------------------
 FAMILIAS = ("fable", "mythos", "opus", "sonnet", "haiku")
 
 
 def familia(modelo: str) -> str:
-    """claude-opus-5-5 → opus; lo que no se reconoce queda en «otro»."""
+    """claude-opus-5-5 → opus; anything not recognized falls under "other"."""
     m = (modelo or "").lower()
-    return next((f for f in FAMILIAS if f in m), "otro")
+    return next((f for f in FAMILIAS if f in m), "other")
 
 
 def _cuantil(v: list[float], q: float) -> float:
-    """Percentil por rango más cercano (suficiente para medianas y p90 de duraciones)."""
+    """Nearest-rank percentile (enough for medians and p90 of durations)."""
     if not v:
         return 0.0
     v = sorted(v)
@@ -986,7 +986,7 @@ def _cuantil(v: list[float], q: float) -> float:
 
 
 def _periodo(ts: list[dict], tabla: dict) -> dict:
-    """Métricas de un grupo de turnos (una semana, un día o una ventana): costo, volumen, caché, razonamiento y duración."""
+    """Metrics for a set of turns (a week, a day or a window): cost, volume, cache, reasoning and duration."""
     r = {"costo": 0.0, "turnos": 0, "sesiones": set(), "in": 0, "cr": 0, "cw": 0, "out": 0, "think": 0, "sub": 0.0, "auto": 0.0, "autos": 0}
     dur = []
     for t in ts:
@@ -1003,7 +1003,7 @@ def _periodo(ts: list[dict], tabla: dict) -> dict:
             continue
         r["turnos"] += 1; r["sesiones"].add(t["sesion"])
         d = _ts(t.get("fin")) - _ts(t.get("inicio"))
-        if t.get("fin") and 0 < d < 6 * 3600 and t["modelos"]:      # sin fin, negativos o colgados no cuentan
+        if t.get("fin") and 0 < d < 6 * 3600 and t["modelos"]:      # no end, negative or hung ones do not count
             dur.append(d)
     ent = r["in"] + r["cr"] + r["cw"]
     return {"costo": round(r["costo"], 2), "turnos": r["turnos"], "sesiones": len(r["sesiones"]),
@@ -1016,9 +1016,9 @@ def _periodo(ts: list[dict], tabla: dict) -> dict:
 
 
 def tendencias(turnos: list[dict], semanas: int = 12, top: int = 5) -> dict:
-    """Series del tablero: 7 días contra los 7 anteriores, costo semanal por proyecto y por familia de modelo,
-    duración de turno (p50/p90) por semana, caché y razonamiento por día, mapa de horas y proyectos que más cambiaron.
-    Todo en hora local y solo con campos agregados: ni prompts ni respuestas."""
+    """Dashboard series: 7 days against the previous 7, weekly cost by project and by model family,
+    turn duration (p50/p90) by week, cache and reasoning by day, hour map and the projects that changed the most.
+    All in local time and only with aggregated fields: no prompts or responses."""
     tabla = precios()
     hoy = dt.date.today()
     lunes = hoy - dt.timedelta(days=hoy.weekday())
@@ -1038,7 +1038,7 @@ def tendencias(turnos: list[dict], semanas: int = 12, top: int = 5) -> dict:
     def costo_t(t):
         return sum(costo(m, k, tabla) for k, m in t["modelos"].items())
 
-    # Proyectos que más pesan en las semanas mostradas; el resto se junta en «otros».
+    # Projects that weigh the most in the weeks shown; the rest is grouped under "others".
     peso = defaultdict(float)
     for ts in por_sem.values():
         for t in ts:
@@ -1050,7 +1050,7 @@ def tendencias(turnos: list[dict], semanas: int = 12, top: int = 5) -> dict:
         ts = por_sem[ini.isoformat()]
         pr = defaultdict(float); fm = defaultdict(float)
         for t in ts:
-            pr[t["proyecto"] if t["proyecto"] in lideres else "otros"] += costo_t(t)
+            pr[t["proyecto"] if t["proyecto"] in lideres else "others"] += costo_t(t)
             for k, m in t["modelos"].items():
                 fm[familia(k)] += costo(m, k, tabla)
         fams += [f for f in fm if f not in fams]
@@ -1059,7 +1059,7 @@ def tendencias(turnos: list[dict], semanas: int = 12, top: int = 5) -> dict:
                       "proyectos": {k: round(v, 2) for k, v in pr.items()}, "modelos": {k: round(v, 2) for k, v in fm.items()}})
 
     def ventana(desde: int, hasta: int) -> list[dict]:
-        """Turnos de hace `desde`..`hasta` días (0 = hoy), ambos incluidos."""
+        """Turns from `desde`..`hasta` days ago (0 = today), both inclusive."""
         return [t for i in range(hasta, desde + 1) for t in por_dia.get((hoy - dt.timedelta(days=i)).isoformat(), [])]
 
     act, ant = ventana(6, 0), ventana(13, 7)
@@ -1071,7 +1071,7 @@ def tendencias(turnos: list[dict], semanas: int = 12, top: int = 5) -> dict:
     mov = sorted(({"proyecto": p, "actual": round(pa[p], 2), "anterior": round(pb[p], 2), "cambio": round(pa[p] - pb[p], 2)}
                   for p in set(pa) | set(pb)), key=lambda x: -abs(x["cambio"]))[:8]
 
-    calor = [[0] * 24 for _ in range(7)]            # [día de la semana, lunes = 0][hora local]
+    calor = [[0] * 24 for _ in range(7)]            # [day of the week, monday = 0][local hour]
     for i in range(30):
         for t in por_dia.get((hoy - dt.timedelta(days=i)).isoformat(), []):
             e = _ts(t.get("inicio"))
@@ -1085,20 +1085,20 @@ def tendencias(turnos: list[dict], semanas: int = 12, top: int = 5) -> dict:
         dias.append({"dia": d, "turnos": m["turnos"], "cache_pct": m["cache_pct"], "razon_pct": m["razon_pct"],
                      "dur_p50": m["dur_p50"], "salida_turno": m["salida_turno"]})
     fechas = sorted(por_dia)
-    return {"semanas": filas, "lideres": lideres + (["otros"] if len(peso) > len(lideres) else []),
-            "familias": [f for f in (*FAMILIAS, "otro") if f in fams],
+    return {"semanas": filas, "lideres": lideres + (["others"] if len(peso) > len(lideres) else []),
+            "familias": [f for f in (*FAMILIAS, "other") if f in fams],
             "actual": _periodo(act, tabla), "anterior": _periodo(ant, tabla), "movimientos": mov,
             "calor": calor, "dias": dias, "desde": fechas[0] if fechas else "", "dias_con_datos": len(fechas)}
 
 
 # ---------------------------------------------------------------------------------------------
-# OpenTelemetry: lo que Claude Code emite y guarda el colector local (ws-otel, ADR-014)
+# OpenTelemetry: what Claude Code emits and the local collector stores (ws-otel, ADR-014)
 # ---------------------------------------------------------------------------------------------
 OTEL = Path(os.environ.get("WS_OTEL_DIR") or DATOS / "otel")
 
 
 def otel_filas(dias: int):
-    """Señales guardadas por ws-otel en los últimos `dias` (archivos por día local, .jsonl o .jsonl.gz)."""
+    """Signals stored by ws-otel in the last `dias` days (one file per local day, .jsonl or .jsonl.gz)."""
     import gzip
     desde = (dt.date.today() - dt.timedelta(days=dias - 1)).isoformat()
     for f in sorted(OTEL.glob("*.jsonl*")):
@@ -1113,12 +1113,12 @@ def otel_filas(dias: int):
 
 
 def otel_resumen(dias: int = 30) -> dict | None:
-    """Llamadas a la API (latencia, errores, reintentos), decisiones de permiso, tiempo activo, hooks, compactaciones,
-    subagentes, MCP y skills, a partir de las señales de OpenTelemetry. None si el colector aún no guardó nada."""
+    """API calls (latency, errors, retries), permission decisions, active time, hooks, compactions,
+    subagents, MCP and skills, from the OpenTelemetry signals. None if the collector has not stored anything yet."""
     if not OTEL.is_dir():
         return None
     def num(x):
-        """Número de un atributo: Claude Code manda varios como texto («10657»)."""
+        """Number from an attribute: Claude Code sends several as text ("10657")."""
         if isinstance(x, bool):
             return None
         if isinstance(x, (int, float)):
@@ -1134,7 +1134,7 @@ def otel_resumen(dias: int = 30) -> dict | None:
     for f in otel_filas(dias):
         s, n, dia = f.get("senal"), f.get("nombre") or "", dia_local(f.get("ts")) or (f.get("ts") or "")[:10]
         if s == "evento":
-            n = "claude_code." + n.removeprefix("claude_code.")      # los eventos llegan sin el prefijo; las métricas, con él
+            n = "claude_code." + n.removeprefix("claude_code.")      # events arrive without the prefix; metrics, with it
         senales[s] += 1
         primero = min(primero or dia, dia)
         if s == "metrica":
@@ -1151,11 +1151,11 @@ def otel_resumen(dias: int = 30) -> dict | None:
                 cod["sesiones"] += v
         elif s == "evento":
             if n == "claude_code.api_request":
-                api.append((dia, f.get("model") or "?", num(f.get("duration_ms")), num(f.get("cost_usd")) or 0, f.get("query_source") or "principal"))
+                api.append((dia, f.get("model") or "?", num(f.get("duration_ms")), num(f.get("cost_usd")) or 0, f.get("query_source") or "main"))
                 if num(f.get("ttft_ms")) is not None:
                     ttft.append(num(f["ttft_ms"]))
             elif n == "claude_code.api_error":
-                err.append((dia, str(f.get("status_code") or "sin código"), num(f.get("attempt")) or 1))
+                err.append((dia, str(f.get("status_code") or "no code"), num(f.get("attempt")) or 1))
             elif n == "claude_code.api_retries_exhausted":
                 agotados += 1
             elif n == "claude_code.tool_decision":
@@ -1223,11 +1223,11 @@ def otel_resumen(dias: int = 30) -> dict | None:
 
 
 # ---------------------------------------------------------------------------------------------
-# Razones para estimar: cuánto modelo, cuánto texto y cuánta máquina cuesta cada unidad de trabajo
+# Ratios for estimating: how much model, text and machine each unit of work costs
 # ---------------------------------------------------------------------------------------------
 def recursos_por_dia(dias: int) -> dict[str, dict]:
-    """CPU (s), operaciones de disco, bytes leídos/escritos y RAM pico (kB, suma de procesos por minuto) de los procesos de
-    Claude, por día. Los contadores son acumulados por proceso: se suma la diferencia entre su primera y última muestra."""
+    """CPU (s), disk operations, bytes read/written and peak RAM (kB, sum of processes per minute) of the Claude
+    processes, by day. Counters are cumulative per process: the difference between its first and last sample is added."""
     desde = (dt.date.today() - dt.timedelta(days=dias - 1)).isoformat()
     out = {}
     for f in sorted(RAW.glob("recursos-*.jsonl")):
@@ -1258,13 +1258,13 @@ def recursos_por_dia(dias: int) -> dict[str, dict]:
 
 
 def razones(turnos: list[dict], dias: int = 30) -> dict:
-    """Razones unitarias de los últimos `dias`, para proyectar y estimar: texto (palabras), modelo (tokens, llamadas,
-    costo) y máquina (CPU, RAM, disco) por turno, por palabra y por token. Cada razón dice sobre cuántos datos se calculó."""
+    """Unit ratios for the last `dias` days, to project and estimate: text (words), model (tokens, calls, cost)
+    and machine (CPU, RAM, disk) per turn, per word and per token. Each ratio says how much data it was computed from."""
     tabla = precios()
     desde = (dt.date.today() - dt.timedelta(days=dias - 1)).isoformat()
     ts = [t for t in turnos if (dia_local(t.get("inicio")) or "") >= desde]
     tuyos = [t for t in ts if not t.get("subagente") and not t.get("auto")]
-    conv = [t for t in ts if not t.get("subagente")]                 # tu conversación: turnos tuyos y automáticos
+    conv = [t for t in ts if not t.get("subagente")]                 # your conversation: your turns and automatic ones
     tok = lambda t, *ks: sum(m.get(k, 0) for m in t["modelos"].values() for k in ks)  # noqa: E731
     cst = lambda t: sum(costo(m, k, tabla) for k, m in t["modelos"].items())           # noqa: E731
     S = lambda xs: sum(xs)                                                              # noqa: E731
@@ -1284,25 +1284,25 @@ def razones(turnos: list[dict], dias: int = 30) -> dict:
             R.append({"grupo": grupo, "nombre": nombre, "valor": round(escala * num / den, dec), "unidad": unidad, "base": base})
 
     n = len(tuyos)
-    r("Texto", "Palabras tuyas por turno", pal_tuyas, n, "palabras", f"{n:,} turnos tuyos")
-    r("Texto", "Palabras de Claude por turno", pal_claude, n, "palabras", f"{n:,} turnos tuyos")
-    r("Texto", "Palabras de Claude por cada palabra tuya", pal_claude, pal_tuyas, "×", f"{pal_tuyas:,} palabras tuyas", 2)
-    r("Modelo", "Tokens de salida por palabra visible de Claude", out_conv, pal_claude, "tokens/palabra", f"{pal_claude:,} palabras de Claude (incluye razonamiento y llamadas a herramientas)", 2)
-    r("Modelo", "Tokens procesados por palabra tuya", total, pal_tuyas, "tokens/palabra", "entrada, caché y salida de todo el periodo", 0)
-    r("Modelo", "Tokens de salida por turno", salida, n, "tokens", f"{n:,} turnos tuyos (incluye subagentes y trabajo automático)", 0)
-    r("Modelo", "Tokens leídos de caché por token de salida", leidos, salida, "×", "contexto que se relee en cada llamada", 1)
-    r("Modelo", "Tokens nuevos de entrada por token de salida", nuevos, salida, "×", "entrada sin caché más caché escrita", 2)
-    r("Modelo", "Razonamiento sobre la salida", pensar, salida, "%", f"{salida:,} tokens de salida", 1, 100)
+    r("Text", "Your words per turn", pal_tuyas, n, "words", f"{n:,} turns of yours")
+    r("Text", "Claude's words per turn", pal_claude, n, "words", f"{n:,} turns of yours")
+    r("Text", "Claude's words per word of yours", pal_claude, pal_tuyas, "×", f"{pal_tuyas:,} words of yours", 2)
+    r("Model", "Output tokens per visible word from Claude", out_conv, pal_claude, "tokens/word", f"{pal_claude:,} words from Claude (includes reasoning and tool calls)", 2)
+    r("Model", "Tokens processed per word of yours", total, pal_tuyas, "tokens/word", "input, cache and output for the whole period", 0)
+    r("Model", "Output tokens per turn", salida, n, "tokens", f"{n:,} turns of yours (includes subagents and automatic work)", 0)
+    r("Model", "Tokens read from cache per output token", leidos, salida, "×", "context that is re-read on each call", 1)
+    r("Model", "New input tokens per output token", nuevos, salida, "×", "uncached input plus cache written", 2)
+    r("Model", "Reasoning over output", pensar, salida, "%", f"{salida:,} output tokens", 1, 100)
     if resp:
-        R.append({"grupo": "Modelo", "nombre": "Llamadas al modelo por turno (mediana)", "valor": _pct(resp, 50), "unidad": "llamadas", "base": f"p90: {_pct(resp, 90)} · {len(resp):,} turnos con respuesta"})
-        R.append({"grupo": "Modelo", "nombre": "Herramientas por turno (mediana)", "valor": _pct(herr, 50), "unidad": "usos", "base": f"p90: {_pct(herr, 90)}"})
-    r("Modelo", "Velocidad de salida dentro del turno", S(d[1] for d in durs), S(d[0] for d in durs), "tokens/s", f"{len(durs):,} turnos con duración", 1)
-    r("Costo", "Costo por turno tuyo", costo_total, n, "USD", "equivalente API, con subagentes y trabajo automático", 2)
-    r("Costo", "Costo por mil palabras de Claude", costo_total, pal_claude, "USD", "equivalente API", 2, 1000)
-    r("Costo", "Costo por millón de tokens procesados", costo_total, total, "USD", "mezcla real de entrada, caché y salida", 2, 1e6)
-    r("Costo", "Costo por hora activa", costo_total, horas, "USD/h", f"{horas} horas activas", 2)
-    r("Costo", "Turnos por hora activa", n, horas, "turnos/h", f"{horas} horas activas", 1)
-    # Máquina: solo los días que tienen muestras de recursos y turnos.
+        R.append({"grupo": "Model", "nombre": "Model calls per turn (median)", "valor": _pct(resp, 50), "unidad": "calls", "base": f"p90: {_pct(resp, 90)} · {len(resp):,} turns with a response"})
+        R.append({"grupo": "Model", "nombre": "Tools per turn (median)", "valor": _pct(herr, 50), "unidad": "uses", "base": f"p90: {_pct(herr, 90)}"})
+    r("Model", "Output speed within the turn", S(d[1] for d in durs), S(d[0] for d in durs), "tokens/s", f"{len(durs):,} turns with a duration", 1)
+    r("Cost", "Cost per turn of yours", costo_total, n, "USD", "API equivalent, with subagents and automatic work", 2)
+    r("Cost", "Cost per thousand words from Claude", costo_total, pal_claude, "USD", "API equivalent", 2, 1000)
+    r("Cost", "Cost per million tokens processed", costo_total, total, "USD", "real mix of input, cache and output", 2, 1e6)
+    r("Cost", "Cost per active hour", costo_total, horas, "USD/h", f"{horas} active hours", 2)
+    r("Cost", "Turns per active hour", n, horas, "turns/h", f"{horas} active hours", 1)
+    # Machine: only the days that have both resource samples and turns.
     rec = recursos_por_dia(dias)
     dias_rec = [d for d in rec if any(dia_local(t.get("inicio")) == d for t in ts)]
     if dias_rec:
@@ -1311,21 +1311,21 @@ def razones(turnos: list[dict], dias: int = 30) -> dict:
         n_r = len([t for t in tsr if not t.get("subagente") and not t.get("auto")])
         cpu, ops = S(rec[d]["cpu_s"] for d in dias_rec), S(rec[d]["ops"] for d in dias_rec)
         esc, lei = S(rec[d]["escritos"] for d in dias_rec), S(rec[d]["leidos"] for d in dias_rec)
-        base = f"{len(dias_rec)} días con muestras de recursos"
-        r("Máquina", "CPU por millón de tokens procesados", cpu, tot_r, "s de CPU", base, 1, 1e6)
-        r("Máquina", "CPU por mil tokens de salida", cpu, sal_r, "s de CPU", base, 2, 1000)
-        r("Máquina", "CPU por turno tuyo", cpu, n_r, "s de CPU", base, 1)
-        r("Máquina", "Operaciones de disco por mil tokens de salida", ops, sal_r, "operaciones", base, 0, 1000)
-        r("Máquina", "Operaciones de disco por turno tuyo", ops, n_r, "operaciones", base, 0)
-        r("Máquina", "Disco escrito por mil tokens de salida", esc / 1e6, sal_r, "MB", base, 2, 1000)
-        r("Máquina", "Disco leído por mil tokens de salida", lei / 1e6, sal_r, "MB", base, 2, 1000)
-        R.append({"grupo": "Máquina", "nombre": "RAM de un proceso de Claude (máximo)", "valor": round(max(rec[d]["ram_proceso_kb"] for d in dias_rec) / 1024), "unidad": "MB", "base": base})
-        R.append({"grupo": "Máquina", "nombre": "RAM pico de todos los procesos a la vez", "valor": round(max(rec[d]["ram_pico_kb"] for d in dias_rec) / 1024), "unidad": "MB", "base": base})
+        base = f"{len(dias_rec)} days with resource samples"
+        r("Machine", "CPU per million tokens processed", cpu, tot_r, "CPU s", base, 1, 1e6)
+        r("Machine", "CPU per thousand output tokens", cpu, sal_r, "CPU s", base, 2, 1000)
+        r("Machine", "CPU per turn of yours", cpu, n_r, "CPU s", base, 1)
+        r("Machine", "Disk operations per thousand output tokens", ops, sal_r, "operations", base, 0, 1000)
+        r("Machine", "Disk operations per turn of yours", ops, n_r, "operations", base, 0)
+        r("Machine", "Disk written per thousand output tokens", esc / 1e6, sal_r, "MB", base, 2, 1000)
+        r("Machine", "Disk read per thousand output tokens", lei / 1e6, sal_r, "MB", base, 2, 1000)
+        R.append({"grupo": "Machine", "nombre": "RAM of one Claude process (maximum)", "valor": round(max(rec[d]["ram_proceso_kb"] for d in dias_rec) / 1024), "unidad": "MB", "base": base})
+        R.append({"grupo": "Machine", "nombre": "Peak RAM of all processes at once", "valor": round(max(rec[d]["ram_pico_kb"] for d in dias_rec) / 1024), "unidad": "MB", "base": base})
     return {"dias": dias, "desde": desde, "turnos": n, "razones": R}
 
 
 def analisis_tablero(turnos: list[dict]) -> dict:
-    """Bloques nuevos del tablero: trazas (30 días), estimación por ticket (90 días) y presupuestos."""
+    """New dashboard blocks: traces (30 days), estimation by ticket (90 days) and budgets."""
     mantener_trazas()
     hoy = dt.date.today()
     tr30 = trazas(hoy - dt.timedelta(days=30))
@@ -1343,26 +1343,26 @@ def _tabla_terminal(filas: list[dict], cols: list[tuple[str, str, int]]) -> None
 
 
 def cli_51(accion: str, args: list[str]) -> int | None:
-    """Subcomandos del parche 51; None si `accion` no es de aquí."""
+    """Subcommands from patch 51; None if `accion` is not handled here."""
     def opt(nombre, defecto=None):
         return args[args.index(nombre) + 1] if nombre in args and args.index(nombre) + 1 < len(args) else defecto
     if accion == "trazas":
         dias = int(opt("--dias", "7"))
         tr = trazas(dt.date.today() - dt.timedelta(days=dias))
         if not tr:
-            print(f"Sin trazas en {DATOS / 'trazas'} (el hook ~/.claude/hooks/ws-trazas.sh las escribe al usar herramientas)."); return 0
+            print(f"No traces in {DATOS / 'trazas'} (the hook ~/.claude/hooks/ws-trazas.sh writes them when tools are used)."); return 0
         lim = (dt.date.today() - dt.timedelta(days=dias)).isoformat()
         d = detalle_herramientas(tr, [t for t in turnos_todos() if (t.get("inicio") or "") >= lim])
         if "--json" in args:
             print(json.dumps(d, ensure_ascii=False, indent=1)); return 0
-        print(f"Últimos {dias} días: {d['llamadas']:,} llamadas · {d['error_pct']} % con error · "
-              f"tu espera para aprobar: {d['espera']['n']} veces, mediana {d['espera']['med_s']} s, total {d['espera']['total_min']} min\n")
-        _tabla_terminal(d["herramientas"], [("Herramienta", "nombre", 28), ("Usos", "usos", 6), ("Err", "errores", 4), ("Med ms", "med_ms", 7), ("p95 ms", "p95_ms", 7), ("Min", "total_min", 6), ("$ aprox", "costo", 8)])
-        print(); _tabla_terminal(d["bash"][:12], [("Bash", "nombre", 28), ("Usos", "usos", 6), ("Err", "errores", 4), ("Med ms", "med_ms", 7), ("Tipo", "categoria", 12)])
-        print(); _tabla_terminal(d["bash_categorias"], [("Tipo de trabajo", "nombre", 28), ("Usos", "usos", 6), ("Min", "total_min", 7), ("Err", "errores", 4)])
+        print(f"Last {dias} days: {d['llamadas']:,} calls · {d['error_pct']} % with errors · "
+              f"your wait to approve: {d['espera']['n']} times, median {d['espera']['med_s']} s, total {d['espera']['total_min']} min\n")
+        _tabla_terminal(d["herramientas"], [("Tool", "nombre", 28), ("Uses", "usos", 6), ("Err", "errores", 4), ("Med ms", "med_ms", 7), ("p95 ms", "p95_ms", 7), ("Min", "total_min", 6), ("$ approx", "costo", 8)])
+        print(); _tabla_terminal(d["bash"][:12], [("Bash", "nombre", 28), ("Uses", "usos", 6), ("Err", "errores", 4), ("Med ms", "med_ms", 7), ("Type", "categoria", 12)])
+        print(); _tabla_terminal(d["bash_categorias"], [("Type of work", "nombre", 28), ("Uses", "usos", 6), ("Min", "total_min", 7), ("Err", "errores", 4)])
         if d["mcp"]:
-            print(); _tabla_terminal(d["mcp"], [("MCP", "nombre", 28), ("Usos", "usos", 6), ("Err", "errores", 4), ("Med ms", "med_ms", 7)])
-        print(); _tabla_terminal(d["archivos"][:10], [("Archivo más editado", "archivo", 44), ("Ed", "ediciones", 4), ("+", "lineas_mas", 6), ("−", "lineas_menos", 6)])
+            print(); _tabla_terminal(d["mcp"], [("MCP", "nombre", 28), ("Uses", "usos", 6), ("Err", "errores", 4), ("Med ms", "med_ms", 7)])
+        print(); _tabla_terminal(d["archivos"][:10], [("Most edited file", "archivo", 44), ("Ed", "ediciones", 4), ("+", "lineas_mas", 6), ("−", "lineas_menos", 6)])
         return 0
     if accion == "estimar":
         por = opt("--por", "ticket"); dias = int(opt("--dias", "90"))
@@ -1378,31 +1378,31 @@ def cli_51(accion: str, args: list[str]) -> int | None:
             for f in filas:
                 cw.writerow({**f, "mezcla": json.dumps(f["mezcla"])})
             return 0
-        print(f"Estimación por {por} (últimos {dias} días; horas activas = turnos con huecos ≤ 15 min)\n")
-        _tabla_terminal(filas[:25], [(por.capitalize(), "clave", 30), ("Horas", "horas_activas", 6), ("Días", "dias", 4), ("Turnos", "turnos", 6),
-                                     ("$ equiv", "costo", 8), ("Modelo", "modelo", 18), ("+lín", "lineas_mas", 6), ("−lín", "lineas_menos", 6), ("Commits", "commits", 7)])
+        print(f"Estimation by {por} (last {dias} days; active hours = turns with gaps ≤ 15 min)\n")
+        _tabla_terminal(filas[:25], [(por.capitalize(), "clave", 30), ("Hours", "horas_activas", 6), ("Days", "dias", 4), ("Turns", "turnos", 6),
+                                     ("$ equiv", "costo", 8), ("Model", "modelo", 18), ("+lines", "lineas_mas", 6), ("−lines", "lineas_menos", 6), ("Commits", "commits", 7)])
         return 0
     if accion == "semana":
         iso = next((a for a in args if re.fullmatch(r"\d{4}-[Ww]\d{2}", a)), None)
         texto, corto, ruta = semana(iso, "--actual" in args)
         if "--telegram" in args:
-            print(f"{corto}\nReporte completo: {ruta.name} (carpeta ws-telemetria de tu usuario de Windows)")
+            print(f"{corto}\nFull report: {ruta.name} (ws-telemetria folder of your Windows user)")
         else:
-            print(f"{texto}\nGuardado en: {ruta}")
+            print(f"{texto}\nSaved to: {ruta}")
         return 0
     if accion == "presupuestos":
         filas = presupuestos(turnos_todos())
-        if "--alertas" in args:   # proyecto<TAB>pct<TAB>gastado<TAB>presupuesto<TAB>proyección (solo ≥ 80 %)
+        if "--alertas" in args:   # project<TAB>pct<TAB>spent<TAB>budget<TAB>projection (only ≥ 80 %)
             for f in filas:
                 if f["pct"] >= 80:
                     print(f"{f['proyecto']}\t{f['pct']}\t{f['gastado']}\t{f['presupuesto']}\t{f['proyeccion']}")
             return 0
         if not filas:
-            print("Sin presupuestos. Crea ~/.config/ws-telemetria/presupuestos.conf con líneas «proyecto=usd_al_mes» («*=…» para el total)."); return 0
-        _tabla_terminal(filas, [("Proyecto", "proyecto", 28), ("Gastado", "gastado", 9), ("Presup.", "presupuesto", 9), ("%", "pct", 5), ("Proyección", "proyeccion", 10)])
+            print("No budgets. Create ~/.config/ws-telemetria/presupuestos.conf with lines \"project=usd_per_month\" (\"*=…\" for the total)."); return 0
+        _tabla_terminal(filas, [("Project", "proyecto", 28), ("Spent", "gastado", 9), ("Budget", "presupuesto", 9), ("%", "pct", 5), ("Projection", "proyeccion", 10)])
         return 0
     if accion == "exportar":
-        print(f"CSV en: {exportar()}"); return 0
+        print(f"CSV in: {exportar()}"); return 0
     return None
 
 
@@ -1425,9 +1425,9 @@ def build(si_toca: bool = False) -> Path:
     datos["otel"] = otel_resumen(30)
     datos["razones"] = razones(turnos, 30)
     plantilla = Path(os.environ.get("WS_TELEMETRIA_PLANTILLA", HOME / ".config/ws-telemetria/tablero.plantilla.html"))
-    contenido = plantilla.read_text(encoding="utf-8").replace("/*__DATOS__*/null", json.dumps(datos, ensure_ascii=False).replace("</", "<\\/"))   # un nombre de rama o archivo con </script> no cierra el bloque
+    contenido = plantilla.read_text(encoding="utf-8").replace("/*__DATOS__*/null", json.dumps(datos, ensure_ascii=False).replace("</", "<\\/"))   # a branch or file name with </script> does not close the block
     tmp = html.with_suffix(".tmp"); tmp.write_text(contenido, encoding="utf-8"); tmp.replace(html)
-    with open(DATOS / "turnos.jsonl", "w") as fh:      # para DuckDB / análisis propio
+    with open(DATOS / "turnos.jsonl", "w") as fh:      # for DuckDB / your own analysis
         for t in turnos:
             fh.write(json.dumps(t, ensure_ascii=False) + "\n")
     w = ventana_windows()
@@ -1451,8 +1451,8 @@ def main() -> int:
                 subprocess.run(c, timeout=15); break
             except (OSError, subprocess.SubprocessError):
                 continue
-        print(f"Tablero: {destino}"); return 0
-    if accion == "ritmo":   # $/h equivalente de los últimos 10 min (lo usa la alerta de consumo de ws-telegram)
+        print(f"Dashboard: {destino}"); return 0
+    if accion == "ritmo":   # equivalent $/h over the last 10 min (used by the ws-telegram usage alert)
         tabla = precios()
         lim = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=10)).isoformat()
         c = sum(costo(m, k, tabla) for t in turnos_todos() if (t.get("fin") or "") >= lim for k, m in t["modelos"].items())
@@ -1463,14 +1463,14 @@ def main() -> int:
     if accion == "resumen":
         d = agregar(turnos_todos(), copiloto(), recursos_24h())
         k = d["kpi"]
-        print(f"Hoy: {k['hoy']['tokens']:,} tokens · ${k['hoy']['costo']:.2f} equivalente API · {k['hoy']['turnos']} turnos")
-        print(f"7 días: {k['7d']['tokens']:,} tokens · ${k['7d']['costo']:.2f} · caché {k['cache_pct']} %")
+        print(f"Today: {k['hoy']['tokens']:,} tokens · ${k['hoy']['costo']:.2f} API equivalent · {k['hoy']['turnos']} turns")
+        print(f"7 days: {k['7d']['tokens']:,} tokens · ${k['7d']['costo']:.2f} · cache {k['cache_pct']} %")
         for p in d["proyectos"][:10]:
-            print(f"  {p['proyecto'][:28]:28} {p['turnos']:5} turnos  ${p['costo']:9.2f}  último {p['ultimo']}")
+            print(f"  {p['proyecto'][:28]:28} {p['turnos']:5} turns   ${p['costo']:9.2f}  last {p['ultimo']}")
         return 0
     if accion == "sql":
         if not shutil.which("duckdb"):
-            print("DuckDB no está instalado (ws-tools install duckdb). Archivo de turnos:", DATOS / "turnos.jsonl"); return 1
+            print("DuckDB is not installed (ws-tools install duckdb). Turns file:", DATOS / "turnos.jsonl"); return 1
         os.execvp("duckdb", ["duckdb", "-cmd", f"CREATE VIEW turnos AS SELECT * FROM read_json_auto('{DATOS / 'turnos.jsonl'}'); "
                                          f"CREATE VIEW trazas AS SELECT * FROM read_json_auto('{DATOS / 'trazas'}/*.jsonl*', union_by_name=true, ignore_errors=true);"])  # nosec B608
     print(__doc__); return 2

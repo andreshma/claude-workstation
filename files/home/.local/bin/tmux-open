@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 #
-# tmux-open — elige una carpeta con fzf y la abre en su pestaña con Claude (función tw).
-# Si ya hay una pestaña en esa carpeta, salta a ella.
-# Raíces en ~/.config/tmux-claude/roots.txt, una por línea: etiqueta|profundidad|ruta
+# tmux-open — pick a folder with fzf and open it in its own tab with Claude (function tw).
+# If there is already a tab in that folder, it jumps to it.
+# Roots in ~/.config/tmux-claude/roots.txt, one per line: label|depth|path
 #
-# En la lista:  Enter abre · → entra a las subcarpetas de la marcada · ← sube un nivel
-# Grupos: si ya hay pestaña en cualquier grupo salta a ella; si no, la crea en la sesión de su grupo
-# (etiqueta de roots.txt). Para volver a todo en la sesión actual: grupos=off en ~/.config/tmux-claude/ajustes
-# Uso: tmux-open [--opus]   (--opus abre la pestaña nueva con Claude en Opus, función two)
-#      tmux-open --dir <carpeta>   abre esa carpeta sin preguntar (lo usa tmux-favoritos)
-# Internos (los usa fzf al navegar): --lista · --hijos <ruta> · --arriba <ruta> <etiqueta>
+# In the list:  Enter opens · → enters the subfolders of the highlighted one · ← goes up one level
+# Groups: if a tab already exists in any group it jumps to it; otherwise it creates it in its group's session
+# (label from roots.txt). To go back to everything in the current session: grupos=off in ~/.config/tmux-claude/ajustes
+# Usage: tmux-open [--opus]   (--opus opens the new tab with Claude on Opus, function two)
+#      tmux-open --dir <folder>    opens that folder without asking (used by tmux-favoritos)
+# Internal (used by fzf while navigating): --lista · --hijos <path> · --arriba <path> <label>
 set -euo pipefail
 conf="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-claude/roots.txt"
 TAB=$'\t'
-AQUI="  · (esta carpeta)"
+AQUI="  · (this folder)"
 
 #######################################
-# Raíces válidas: "etiqueta<TAB>ruta absoluta<TAB>profundidad".
+# Valid roots: "label<TAB>absolute path<TAB>depth".
 #######################################
 raices() {
   local label depth root
@@ -29,7 +29,7 @@ raices() {
 }
 
 #######################################
-# Etiqueta visible de una ruta: "etiqueta/relativa" según la raíz que la contiene.
+# Visible label of a path: "label/relative" according to the root that contains it.
 #######################################
 etiqueta_de() {
   local label root depth
@@ -48,12 +48,12 @@ dentro_de_raiz() {
   return 1
 }
 
-subdirs() {   # subcarpetas a la profundidad indicada, sin ocultas ni node_modules
+subdirs() {   # subfolders down to the given depth, no hidden ones or node_modules
   find "$1" -mindepth 1 -maxdepth "$2" -type d -not -path '*/.*' -not -path '*/node_modules*' 2>/dev/null | sort
 }
 
 #######################################
-# Lista inicial: las carpetas de cada raíz, "etiqueta/ruta-relativa<TAB>ruta-absoluta".
+# Initial list: the folders of each root, "label/relative-path<TAB>absolute-path".
 #######################################
 list_dirs() {
   local label root depth d
@@ -63,7 +63,7 @@ list_dirs() {
 }
 
 #######################################
-# Subcarpetas de una carpeta (→). La primera línea abre la carpeta misma.
+# Subfolders of a folder (→). The first line opens the folder itself.
 #######################################
 hijos() {
   local base="$1" e d
@@ -74,7 +74,7 @@ hijos() {
 }
 
 #######################################
-# Sube un nivel (←): desde una subcarpeta muestra las de su abuelo; fuera de las raíces, la lista inicial.
+# Goes up one level (←): from a subfolder it shows its grandparent's; outside the roots, the initial list.
 #######################################
 arriba() {
   local p="$1" etiqueta="${2:-}" destino
@@ -88,30 +88,30 @@ case "${1:-}" in
   --arriba) arriba "$2" "${3:-}"; exit 0 ;;
 esac
 
-fn=tw; prompt='abrir> '
-[[ "${1:-}" == --opus ]] && { fn=two; prompt='abrir con Opus> '; }
+fn=tw; prompt='open> '
+[[ "${1:-}" == --opus ]] && { fn=two; prompt='open with Opus> '; }
 dir=""
-if [[ "${1:-}" == --dir ]]; then dir="$(realpath -e -- "${2:?carpeta}")" || exit 1; fi
+if [[ "${1:-}" == --dir ]]; then dir="$(realpath -e -- "${2:?folder}")" || exit 1; fi
 if [[ -z "$dir" ]]; then
-[[ -f "$conf" ]] || { echo "Falta $conf"; read -rsn1; exit 1; }
+[[ -f "$conf" ]] || { echo "Missing $conf"; read -rsn1; exit 1; }
 yo="$(printf '%q' "$0")"
 sel="$(list_dirs | sort | fzf --reverse --delimiter="$TAB" --with-nth=1 --prompt="$prompt" \
-  --header '→ subcarpetas · ← subir · Enter abrir' \
+  --header '→ subfolders · ← up · Enter open' \
   --bind "right:reload($yo --hijos {2})+clear-query" \
   --bind "left:reload($yo --arriba {2} {1})+clear-query" \
   --preview 'git -C {2} log --oneline -8 2>/dev/null; echo; ls -p {2} | head -40')" || exit 0
 dir="${sel#*"$TAB"}"
 fi
 
-# Pestaña existente en CUALQUIER grupo (sesión): salta a ella.
+# Existing tab in ANY group (session): jump to it.
 destino="$(tmux list-windows -a -F "#{session_name}${TAB}#{window_id}${TAB}#{pane_current_path}" |
   awk -F "$TAB" -v d="$dir" '$3 == d { print $1 "\t" $2; exit }')"
 if [[ -n "$destino" ]]; then
   tmux switch-client -t "=${destino%%"$TAB"*}" 2>/dev/null; tmux select-window -t "${destino#*"$TAB"}"
   exit 0
 fi
-# Nueva: en la sesión de su grupo (etiqueta de roots.txt), que se crea si no existe.
-grupo="$(etiqueta_de "$dir")"; grupo="${grupo%%/*}"; [[ "$grupo" == "~"* || "$grupo" == /* ]] && grupo=otros
+# New: in its group's session (label from roots.txt), created if it does not exist.
+grupo="$(etiqueta_de "$dir")"; grupo="${grupo%%/*}"; [[ "$grupo" == "~"* || "$grupo" == /* ]] && grupo=other
 if [[ "$fn" == tw ]] && [[ "$(sed -n 's/^grupos=//p' "${XDG_CONFIG_HOME:-$HOME/.config}/tmux-claude/ajustes" 2>/dev/null)" != off ]]; then
   nombre="$(basename "$dir")"; [[ "$dir" == *.wt/* ]] && nombre="$(basename "${dir%%.wt/*}")@$(basename "$dir")"
   cmd="$(bash -c 'source ~/.config/tmux-claude/functions.sh && _claude_cmd "$1"' _ "$dir")"

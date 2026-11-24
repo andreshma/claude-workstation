@@ -1,13 +1,14 @@
 # shellcheck shell=bash
 #
-# cuentas.sh — aplica en cada shell nueva la cuenta de Claude elegida para pestañas nuevas
-# (claude-cuenta usar trabajo|personal). Una pestaña cambiada con "claude-cuenta pestaña"
-# conserva su propia cuenta en su shell. Atajos: claude-trabajo / claude-personal.
+# cuentas.sh — applies in every new shell the Claude account chosen for new tabs
+# (claude-cuenta usar trabajo|personal). A tab switched with "claude-cuenta pestaña"
+# keeps its own account in its shell. Shortcuts: claude-trabajo / claude-personal.
 #
-# Cuenta POR PROYECTO: si la carpeta donde abre la shell (o su repo, o un worktree repo.wt/…) tiene cuenta fija en
-# ~/.config/claude-cuentas/proyectos.conf, esa manda sobre la cuenta por defecto. Así un proyecto abre siempre con una
-# cuenta y otro con otra, sin acordarte de cambiarla. Se fija con: claude-cuenta proyecto trabajo|personal [carpeta].
-_cuenta_proyecto() {   # imprime la cuenta fija de $PWD; sale con 1 si no tiene
+# Account PER PROJECT: if the folder where the shell opens (or its repo, or a repo.wt/… worktree) has a fixed account
+# in ~/.config/claude-cuentas/proyectos.conf, that one wins over the default account. So one project always opens with
+# one account and another with the other, without remembering to switch. Set it with:
+# claude-cuenta proyecto trabajo|personal [folder].
+_cuenta_proyecto() {   # prints the fixed account of $PWD; exits with 1 if there is none
   local f="$HOME/.config/claude-cuentas/proyectos.conf" c r
   [[ -r "$f" ]] || return 1
   while read -r c r; do

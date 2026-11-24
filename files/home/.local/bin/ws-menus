@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""ws-menus — revisa los menús de tmux y genera el manual completo de la estación.
+"""ws-menus — checks the tmux menus and generates the full workstation manual.
 
-Revisión (sin argumentos o --md archivo): en ~/.config/tmux-claude/menu*.tmux reporta
-  · tecla repetida dentro del mismo menú (tmux solo respeta la primera: la otra opción queda inalcanzable)
-  · la misma acción en varios menús (duplicado: decide en cuál se queda)
-  · la misma etiqueta en varios menús
-  · scripts de ~/.local/bin que el menú llama y no existen
-Manual (--manual [archivo] · --ver): Markdown generado de lo que REALMENTE está instalado, así nunca se desactualiza:
-  teclas directas de ~/.tmux.conf, todos los menús con su ruta de teclas (Ctrl+b m → s → u), los comandos de
-  ~/.local/bin con su descripción y los subcomandos de ws-telegram y ws-telemetria. Se guarda en
-  ~/.local/share/ws-manual/manual.md y se copia a %UserProfile%\\ws-telemetria\\manual-estacion.md.
-  --ver lo genera y lo abre en pantalla (glow si está; si no, less).
-Uso: ws-menus [--md archivo] | --manual [archivo] | --ver   (la revisión sale con 1 si hay teclas repetidas o scripts que faltan)
+Check (no arguments or --md file): in ~/.config/tmux-claude/menu*.tmux it reports
+  · a key repeated inside the same menu (tmux only honors the first one: the other option is unreachable)
+  · the same action in several menus (duplicate: decide which one keeps it)
+  · the same label in several menus
+  · scripts in ~/.local/bin that the menu calls and do not exist
+Manual (--manual [file] · --ver): Markdown generated from what is ACTUALLY installed, so it never goes stale:
+  direct keys from ~/.tmux.conf, every menu with its key path (Ctrl+b m → s → u), the commands in
+  ~/.local/bin with their description and the subcommands of ws-telegram and ws-telemetria. It is saved to
+  ~/.local/share/ws-manual/manual.md and copied to %UserProfile%\\ws-telemetria\\manual-estacion.md.
+  --ver generates it and opens it on screen (glow if installed; otherwise less).
+Usage: ws-menus [--md file] | --manual [file] | --ver   (the check exits with 1 if there are repeated keys or missing scripts)
 """
 import os
 import re
 import shutil
-import subprocess  # nosec B404 — solo wslvar/wslpath/less/glow con argumentos fijos
+import subprocess  # nosec B404 — only wslvar/wslpath/less/glow with fixed arguments
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -40,9 +40,9 @@ def items(f: Path):
 
 
 def normal(cmd: str) -> str:
-    """Acción comparable: cada script propio con sus argumentos (sin tmux-flot-run ni opciones de la ventana);
-    si no llama scripts, el comando de tmux con espacios uniformes. Mismo script con otros argumentos (tema
-    claro vs oscuro, cr fable vs opus) son acciones distintas."""
+    """Comparable action: each own script with its arguments (without tmux-flot-run or popup options);
+    if it calls no scripts, the tmux command with uniform spacing. The same script with other arguments (light
+    vs dark theme, cr fable vs opus) counts as different actions."""
     c = cmd.replace("\\\"", "").replace('"', "").replace("'", "")
     partes = re.findall(r"(?:~|\$HOME)/\.local/bin/([\w.-]+)((?:\s+(?!(?:~|\$HOME)/)[^\s;]+)*)", c)
     partes = [(n, a.strip()) for n, a in partes if n not in ("tmux-flot-run", "tmux-pause")]
@@ -60,24 +60,24 @@ def revisar() -> int:
         for n, et, tecla, cmd in items(f):
             total += 1
             if tecla in vistas and tecla not in ("''",):
-                teclas_dup.append(f"{f.name}: tecla «{tecla}» en «{vistas[tecla]}» y en «{et}» (línea {n}; la segunda no se puede elegir con teclado)")
+                teclas_dup.append(f"{f.name}: key «{tecla}» in «{vistas[tecla]}» and in «{et}» (line {n}; the second one cannot be picked from the keyboard)")
             vistas.setdefault(tecla, et)
-            if not cmd.startswith("source-file"):          # navegar entre menús no cuenta como acción duplicada
+            if not cmd.startswith("source-file"):          # navigating between menus does not count as a duplicate action
                 por_accion[normal(cmd)].append(f"{f.name}:{tecla} «{et}»")
-            if not et.strip().startswith("‹"):                 # «‹ Volver» se repite a propósito
+            if not et.strip().startswith("‹"):                 # «‹ Back» is repeated on purpose
                 por_etiqueta[et.strip().lower()].append(f.name)
             for s in re.findall(r"(?:~|\$HOME)/\.local/bin/([\w.-]+)", cmd):
                 if not (BIN / s).exists():
-                    faltan.append(f"{f.name}: «{et}» llama a {s}, que no existe")
+                    faltan.append(f"{f.name}: «{et}» calls {s}, which does not exist")
     dup_acc = {k: v for k, v in por_accion.items() if len(v) > 1}
     dup_et = {k: v for k, v in por_etiqueta.items() if len(set(v)) > 1}
-    out = [f"# Revisión de menús ({len(menus)} menús, {total} opciones)", ""]
-    out += ["## Teclas repetidas en el mismo menú (corregir)", *(f"- {x}" for x in teclas_dup or ["ninguna ✔"]), ""]
-    out += ["## Scripts que no existen (corregir)", *(f"- {x}" for x in faltan or ["ninguno ✔"]), ""]
-    out += ["## Misma acción en varios menús (revisar: ¿a propósito o duplicado?)"]
-    out += [f"- `{k[:90]}` → {', '.join(v)}" for k, v in sorted(dup_acc.items())] or ["- ninguna ✔"]
-    out += ["", "## Misma etiqueta en varios menús"]
-    out += [f"- «{k}» → {', '.join(sorted(set(v)))}" for k, v in sorted(dup_et.items())] or ["- ninguna ✔"]
+    out = [f"# Menu check ({len(menus)} menus, {total} options)", ""]
+    out += ["## Keys repeated in the same menu (fix)", *(f"- {x}" for x in teclas_dup or ["none ✔"]), ""]
+    out += ["## Scripts that do not exist (fix)", *(f"- {x}" for x in faltan or ["none ✔"]), ""]
+    out += ["## Same action in several menus (review: on purpose or duplicate?)"]
+    out += [f"- `{k[:90]}` → {', '.join(v)}" for k, v in sorted(dup_acc.items())] or ["- none ✔"]
+    out += ["", "## Same label in several menus"]
+    out += [f"- «{k}» → {', '.join(sorted(set(v)))}" for k, v in sorted(dup_et.items())] or ["- none ✔"]
     texto = "\n".join(out) + "\n"
     print(texto)
     if len(sys.argv) > 2 and sys.argv[1] == "--md":
@@ -89,7 +89,7 @@ def revisar() -> int:
 # Manual
 # ---------------------------------------------------------------------------------------------
 def _ramas(m) -> str:
-    """#{?cond,A,B}: si una rama está vacía es una marca de estado (✓) y se quita; «…» (un valor) tampoco se muestra."""
+    """#{?cond,A,B}: an empty branch means a state mark (✓) and is dropped; «…» (a value) is not shown either."""
     a, b = m.group(1).strip(), m.group(2).strip()
     if not a or not b:
         return ""
@@ -98,7 +98,7 @@ def _ramas(m) -> str:
 
 
 def legible(etiqueta: str) -> str:
-    """Etiqueta de tmux sin formatos: #{?c,A,B} → «A / B»; resto de #{…} y #[…] fuera."""
+    """tmux label without formats: #{?c,A,B} → «A / B»; any other #{…} and #[…] removed."""
     s = etiqueta
     for _ in range(6):
         s2 = re.sub(r"#\{\?[^{}]*?,([^,{}]*),([^,{}]*)\}", _ramas, s)
@@ -116,40 +116,40 @@ def sin_comillas(t: str) -> str:
 
 def tecla_legible(t: str) -> str:
     t = sin_comillas(t)
-    return {"BSpace": "⌫", "Enter": "Enter", "Space": "Espacio", "Escape": "Esc"}.get(t, t)
+    return {"BSpace": "⌫", "Enter": "Enter", "Space": "Space", "Escape": "Esc"}.get(t, t)
 
 
 def que_hace(cmd: str) -> str:
     if cmd.strip().startswith("source-file") and "menu" in cmd:
-        return "submenú"
+        return "submenu"
     s = normal(cmd)
     if s.startswith("script: "):
         partes = [" ".join(w for w in p.split() if re.fullmatch(r"[-\w.]+", w)) for p in s[8:].split(" | ")]
         return "`" + " · ".join(partes)[:70] + "`"
-    for patron, txt in ((r"send-keys", "teclea en Claude"), (r"display-popup", "ventana flotante"), (r"run-shell", "acción"),
-                        (r"select-window|previous-window|next-window|last-window", "navegar"), (r"split-window", "dividir"),
-                        (r"resize-pane", "zoom"), (r"kill-", "cerrar"), (r"copy-mode", "modo copia")):
+    for patron, txt in ((r"send-keys", "types into Claude"), (r"display-popup", "floating window"), (r"run-shell", "action"),
+                        (r"select-window|previous-window|next-window|last-window", "navigate"), (r"split-window", "split"),
+                        (r"resize-pane", "zoom"), (r"kill-", "close"), (r"copy-mode", "copy mode")):
         if re.search(patron, cmd):
             return txt
     return "tmux"
 
 
-DIRECTAS = [   # (regex del comando, descripción) para ~/.tmux.conf; gana la primera que coincide
-    (r"^display-menu", "Menú de la pestaña"), (r"menu\.tmux", "Menú principal"), (r"tmux-pick", "Buscar pestaña por nombre"), (r"tmux-open", "Abrir repo o carpeta (→ entra a subcarpetas, ← sube)"),
-    (r"tmux-dash", "Tablero de pestañas (Enter va a la pestaña)"), (r"tmux-agents", "Subagentes en vivo"), (r"tmux-help", "Atajos de teclado"),
-    (r"tmux-resumen", "Resumen de la pestaña: qué, dónde y en qué se quedó"), (r"lazygit", "lazygit en la carpeta"),
-    (r"tmux-pwsh", "PowerShell flotante"), (r"--persistente", "Shell flotante persistente (Ctrl+b d la oculta)"),
-    (r"switch-client -p", "Grupo anterior"), (r"switch-client -n", "Grupo siguiente"), (r"choose-tree", "Grupos con sus pestañas"),
-    (r"swap-window -d -t -1", "Mover pestaña a la izquierda"), (r"swap-window -d -t \+1", "Mover pestaña a la derecha"),
-    (r"previous-window", "Pestaña anterior"), (r"next-window", "Pestaña siguiente"), (r"last-window", "Última pestaña usada"),
-    (r"capture-pane.*load-buffer", "Copiar las últimas 200 líneas al portapapeles"), (r"pipe-pane", "Grabar la salida del panel en ~/logs (sí/no)"),
-    (r"source-file ~/\.tmux\.conf", "Recargar la configuración"), (r"new-window", "Pestaña nueva en la misma carpeta"),
-    (r"split-window -v", "Dividir arriba/abajo"), (r"split-window -h", "Dividir lado a lado"),
-    (r"main-vertical", "Layout principal"), (r"tiled", "Mosaico"), (r"begin-selection", "Empezar selección"),
-    (r"copy-selection", "Copiar selección"), (r"display-menu", "Menú de la pestaña"),
+DIRECTAS = [   # (command regex, description) for ~/.tmux.conf; the first match wins
+    (r"^display-menu", "Tab menu"), (r"menu\.tmux", "Main menu"), (r"tmux-pick", "Find a tab by name"), (r"tmux-open", "Open a repo or folder (→ enters subfolders, ← goes up)"),
+    (r"tmux-dash", "Tab dashboard (Enter goes to the tab)"), (r"tmux-agents", "Live subagents"), (r"tmux-help", "Keyboard shortcuts"),
+    (r"tmux-resumen", "Tab summary: what, where and where it left off"), (r"lazygit", "lazygit in the folder"),
+    (r"tmux-pwsh", "Floating PowerShell"), (r"--persistente", "Persistent floating shell (Ctrl+b d hides it)"),
+    (r"switch-client -p", "Previous group"), (r"switch-client -n", "Next group"), (r"choose-tree", "Groups with their tabs"),
+    (r"swap-window -d -t -1", "Move tab left"), (r"swap-window -d -t \+1", "Move tab right"),
+    (r"previous-window", "Previous tab"), (r"next-window", "Next tab"), (r"last-window", "Last tab used"),
+    (r"capture-pane.*load-buffer", "Copy the last 200 lines to the clipboard"), (r"pipe-pane", "Log the pane output to ~/logs (on/off)"),
+    (r"source-file ~/\.tmux\.conf", "Reload the configuration"), (r"new-window", "New tab in the same folder"),
+    (r"split-window -v", "Split top/bottom"), (r"split-window -h", "Split side by side"),
+    (r"main-vertical", "Main layout"), (r"tiled", "Tiled"), (r"begin-selection", "Start selection"),
+    (r"copy-selection", "Copy selection"), (r"display-menu", "Tab menu"),
 ]
-TECLAS_RATON = {"MouseDown1StatusRight": "Clic en la derecha de la barra", "MouseDown3Status": "Clic derecho en una pestaña",
-                "DoubleClick1Status": "Doble clic en una pestaña"}
+TECLAS_RATON = {"MouseDown1StatusRight": "Click on the right of the status bar", "MouseDown3Status": "Right click on a tab",
+                "DoubleClick1Status": "Double click on a tab"}
 
 
 def prefijo(conf: str) -> str:
@@ -164,7 +164,7 @@ def atajo(tabla: str, tecla: str, pre: str) -> str:
         return TECLAS_RATON[t]
     t = t.replace("M-S-", "Alt+Shift+").replace("M-", "Alt+").replace("C-", "Ctrl+")
     t = t.replace("Left", "←").replace("Right", "→").replace("Up", "↑").replace("Down", "↓")
-    return {"-n": t, "copy-mode-vi": f"(en modo copia) {t}"}.get(tabla, f"{pre} {t}")
+    return {"-n": t, "copy-mode-vi": f"(in copy mode) {t}"}.get(tabla, f"{pre} {t}")
 
 
 def teclas_directas() -> list[tuple[str, str]]:
@@ -182,7 +182,7 @@ def teclas_directas() -> list[tuple[str, str]]:
         tabla = "-n" if "-n" in flags else (re.search(r"-T\s+(\S+)", flags).group(1) if "-T" in flags else "")
         if tabla == "-n" and re.fullmatch(r"M-[1-9]", tecla):
             if not alt_num:
-                filas.append(("Alt+1 … Alt+9", "Ir a la pestaña con ese número")); alt_num = True
+                filas.append(("Alt+1 … Alt+9", "Go to the tab with that number")); alt_num = True
             continue
         coment = re.search(r"\s#\s+(.+)$", cmd)
         desc = coment.group(1).strip() if coment else next((d for rx, d in DIRECTAS if re.search(rx, cmd)), "")
@@ -193,7 +193,7 @@ def teclas_directas() -> list[tuple[str, str]]:
 
 
 def menus_en_arbol() -> list[tuple[str, str, list]]:
-    """[(ruta, título, [(tecla, etiqueta, qué hace)])] desde menu.tmux siguiendo los submenús."""
+    """[(path, title, [(key, label, what it does)])] from menu.tmux following the submenus."""
     pre = prefijo((HOME / ".tmux.conf").read_text(encoding="utf-8")) if (HOME / ".tmux.conf").exists() else "Ctrl+b"
     vistos, salida = set(), []
 
@@ -204,7 +204,7 @@ def menus_en_arbol() -> list[tuple[str, str, list]]:
         texto = f.read_text(encoding="utf-8")
         t = re.search(r'-T\s+"(?:#\[[^\]]*\])?([^"]*)"', texto)
         tramos = [x for x in (t.group(1).split("·") if t else []) if "#" not in x and x.strip()]
-        titulo = "Menú principal" if f.name == "menu.tmux" else (legible(" · ".join(x.strip() for x in tramos)) if tramos else f.stem)
+        titulo = "Main menu" if f.name == "menu.tmux" else (legible(" · ".join(x.strip() for x in tramos)) if tramos else f.stem)
         filas, subs = [], []
         for _, et, tecla, cmd in items(f):
             if et.strip().startswith("‹"):
@@ -218,8 +218,8 @@ def menus_en_arbol() -> list[tuple[str, str, list]]:
             visitar(sf, sr)
 
     visitar(DIR / "menu.tmux", f"{pre} m")
-    for f in sorted(DIR.glob("menu*.tmux")):         # menús que no cuelgan del principal
-        visitar(f, f"(otro) {f.stem}")
+    for f in sorted(DIR.glob("menu*.tmux")):         # menus that do not hang from the main one
+        visitar(f, f"(other) {f.stem}")
     return salida
 
 
@@ -237,7 +237,7 @@ def descripcion(p: Path) -> str:
             if re.search(r"[.:]\s*$", texto):
                 break
             c = re.sub(r'^\s*#?\s?', "", sig).strip()
-            if not c or c.startswith(("Uso", "-", "·")):
+            if not c or c.startswith(("Usage", "Uso", "-", "·")):
                 break
             texto += " " + c
         texto = re.split(r"(?<=[a-záéíóúñ)])\.\s", texto, maxsplit=1)[0]
@@ -257,14 +257,14 @@ def comandos() -> list[tuple[str, str]]:
 
 
 def subcomandos(p: Path) -> list[tuple[str, str]]:
-    """Líneas «<script> args   descripción» del bloque Uso: de la cabecera (bash o Python) y, en bash, las ramas
-    del case con comentario que no estén ya (salvo las internas)."""
+    """Lines «<script> args   description» from the Usage: block of the header (bash or Python) and, in bash, the
+    commented case branches not listed yet (except the internal ones)."""
     try:
         texto = p.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
     filas, vistas = [], set()
-    uso = re.search(r"^(?:#\s*)?Uso:\s*\n(.*?)(?:\n#?\s*\n|\n\"\"\"|\n[^#\s])", texto, re.S | re.M)
+    uso = re.search(r"^(?:#\s*)?(?:Usage|Uso):\s*\n(.*?)(?:\n#?\s*\n|\n\"\"\"|\n[^#\s])", texto, re.S | re.M)
     for linea in (uso.group(1).splitlines() if uso else []):
         m = re.match(r"^#?\s+(" + re.escape(p.name) + r"(?:\s.*?)?)(?:\s{2,}(\S.*))?$", linea)
         if m:
@@ -272,7 +272,7 @@ def subcomandos(p: Path) -> list[tuple[str, str]]:
             vistas.add(m.group(1).split()[1].split("|")[0] if len(m.group(1).split()) > 1 else "")
     for m in re.finditer(r"^\s{2}([a-z][a-z|-]*)\)[^#\n]*#\s*(.+)$", texto, re.M):
         nombre, nota = m.group(1), m.group(2).strip()
-        if nombre.split("|")[0] not in vistas and not re.search(r"interno|prueba|lo usa", nota):
+        if nombre.split("|")[0] not in vistas and not re.search(r"internal|test|used by|interno|prueba|lo usa", nota):
             filas.append((f"{p.name} {nombre}", re.sub(r"^" + re.escape(p.name) + r"\s+\S+\s*", "", nota) or nota))
     return filas
 
@@ -289,26 +289,26 @@ def ventana_windows() -> Path | None:
 
 
 def c(x: str) -> str:
-    """Celda de tabla Markdown: sin | sueltos."""
+    """Markdown table cell: no stray | characters."""
     return str(x).replace("|", "\\|")
 
 
 def manual(destino: Path | None) -> Path:
     import datetime as dt
-    md = ["# Manual de la estación (tmux + Claude)", "",
-          f"_Generado {dt.datetime.now():%Y-%m-%d %H:%M} desde lo instalado (`ws-menus --manual`). Menú → m → Manual lo abre._", "",
-          "## Teclas directas", "", "| Atajo | Qué hace |", "|---|---|"]
-    md += [f"| {c(a)} | {c(d)} |" for a, d in teclas_directas()] or ["| (no encontré ~/.tmux.conf) | |"]
+    md = ["# Workstation manual (tmux + Claude)", "",
+          f"_Generated {dt.datetime.now():%Y-%m-%d %H:%M} from what is installed (`ws-menus --manual`). Menu → m (Full manual) opens it._", "",
+          "## Direct keys", "", "| Shortcut | What it does |", "|---|---|"]
+    md += [f"| {c(a)} | {c(d)} |" for a, d in teclas_directas()] or ["| (~/.tmux.conf not found) | |"]
     for ruta, titulo, filas in menus_en_arbol():
-        md += ["", f"## {titulo} — `{ruta}`", "", "| Tecla | Opción | Tipo |", "|---|---|---|"]
+        md += ["", f"## {titulo} — `{ruta}`", "", "| Key | Option | Type |", "|---|---|---|"]
         md += [f"| {c(t)} | {c(e)} | {c(q)} |" for t, e, q in filas]
-    md += ["", "## Comandos de la terminal", "", "| Comando | Qué hace |", "|---|---|"]
+    md += ["", "## Terminal commands", "", "| Command | What it does |", "|---|---|"]
     md += [f"| `{n}` | {c(d)} |" for n, d in comandos()]
-    md += ["", "## Opciones de cada comando", ""]
+    md += ["", "## Options of each command", ""]
     for n, _ in comandos():
         sub = subcomandos(BIN / n)
         if len(sub) >= 2:
-            md += [f"### {n}", "", "| Uso | Qué hace |", "|---|---|", *(f"| `{c(a)}` | {c(d)} |" for a, d in sub), ""]
+            md += [f"### {n}", "", "| Usage | What it does |", "|---|---|", *(f"| `{c(a)}` | {c(d)} |" for a, d in sub), ""]
     texto = "\n".join(md) + "\n"
     destino = destino or (HOME / ".local/share/ws-manual/manual.md")
     destino.parent.mkdir(parents=True, exist_ok=True)

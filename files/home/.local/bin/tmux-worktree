@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# tmux-worktree <dir> <rama> — crea (si falta) el worktree de <rama> para el repo que
-# contiene <dir> y lo abre en su pestaña con Claude (función twt). Lo usa el menú (w).
+# tmux-worktree <dir> <branch> — creates (if missing) the worktree of <branch> for the repo that
+# contains <dir> and opens it in its own tab with Claude (function twt). Used by the menu (w).
 set -euo pipefail
-dir="${1:?carpeta}"; rama="${2:-}"
+dir="${1:?folder}"; rama="${2:-}"
 fail() { tmux display -d 4000 "Worktree: $*"; exit 1; }
-[[ -n "$rama" ]] || fail "falta el nombre de la rama"
-git -C "$dir" rev-parse --show-toplevel >/dev/null 2>&1 || fail "$dir no es un repo git"
-git check-ref-format --branch "$rama" >/dev/null 2>&1 || fail "nombre de rama no válido: $rama"
+[[ -n "$rama" ]] || fail "the branch name is missing"
+git -C "$dir" rev-parse --show-toplevel >/dev/null 2>&1 || fail "$dir is not a git repo"
+git check-ref-format --branch "$rama" >/dev/null 2>&1 || fail "invalid branch name: $rama"
 # shellcheck source=/dev/null
 source "$HOME/.config/tmux-claude/functions.sh"
-twt "$dir" "$rama" >/dev/null 2>&1 || fail "no se pudo crear $rama (¿ya existe en otro worktree?)"
+twt "$dir" "$rama" >/dev/null 2>&1 || fail "could not create $rama (does it already exist in another worktree?)"

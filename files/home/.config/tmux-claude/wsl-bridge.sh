@@ -1,14 +1,14 @@
 # shellcheck shell=bash
-# wsl-bridge.sh — puente WSL ↔ Windows y prompt con contexto. Lo carga functions.sh
-# (que a su vez carga ~/.bashrc). Fuente: kit claude-workstation.
+# wsl-bridge.sh — WSL ↔ Windows bridge and prompt with context. Loaded by functions.sh
+# (which in turn is loaded by ~/.bashrc). Source: claude-workstation kit.
 #
-#   wopen [ruta|URL]   abre en Windows con la app predeterminada (wslview)
-#   wexp  [carpeta]    abre la carpeta en el Explorador de Windows
-#   wpath [ruta]       ruta de Windows equivalente (C:\…)
-#   wcopy              copia stdin al portapapeles de Windows (con acentos):  git diff | wcopy
-#   wpaste             imprime el portapapeles de Windows:                    wpaste > notas.md
+#   wopen [path|URL]   opens in Windows with the default app (wslview)
+#   wexp  [folder]     opens the folder in Windows Explorer
+#   wpath [path]       equivalent Windows path (C:\…)
+#   wcopy              copies stdin to the Windows clipboard (accents included):  git diff | wcopy
+#   wpaste             prints the Windows clipboard:                              wpaste > notes.md
 
-# Navegador de Windows para az login, gh auth, enlaces de herramientas, etc.
+# Windows browser for az login, gh auth, tool links, etc.
 command -v wslview >/dev/null && export BROWSER=wslview
 
 wopen() { wslview "${1:-.}"; }
@@ -20,7 +20,7 @@ wpaste() {
     '[Console]::OutputEncoding=[Text.Encoding]::UTF8; Get-Clipboard' | sed 's/\r$//'
 }
 
-# Prompt con contexto (starship): solo en shells interactivos.
+# Prompt with context (starship): interactive shells only.
 if [[ $- == *i* ]] && command -v starship >/dev/null; then
   eval "$(starship init bash)"
 fi

@@ -1,4 +1,4 @@
-# CodeQL: análisis estático de los scripts de Python y de los workflows. Solo acciones de GitHub (sin terceros).
+# CodeQL: static analysis of the Python scripts and the workflows. GitHub actions only (no third parties).
 name: CodeQL
 on:
   push: { branches: [main] }

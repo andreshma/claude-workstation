@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# tmux-ux — estilo de menús y ventanas flotantes (bordes redondeados, colores) y la segunda línea del monitor.
-# Lo carga ~/.config/tmux-claude/ux.tmux al arrancar o recargar. Cada opción se prueba por separado: con una tmux
-# que no la conoce (< 3.3/3.4) simplemente se omite.
+# tmux-ux — style of menus and floating windows (rounded borders, colors) and the monitor's second line.
+# Loaded by ~/.config/tmux-claude/ux.tmux on start or reload. Each option is tried separately: on a tmux that
+# does not know it (< 3.3/3.4) it is simply skipped.
 set -uo pipefail
 while IFS='|' read -r o v; do
   [[ -n "$o" ]] && tmux set -g "$o" "$v" 2>/dev/null

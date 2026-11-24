@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# tmux-backup — copia los respaldos de tmux-resurrect a Windows después de cada guardado
-# (hook @resurrect-hook-post-save-all). Si WSL se daña o se reinstala, el estado de las
-# pestañas sobrevive en C:\Users\@WIN_USER@\.tmux-resurrect-backup.
+# tmux-backup — copies the tmux-resurrect backups to Windows after every save
+# (hook @resurrect-hook-post-save-all). If WSL breaks or is reinstalled, the state of the
+# tabs survives in C:\Users\@WIN_USER@\.tmux-resurrect-backup.
 src="${XDG_DATA_HOME:-$HOME/.local/share}/tmux/resurrect"
 dst=@WINHOME@/.tmux-resurrect-backup
 mkdir -p "$dst" && cp -u "$src"/tmux_resurrect_*.txt "$dst"/ 2>/dev/null && cp -fL "$src/last" "$dst/last.txt" 2>/dev/null

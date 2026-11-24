@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# win-hook.sh <exe de Windows> [args...] — corre un hook de Windows (MemPalace, recall) desde
-# Claude Code en WSL. Traduce a rutas de Windows los campos transcript_path y cwd del JSON del hook,
-# para que el proceso de Windows pueda abrirlos, y devuelve su salida y su código de salida tal cual.
+# win-hook.sh <Windows exe> [args...] — runs a Windows hook (MemPalace, recall) from
+# Claude Code on WSL. Converts the transcript_path and cwd fields of the hook JSON to Windows paths,
+# so the Windows process can open them, and returns its output and exit code unchanged.
 set -o pipefail
 input="$(cat)"
 win() { if [ -n "$1" ]; then wslpath -w "$1" 2>/dev/null || printf '%s' "$1"; fi; }

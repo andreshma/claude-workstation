@@ -1,19 +1,19 @@
 # shellcheck shell=bash
 #
-# ws-ruteo.sh — biblioteca del ruteo de modelos (ADR-009). La cargan `cr`, el hook de Claude y el popup.
-# Una sola tabla de reglas (~/.config/ws-ruteo/reglas.conf) y una sola forma de cambiar el modelo de una
-# pestaña: siempre con tu confirmación, sin cambiar tu modelo por defecto y sin perder el texto escrito.
+# ws-ruteo.sh — model routing library (ADR-009). Loaded by `cr`, the Claude hook and the popup.
+# A single rule table (~/.config/ws-ruteo/reglas.conf) and a single way to change a tab's model:
+# always with your confirmation, without changing your default model and without losing the typed text.
 
-export LC_ALL=C.UTF-8   # minúsculas y [aá] correctos con acentos
+export LC_ALL=C.UTF-8   # lowercase and [aá] work correctly with accents
 WS_RUTEO_REGLAS="${WS_RUTEO_REGLAS:-$HOME/.config/ws-ruteo/reglas.conf}"
 WS_RUTEO_RUN="${XDG_RUNTIME_DIR:-/tmp/ws-ruteo-$(id -u)}/ws-ruteo"
 WS_RUTEO_LOG="${WS_RUTEO_LOG:-$HOME/.local/share/ws-telemetria/ruteo}"
 WS_RUTEO_NIVELES=(haiku sonnet opus fable)
 
 #######################################
-# Clasifica una tarea con la tabla de reglas.
-# Arguments: $1 texto de la tarea
-# Outputs:   "<nivel> <id-de-regla>"; sin coincidencia "opus defecto"
+# Classifies a task with the rule table.
+# Arguments: $1 task text
+# Outputs:   "<level> <rule-id>"; with no match "opus defecto"
 #######################################
 ruteo_clasificar() {
   local t="${1,,}" nivel id re
@@ -26,8 +26,8 @@ ruteo_clasificar() {
 }
 
 #######################################
-# ID completo del modelo de un nivel (nunca alias: el alias puede resolver a otra versión).
-# Se puede ajustar con ~/.config/ws-ruteo/modelos.conf (líneas nivel=ID).
+# Full model ID of a level (never an alias: the alias may resolve to another version).
+# Can be adjusted with ~/.config/ws-ruteo/modelos.conf (level=ID lines).
 #######################################
 ruteo_modelo() {
   local f="$HOME/.config/ws-ruteo/modelos.conf" v=""
@@ -40,7 +40,7 @@ ruteo_modelo() {
 }
 
 #######################################
-# Nivel a partir del nombre que muestra Claude (status line → @cmodel). "Opus Plan" cuenta como opus.
+# Level from the name Claude shows (status line → @cmodel). "Opus Plan" counts as opus.
 #######################################
 ruteo_nivel_de() {
   local n="${1,,}"
@@ -48,7 +48,7 @@ ruteo_nivel_de() {
 }
 
 #######################################
-# Sube un nivel (confianza baja del clasificador o escalamiento): haiku→sonnet→opus→fable.
+# Goes up one level (low classifier confidence or escalation): haiku→sonnet→opus→fable.
 #######################################
 ruteo_subir() {
   local i; for i in "${!WS_RUTEO_NIVELES[@]}"; do
@@ -56,11 +56,11 @@ ruteo_subir() {
   done; echo opus
 }
 
-# Huella del texto, para dejar pasar sin preguntar el reenvío que tú confirmaste.
+# Fingerprint of the text, to let the resubmission you confirmed through without asking.
 ruteo_huella() { printf '%s' "$1" | sha256sum | cut -c1-64; }
 
 #######################################
-# Registra una decisión en la telemetría (sin texto de la tarea: solo nivel, regla y largo).
+# Records a decision in the telemetry (no task text: only level, rule and length).
 # Arguments: origen nivel regla actual decision chars
 #######################################
 ruteo_registrar() {
@@ -72,15 +72,15 @@ ruteo_registrar() {
 }
 
 #######################################
-# Panel con Claude en la ventana del panel dado (el binario nativo se llama como su versión, p. ej. 2.1.327).
-# Outputs: id del panel (%N) o nada
+# Pane with Claude in the window of the given pane (the native binary is named after its version, e.g. 2.1.327).
+# Outputs: pane id (%N) or nothing
 #######################################
 ruteo_panel_claude() {
   tmux list-panes -t "$1" -F '#{pane_id} #{pane_current_command}' 2>/dev/null \
     | awk '$2 ~ /^([0-9]+\.){2}[0-9]+$/ || $2 == "claude" { print $1; exit }'
 }
 
-# Archivos de settings donde /model guarda el modelo por defecto (ambas cuentas, sin repetir enlaces).
+# Settings files where /model stores the default model (both accounts, without repeating links).
 _ruteo_settings() {
   local f r; declare -A visto=()
   for f in "$HOME/.claude/settings.json" "$HOME/.claude-personal/settings.json"; do
@@ -90,38 +90,38 @@ _ruteo_settings() {
 }
 
 #######################################
-# Cambia el modelo de la pestaña con /model <ID> SIN cambiar tu modelo por defecto:
-# /model escrito guarda el modelo en settings.json, así que se restaura el valor previo enseguida
-# (la sesión que corre no relee `model`; solo el arranque lo lee).
-# Arguments: $1 panel con Claude, $2 nivel
+# Changes the tab's model with /model <ID> WITHOUT changing your default model:
+# a typed /model saves the model to settings.json, so the previous value is restored right away
+# (the running session does not re-read `model`; only startup reads it).
+# Arguments: $1 pane with Claude, $2 level
 #######################################
 ruteo_cambiar() {
   local p="$1" id f antes tmp; id="$(ruteo_modelo "$2")" || return 1
   declare -A prev=()
   while read -r f; do prev[$f]="$(jq -c '.model // null' "$f" 2>/dev/null)"; done < <(_ruteo_settings)
-  # Claude Code deja en el cuadro de entrada el prompt que el hook bloqueó: escribir /model encima mandaba
-  # «<texto>/model …» como mensaje. Ctrl+C con texto lo borra; con el cuadro vacío no hace nada (Claude está
-  # esperando, el hook acaba de bloquear). Tu texto se vuelve a pegar después (ruteo_pegar).
-  # Ctrl+C solo si Claude espera (si está trabajando lo interrumpiría): el /model queda en cola.
+  # Claude Code leaves the prompt the hook blocked in the input box: typing /model on top of it sent
+  # «<text>/model …» as a message. Ctrl+C with text clears it; with an empty box it does nothing (Claude is
+  # waiting, the hook has just blocked). Your text is pasted back afterwards (ruteo_pegar).
+  # Ctrl+C only if Claude is waiting (if it is working it would interrupt it): the /model stays queued.
   tmux capture-pane -p -t "$p" 2>/dev/null | grep -qi "esc to interrupt" || { tmux send-keys -t "$p" C-c; sleep 0.4; }
   tmux send-keys -t "$p" -l "/model $id" && tmux send-keys -t "$p" Enter
-  tmux set -w -t "$p" @cruteo_si "$2:$(date +%s)" 2>/dev/null   # el hook no vuelve a preguntar en 2 min
+  tmux set -w -t "$p" @cruteo_si "$2:$(date +%s)" 2>/dev/null   # the hook does not ask again for 2 min
   sleep 1.5
   for f in "${!prev[@]}"; do
     antes="${prev[$f]}"
     [[ "$(jq -c '.model // null' "$f" 2>/dev/null)" == "$antes" ]] && continue
     tmp="$(mktemp)"
     if [[ "$antes" == null ]]; then jq 'del(.model)' "$f" > "$tmp"; else jq --argjson m "$antes" '.model = $m' "$f" > "$tmp"; fi
-    # cat > (no mv): conserva permisos y enlaces simbólicos de la cuenta personal
+    # cat > (not mv): keeps the permissions and symlinks of the personal account
     jq empty "$tmp" 2>/dev/null && cat "$tmp" > "$f"
     rm -f "$tmp"
   done
 }
 
 #######################################
-# Pega el texto en la pestaña (bracketed paste: las líneas no se envían una por una) y lo envía.
-# Deja la huella para que el hook no vuelva a preguntar por este mismo texto.
-# Arguments: $1 panel, $2 archivo con el texto, $3 "enviar" | "solo-pegar"
+# Pastes the text into the tab (bracketed paste: lines are not sent one by one) and sends it.
+# Leaves the fingerprint so the hook does not ask again about this same text.
+# Arguments: $1 pane, $2 file with the text, $3 "enviar" | "solo-pegar"
 #######################################
 ruteo_pegar() {
   local p="$1" f="$2"

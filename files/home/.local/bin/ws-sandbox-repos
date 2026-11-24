@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# ws-sandbox-repos — agrega a .git/info/exclude de cada repo las rutas donde el sandbox
-# de Claude Code crea archivos vacíos de relleno (archivos y directorios protegidos).
-# Es idempotente. Los archivos que el repo ya versiona no se ven afectados.
+# ws-sandbox-repos — adds to each repo's .git/info/exclude the paths where the Claude Code
+# sandbox creates empty placeholder files (protected files and directories).
+# Idempotent. Files the repo already versions are not affected.
 set -euo pipefail
 pats=(.bash_profile .bashrc .profile .zprofile .zshrc .gitconfig .gitmodules .ripgreprc
       .mcp.json .vscode .idea .claude/commands .claude/agents .claude/settings.local.json .claude/.cc-writes)
@@ -12,4 +12,4 @@ for g in "${REPOS:-@WINHOME@/source/repos}"/*/.git "$HOME"/code/*/.git; do
   for p in "${pats[@]}"; do grep -qxF "/$p" "$ex" || echo "/$p" >> "$ex"; done
   n=$((n+1))
 done
-echo "info/exclude actualizado en $n repos"
+echo "info/exclude updated in $n repos"

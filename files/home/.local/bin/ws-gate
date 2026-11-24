@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 #
-# ws-gate — compuerta de calidad y seguridad de la estación. La invocan los hooks globales
-# de git (_chain) y Claude Code; también se usa a mano para revisar un repo completo.
+# ws-gate — the workstation's quality and security gate. Invoked by the global git hooks
+# (_chain) and by Claude Code; also used by hand to review a whole repo.
 #
-#   ws-gate pre-commit            secretos, archivos prohibidos o grandes, lint de lo que subes
-#   ws-gate commit-msg <archivo>  Conventional Commits y sin Co-authored-by
-#   ws-gate pre-push <remoto>     push a main/master, dependencias (osv-scanner), IaC (checkov),
-#                                 tflint y clippy sobre lo que cambió (stdin = refs de git)
-#   ws-gate file <archivo>        lint de un solo archivo (lo usa Claude tras editar)
-#   ws-gate repo [carpeta]        reporte completo del repo en Markdown (imprime la ruta)
-#   ws-gate repo-view [carpeta]   igual, y lo abre en less (lo usa el menú, Q)
+#   ws-gate pre-commit            secrets, forbidden or large files, lint of what you commit
+#   ws-gate commit-msg <file>     Conventional Commits and no Co-authored-by
+#   ws-gate pre-push <remote>     push to main/master, dependencies (osv-scanner), IaC (checkov),
+#                                 tflint and clippy on what changed (stdin = git refs)
+#   ws-gate file <file>           lint of a single file (Claude uses it after editing)
+#   ws-gate repo [folder]         full report of the repo in Markdown (prints the path)
+#   ws-gate repo-view [folder]    same, and opens it in less (used by the menu, Q)
 #
-# Configuración por repo (git config):
-#   ws.gate.skip       lista separada por comas: lint,size,osv,checkov,tflint,clippy,msg
-#   ws.gate.allowMain  true para permitir push directo a main/master (p. ej. repos personales)
-#   ws.gate.strict     true para que checkov y tflint también bloqueen en pre-push
-# Si el repo trae .pre-commit-config.yaml, su lint manda y aquí solo se revisan secretos y tamaño.
-# Las herramientas que no estén instaladas se omiten con aviso (ws-tools las instala).
+# Per-repo configuration (git config):
+#   ws.gate.skip       comma-separated list: lint,size,osv,checkov,tflint,clippy,msg
+#   ws.gate.allowMain  true to allow a direct push to main/master (e.g. personal repos)
+#   ws.gate.strict     true so that checkov and tflint also block on pre-push
+# If the repo has a .pre-commit-config.yaml, its lint rules and only secrets and size are checked here.
+# Tools that are not installed are skipped with a warning (ws-tools installs them).
 set -uo pipefail
 MAX_MB=5
 RED=$'\033[31m'; YEL=$'\033[33m'; DIM=$'\033[2m'; RST=$'\033[0m'
@@ -28,7 +28,7 @@ has()  { command -v "$1" >/dev/null 2>&1; }
 skip() { [[ ",$(git config --get ws.gate.skip 2>/dev/null)," == *",$1,"* ]]; }
 root() { git rev-parse --show-toplevel 2>/dev/null; }
 
-# lint_file <archivo> — revisa un archivo según su tipo; imprime los hallazgos y devuelve 1 si hay.
+# lint_file <file> — checks a file according to its type; prints the findings and returns 1 if there are any.
 lint_file() {
   local f="$1" r out rc=0 base; r="$(root)"; base="${f##*/}"
   [[ -f "$f" ]] || return 0
@@ -37,7 +37,7 @@ lint_file() {
     *.sh|*.bash) has shellcheck && run shellcheck -S warning "$f" ;;
     *.py)        has ruff && { run ruff check --quiet "$f"; run ruff format --check --quiet "$f"; } ;;
     *.js|*.jsx|*.ts|*.tsx|*.mjs|*.cjs|*.vue)
-      [[ -n "${WS_GATE_SIN_CODIGO_REPO:-}" ]] && return 0   # desde el hook de edición: nada que ejecute código del repo
+      [[ -n "${WS_GATE_SIN_CODIGO_REPO:-}" ]] && return 0   # from the edit hook: nothing that runs code from the repo
       [[ -x "$r/node_modules/.bin/eslint" ]] && run "$r/node_modules/.bin/eslint" --no-warn-ignored "$f"
       [[ -x "$r/node_modules/.bin/prettier" ]] && run "$r/node_modules/.bin/prettier" --check --log-level warn "$f" ;;
     *.css|*.scss|*.html)
@@ -63,23 +63,23 @@ pre_commit() {
 
   if has gitleaks; then
     gitleaks protect --staged --redact --no-banner >/dev/null 2>&1 || {
-      err "gitleaks encontró posibles secretos. Detalle: gitleaks protect --staged --redact -v"; }
-  else wrn "sin gitleaks: no se revisaron secretos"; fi
+      err "gitleaks found possible secrets. Details: gitleaks protect --staged --redact -v"; }
+  else wrn "no gitleaks: secrets were not checked"; fi
 
   for f in "${files[@]}"; do
     case "${f##*/}" in
       .env|.env.local|.env.*.local|.env.production|*.pem|*.key|*.pfx|*.p12|id_rsa*|id_ed25519*|*.kdbx|*.tfstate|*.tfstate.backup)
-        err "archivo que no debe versionarse: $f (usa el vault o .gitignore)" ;;
+        err "file that must not be versioned: $f (use the vault or .gitignore)" ;;
     esac
     if ! skip size && [[ -f "$r/$f" ]]; then
       size=$(stat -c %s "$r/$f")
       if (( size > MAX_MB * 1024 * 1024 )) && [[ "$(git check-attr filter -- "$f" | awk '{print $NF}')" != lfs ]]; then
-        err "$f pesa $(( size / 1024 / 1024 )) MB (máximo $MAX_MB MB; usa Git LFS o un almacenamiento de artefactos)"
+        err "$f is $(( size / 1024 / 1024 )) MB (maximum $MAX_MB MB; use Git LFS or an artifact store)"
       fi
     fi
   done
 
-  if (( own_cfg )); then note "el repo tiene .pre-commit-config.yaml: su lint manda"
+  if (( own_cfg )); then note "the repo has a .pre-commit-config.yaml: its lint rules"
   elif ! skip lint; then
     for f in "${files[@]}"; do
       if ! lint_file "$r/$f" >&2; then err "lint: $f"; fi
@@ -88,15 +88,15 @@ pre_commit() {
 }
 
 commit_msg() {
-  local file="${1:?archivo del mensaje}" first types='feat|fix|chore|docs|refactor|test|ci|perf|style|build'
+  local file="${1:?message file}" first types='feat|fix|chore|docs|refactor|test|ci|perf|style|build'
   first="$(grep -v '^#' "$file" | grep -m1 .)"
-  if grep -qiE '^co-authored-by:' "$file"; then err "el mensaje tiene Co-authored-by (no permitido)"; fi
+  if grep -qiE '^co-authored-by:' "$file"; then err "the message has Co-authored-by (not allowed)"; fi
   skip msg && return 0
   case "$first" in Merge\ *|Revert\ *|fixup!\ *|squash!\ *|amend!\ *) return 0 ;; esac
   if ! grep -qE "^($types)(\([a-z0-9._/-]+\))?!?: [^ ].*" <<<"$first"; then
-    err "mensaje fuera de Conventional Commits: \"$first\""
-    note "formato: type(scope): descripción en imperativo · tipos: ${types//|/ }"
-  elif (( ${#first} > 100 )); then wrn "primera línea de ${#first} caracteres (recomendado ≤ 100)"; fi
+    err "message does not follow Conventional Commits: \"$first\""
+    note "format: type(scope): description in the imperative · types: ${types//|/ }"
+  elif (( ${#first} > 100 )); then wrn "first line is ${#first} characters long (recommended ≤ 100)"; fi
 }
 
 pre_push() {
@@ -105,7 +105,7 @@ pre_push() {
   while read -r _ lsha rref rsha; do
     [[ "$lsha" == "$zero" ]] && continue
     if [[ "$rref" =~ ^refs/heads/(main|master)$ && "$(git config --get ws.gate.allowMain)" != true ]]; then
-      err "push directo a ${rref#refs/heads/}: usa una rama y PR (o git config ws.gate.allowMain true en repos personales)"
+      err "direct push to ${rref#refs/heads/}: use a branch and a PR (or git config ws.gate.allowMain true in personal repos)"
     fi
     if [[ "$rsha" == "$zero" ]]; then
       range="$(git merge-base "$lsha" origin/HEAD 2>/dev/null || git rev-list --max-parents=0 "$lsha" | tail -1)..$lsha"
@@ -126,9 +126,9 @@ pre_push() {
       js="$(osv-scanner scan source --format json "${locks[@]}" 2>/dev/null)"
       max="$(jq -r '[.results[]?.packages[]?.groups[]?.max_severity | tonumber? ] | max // 0' <<<"$js" 2>/dev/null)"
       local n; n="$(jq -r '[.results[]?.packages[]?.vulnerabilities[]?] | length' <<<"$js" 2>/dev/null)"
-      if awk -v m="${max:-0}" 'BEGIN { exit !(m >= 9.0) }'; then err "osv-scanner: $n vulnerabilidades, al menos una CRÍTICA (CVSS ${max})"
-      elif (( ${n:-0} > 0 )); then wrn "osv-scanner: $n vulnerabilidades (máx. CVSS ${max}); revísalas antes del PR"; fi
-    else wrn "sin osv-scanner: no se revisaron dependencias"; fi
+      if awk -v m="${max:-0}" 'BEGIN { exit !(m >= 9.0) }'; then err "osv-scanner: $n vulnerabilities, at least one CRITICAL (CVSS ${max})"
+      elif (( ${n:-0} > 0 )); then wrn "osv-scanner: $n vulnerabilities (max CVSS ${max}); review them before the PR"; fi
+    else wrn "no osv-scanner: dependencies were not checked"; fi
   fi
 
   local iac=() dirs=()
@@ -141,9 +141,9 @@ pre_push() {
       out="$(checkov --compact --quiet --skip-download "${cargs[@]}" 2>/dev/null)"
       if grep -q 'FAILED' <<<"$out"; then
         printf '%s\n' "$out" | grep -E 'Check:|FAILED|File:' | head -30 >&2
-        if [[ "$strict" == true ]]; then err "checkov: hallazgos en IaC"; else wrn "checkov: hallazgos en IaC"; fi
+        if [[ "$strict" == true ]]; then err "checkov: findings in IaC"; else wrn "checkov: findings in IaC"; fi
       fi
-    else note "sin checkov: no se revisó IaC"; fi
+    else note "no checkov: IaC was not checked"; fi
   fi
 
   mapfile -t dirs < <(for f in "${changed[@]}"; do [[ "$f" == *.tf ]] && dirname "$r/$f"; done | sort -u)
@@ -157,31 +157,31 @@ pre_push() {
 
   if printf '%s\n' "${changed[@]}" | grep -qE '(\.rs|Cargo\.toml)$' && ! skip clippy && has cargo && [[ -f "$r/Cargo.toml" ]]; then
     ( cd "$r" && cargo clippy --quiet -- -D warnings >/tmp/ws-gate-clippy.$$ 2>&1 ) || {
-      head -30 /tmp/ws-gate-clippy.$$ >&2; wrn "clippy: hallazgos en Rust"; }
+      head -30 /tmp/ws-gate-clippy.$$ >&2; wrn "clippy: findings in Rust"; }
     rm -f /tmp/ws-gate-clippy.$$
   fi
 }
 
 repo_report() {
   local r="${1:-$PWD}" out ts name f
-  r="$(git -C "$r" rev-parse --show-toplevel 2>/dev/null)" || { echo "No es un repo git: ${1:-$PWD}"; return 1; }
+  r="$(git -C "$r" rev-parse --show-toplevel 2>/dev/null)" || { echo "Not a git repo: ${1:-$PWD}"; return 1; }
   name="${r##*/}"; ts="$(date +%Y%m%d-%H%M)"; mkdir -p "$HOME/reportes-calidad"
   out="$HOME/reportes-calidad/$name-$ts.md"
   {
-    printf '# Revisión de calidad y seguridad — %s\n\n%s · rama `%s` · commit `%s`\n\n' "$name" "$(date '+%F %H:%M')" \
+    printf '# Quality and security review — %s\n\n%s · branch `%s` · commit `%s`\n\n' "$name" "$(date '+%F %H:%M')" \
       "$(git -C "$r" branch --show-current)" "$(git -C "$r" rev-parse --short HEAD)"
-    printf '## Secretos (historial completo)\n\n```\n'
-    if has gitleaks; then gitleaks detect --source "$r" --redact --no-banner 2>&1 | tail -5; else echo "sin gitleaks"; fi
-    printf '```\n\n## Lint por archivo\n\n'
+    printf '## Secrets (full history)\n\n```\n'
+    if has gitleaks; then gitleaks detect --source "$r" --redact --no-banner 2>&1 | tail -5; else echo "no gitleaks"; fi
+    printf '```\n\n## Lint per file\n\n'
     local n=0 bad=0
     while IFS= read -r -d '' f; do
       n=$((n + 1)); if ! res="$(lint_file "$r/$f" 2>&1)"; then bad=$((bad + 1)); printf '### %s\n\n```\n%s\n```\n\n' "$f" "$(head -15 <<<"$res")"; fi
     done < <(git -C "$r" ls-files -z)
-    printf '%d archivos revisados, %d con hallazgos.\n\n## Dependencias (osv-scanner)\n\n```\n' "$n" "$bad"
-    if has osv-scanner; then osv-scanner scan source -r "$r" 2>&1 | tail -40; else echo "sin osv-scanner"; fi
-    printf '```\n\n## IaC y contenedores (checkov)\n\n```\n'
-    if has checkov; then checkov -d "$r" --compact --quiet --skip-download 2>&1 | tail -60; else echo "sin checkov"; fi
-    printf '```\n\n## Imágenes de contenedor\n\nRevisa las imágenes construidas con `docker scout cves <imagen>`.\n'
+    printf '%d files checked, %d with findings.\n\n## Dependencies (osv-scanner)\n\n```\n' "$n" "$bad"
+    if has osv-scanner; then osv-scanner scan source -r "$r" 2>&1 | tail -40; else echo "no osv-scanner"; fi
+    printf '```\n\n## IaC and containers (checkov)\n\n```\n'
+    if has checkov; then checkov -d "$r" --compact --quiet --skip-download 2>&1 | tail -60; else echo "no checkov"; fi
+    printf '```\n\n## Container images\n\nReview the built images with `docker scout cves <image>`.\n'
   } > "$out"
   printf '%s\n' "$out"
 }
@@ -190,12 +190,12 @@ case "${1:-}" in
   pre-commit) pre_commit ;;
   commit-msg) commit_msg "${2:-}" ;;
   pre-push)   pre_push ;;
-  file)       lint_file "${2:?archivo}"; exit $? ;;
+  file)       lint_file "${2:?file}"; exit $? ;;
   repo)       repo_report "${2:-}"; exit $? ;;
-  repo-view)  echo "Revisando $(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")…"
+  repo-view)  echo "Reviewing $(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")…"
               f="$(repo_report "${2:-}")" || { read -rsn1; exit 1; }; less -R "$f"; exit 0 ;;
   *) sed -n '3,22p' "$0"; exit 2 ;;
 esac
-if (( fail )); then printf '%sCompuerta: bloqueado. Corrige lo marcado con ✖ (o git config ws.gate.skip …).%s\n' "$RED" "$RST" >&2; exit 1; fi
-(( warn )) && printf '%sCompuerta: pasa con avisos.%s\n' "$YEL" "$RST" >&2
+if (( fail )); then printf '%sGate: blocked. Fix what is marked with ✖ (or git config ws.gate.skip …).%s\n' "$RED" "$RST" >&2; exit 1; fi
+(( warn )) && printf '%sGate: passes with warnings.%s\n' "$YEL" "$RST" >&2
 exit 0

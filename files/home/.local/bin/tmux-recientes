@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""tmux-recientes — tus trabajos recientes con Claude, de TODOS los proyectos, en una lista: abierta o no, ve directo.
-Ctrl+b j (o Menú → j).
+"""tmux-recientes — your recent work with Claude, from ALL projects, in one list: open or not, go straight to it.
+Not in the menu and without a shortcut (Ctrl+b j was freed): run it by name.
 
-Cada fila: hace cuánto, proyecto, rama, si tiene pestaña abierta (● grupo:pestaña) y tu último pedido (redactado).
-A la derecha, vista previa: tus últimos pedidos y lo último que respondió Claude.
-  Enter   si tiene pestaña, va a ella; si no, abre una en su grupo y retoma ESA conversación (claude --resume <id>)
-  Ctrl+Y  copia el comando para retomarla · Ctrl+R actualiza · escribe para filtrar por proyecto, rama o texto
-Uso: tmux-recientes [--dias 7]   ·   tmux-recientes --lista [--dias N]   ·   tmux-recientes --ver <archivo.jsonl>
-Lee el encabezado y el final de cada conversación (no el archivo completo) con caché por archivo: es rápido aun con
-cientos de conversaciones.
+Each row: how long ago, project, branch, whether it has an open tab (● group:tab) and your last request (redacted).
+On the right, a preview: your latest requests and the last thing Claude answered.
+  Enter   if it has a tab, goes to it; otherwise opens one in its group and resumes THAT conversation (claude --resume <id>)
+  Ctrl+Y  copies the command to resume it · Ctrl+R refreshes · type to filter by project, branch or text
+Usage: tmux-recientes [--dias 7]   ·   tmux-recientes --lista [--dias N]   ·   tmux-recientes --ver <file.jsonl>
+Reads the header and the end of each conversation (not the whole file) with a per-file cache: it is fast even with
+hundreds of conversations.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import json
 import os
 import re
 import shutil
-import subprocess  # nosec B404 — tmux, fzf, ws-redactar, ws-copiar con argumentos fijos
+import subprocess  # nosec B404 — tmux, fzf, ws-redactar, ws-copiar with fixed arguments
 import sys
 import time
 from pathlib import Path
@@ -50,7 +50,7 @@ def es_prompt(o: dict) -> bool:
 
 
 def resumen(f: Path) -> dict | None:
-    """Encabezado (cwd, rama, inicio) y final (último pedido, última respuesta) sin leer todo el archivo."""
+    """Header (cwd, branch, start) and end (last request, last answer) without reading the whole file."""
     info = {"cwd": "", "rama": "", "pedido": "", "respuesta": ""}
     try:
         with open(f, "rb") as fh:
@@ -66,7 +66,7 @@ def resumen(f: Path) -> dict | None:
                 info["rama"] = info["rama"] or o.get("gitBranch") or ""
             ini = max(0, f.stat().st_size - 200_000)
             fh.seek(ini)
-            cola = fh.read().decode("utf-8", "replace").splitlines()[1 if ini else 0:]   # la primera puede venir cortada
+            cola = fh.read().decode("utf-8", "replace").splitlines()[1 if ini else 0:]   # the first one may be cut off
     except OSError:
         return None
     for l in reversed(cola):
@@ -116,7 +116,7 @@ def conversaciones(dias: int) -> list[dict]:
 
 
 def pestanas() -> dict:
-    """carpeta → «grupo:índice nombre» de la pestaña que la tiene abierta (y su id de ventana)."""
+    """folder → «group:index name» of the tab that has it open (and its window id)."""
     out = {}
     for l in sh("tmux", "list-panes", "-a", "-F", "#{pane_current_path}\t#{?session_grouped,#{session_group},#{session_name}}\t#{session_name}\t#{window_index} #{window_name}\t#{window_id}").splitlines():
         p = l.split("\t")
@@ -141,7 +141,7 @@ def lista(dias: int) -> str:
     lineas = []
     for c, t in zip(convs, textos + [""] * len(convs)):
         ab = pest.get(os.path.realpath(c["cwd"]))
-        estado = f"\033[32m● {ab[0][:22]}\033[0m" if ab else "\033[2m○ sin pestaña\033[0m"
+        estado = f"\033[32m● {ab[0][:22]}\033[0m" if ab else "\033[2m○ no tab\033[0m"
         proy = Path(c["cwd"]).name
         accion = f"ir{SEP}{ab[1]}" if ab else f"abrir{SEP}{c['cwd']}"
         lineas.append(f"{accion}{SEP}{c['id']}{SEP}{c['archivo']}{SEP}"
@@ -161,7 +161,7 @@ def ver(archivo: str) -> str:
         elif o.get("type") == "assistant":
             t = texto_de((o.get("message") or {}).get("content"))
             ultima = t or ultima
-    txt = "Tus últimos pedidos:\n" + "\n".join(f"  › {p[:300]}" for p in pedidos[-4:]) + f"\n\nLo último de Claude:\n{ultima[-1200:]}"
+    txt = "Your latest requests:\n" + "\n".join(f"  › {p[:300]}" for p in pedidos[-4:]) + f"\n\nClaude's latest:\n{ultima[-1200:]}"
     return redactar(txt)
 
 
@@ -188,8 +188,8 @@ def main() -> int:
         print(lista(dias)); input(); return 0
     yo = os.path.abspath(sys.argv[0])
     r = subprocess.run(["fzf", "--ansi", "--delimiter", SEP, "--with-nth", "5", "--no-sort", "--reverse", "--expect", "ctrl-y",  # nosec B603 B607
-                        "--prompt", "recientes> ", "--preview", f"{yo} --ver {{4}}", "--preview-window", "right,45%,wrap",
-                        "--header", f"Trabajos de los últimos {dias} días · Enter: ir (o abrir y retomar) · Ctrl+Y copia el comando · Ctrl+R actualiza",
+                        "--prompt", "recent> ", "--preview", f"{yo} --ver {{4}}", "--preview-window", "right,45%,wrap",
+                        "--header", f"Work from the last {dias} days · Enter: go (or open and resume) · Ctrl+Y copies the command · Ctrl+R refreshes",
                         "--bind", f"ctrl-r:reload({yo} --lista --dias {dias})"],
                        input=lista(dias), capture_output=True, text=True)
     salida = r.stdout.splitlines()
@@ -198,7 +198,7 @@ def main() -> int:
     tecla, campos = salida[0], salida[1].split(SEP)
     accion, destino, sid = campos[0], campos[1], campos[2]
     if tecla == "ctrl-y":
-        sh(str(BIN / "ws-copiar"), entrada=f"claude --resume {sid}"); sh("tmux", "display", f"Copiado: claude --resume {sid}"); return 0
+        sh(str(BIN / "ws-copiar"), entrada=f"claude --resume {sid}"); sh("tmux", "display", f"Copied: claude --resume {sid}"); return 0
     if accion == "ir":
         s, w = destino.split(":", 1)
         sh("tmux", "switch-client", "-t", f"={s}"); sh("tmux", "select-window", "-t", w); return 0

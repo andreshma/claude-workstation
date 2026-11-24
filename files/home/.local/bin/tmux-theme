@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
 #
-# tmux-theme — tema oscuro, claro o automático (sigue a Windows) para la estación:
-# colores de tmux (barra, pestañas, menús, popups), fondo y texto de Windows Terminal
-# (secuencias OSC 10/11/12 a cada cliente) y recolor de los estados de Claude.
+# tmux-theme — dark, light or automatic (follows Windows) theme for the workstation:
+# tmux colors (status bar, tabs, menus, popups), Windows Terminal background and text
+# (OSC 10/11/12 sequences to each client) and recoloring of the Claude states.
 #
-# Uso: tmux-theme oscuro|claro|auto   guarda la elección y la aplica
-#      tmux-theme apply               aplica lo guardado (al iniciar tmux y al conectar)
-#      tmux-theme check               solo en modo auto: reaplica si Windows cambió
-# Preferencias en ~/.config/tmux-claude/apariencia (tema=, protector=, escena=, minutos=).
+# Usage: tmux-theme oscuro|claro|auto   saves the choice and applies it
+#        tmux-theme apply               applies what is saved (when tmux starts and on attach)
+#        tmux-theme check               auto mode only: reapplies if Windows changed
+# Preferences in ~/.config/tmux-claude/apariencia (tema=, protector=, escena=, minutos=).
 set -uo pipefail
 dir="$HOME/.config/tmux-claude"; cfg="$dir/apariencia"
 get() { sed -n "s/^$1=//p" "$cfg" 2>/dev/null | tail -1; }
 put() { touch "$cfg"; if grep -q "^$1=" "$cfg"; then sed -i "s/^$1=.*/$1=$2/" "$cfg"; else echo "$1=$2" >> "$cfg"; fi; }
 
-# windows_theme — "claro" u "oscuro" según el modo de apps de Windows (oscuro si no se puede leer).
+# windows_theme — "claro" or "oscuro" from the Windows app mode (oscuro if it cannot be read).
 windows_theme() {
   local v; v="$(reg.exe query 'HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' /v AppsUseLightTheme 2>/dev/null | tr -d '\r' | awk '/AppsUseLightTheme/ { print $NF }')"
   [[ "$v" == 0x1 ]] && echo claro || echo oscuro
 }
 
-# osc <tema> — fondo, texto y cursor del terminal de cada cliente conectado.
+# osc <theme> — terminal background, text and cursor of each attached client.
 osc() {
   local bg fg cur tty
   if [[ "$1" == claro ]]; then bg='#f6f7f8'; fg='#24292f'; cur='#0969da'; else bg='#1e1e1e'; fg='#d4d4d4'; cur='#aeafad'; fi
@@ -28,7 +28,7 @@ osc() {
   done < <(tmux list-clients -F '#{client_tty}' 2>/dev/null)
 }
 
-# recolor <tema> — pasa los estados ya pintados en cada pestaña a la paleta del tema.
+# recolor <theme> — moves the states already painted on each tab to the theme's palette.
 recolor() {
   local -A map; local w o v
   if [[ "$1" == claro ]]; then map=([colour82]=colour28 [colour39]=colour25 [colour214]=colour130 [colour196]=colour160 [colour177]=colour90)
@@ -45,7 +45,7 @@ apply() {
   if [[ "$mode" == auto ]]; then actual="$(windows_theme)"; else actual="$mode"; fi
   tmux source-file "$dir/theme-$actual.tmux" 2>/dev/null; tmux set -g @theme_mode "$mode"
   osc "$actual"; recolor "$actual"
-  # protector de pantalla (tmux-saver)
+  # screensaver (tmux-saver)
   local on min; on="$(get protector)"; min="$(get minutos)"
   if [[ "${on:-on}" == on ]]; then tmux set -g lock-after-time $(( ${min:-10} * 60 )) \; set -g @saver on
   else tmux set -g lock-after-time 0 \; set -g @saver off; fi
@@ -54,9 +54,9 @@ apply() {
 }
 
 case "${1:-apply}" in
-  oscuro|claro|auto) put tema "$1"; apply; tmux display "Tema: $1$([[ $1 == auto ]] && echo " ($(tmux show -gqv @theme_actual))")" ;;
+  oscuro|claro|auto) put tema "$1"; apply; tmux display "Theme: $1$([[ $1 == auto ]] && echo " ($(tmux show -gqv @theme_actual))")" ;;
   apply) apply ;;
   check) [[ "$(get tema)" == auto && "$(windows_theme)" != "$(tmux show -gqv @theme_actual)" ]] && apply ;;
-  *) echo "uso: tmux-theme oscuro|claro|auto|apply|check" >&2; exit 2 ;;
+  *) echo "usage: tmux-theme oscuro|claro|auto|apply|check" >&2; exit 2 ;;
 esac
 exit 0

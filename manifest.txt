@@ -1,5 +1,5 @@
-# manifest.txt — qué captura export.sh y qué reinstala install.sh (rutas relativas a $HOME).
-# Una ruta por línea; una ruta que termina en / copia todos los archivos de ese directorio.
+# manifest.txt — what export.sh captures and install.sh reinstalls (paths relative to $HOME).
+# One path per line; a path ending in / copies every file in that directory.
 .tmux.conf
 .config/tmux-claude/functions.sh
 .local/bin/tmux-open

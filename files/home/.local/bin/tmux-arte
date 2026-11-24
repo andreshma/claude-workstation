@@ -1,43 +1,43 @@
 #!/usr/bin/env python3
-"""tmux-arte — escenas de arte ASCII para el protector de pantalla (tmux-saver se las delega).
+"""tmux-arte — ASCII art scenes for the screensaver (tmux-saver delegates them to it).
 
-Cada escena es un paisaje original dibujado con caracteres (/ \\ _ | ~ ^ * . y, en las tuberías, líneas de caja) y color real, que se adapta al
-tamaño de la terminal y queda vivo: estrellas que titilan, agua que se mueve, nieve, humo, auroras.
+Each scene is an original landscape drawn with characters (/ \\ _ | ~ ^ * . and, in the pipes, box-drawing lines) and true color, which adapts to
+the terminal size and stays alive: twinkling stars, moving water, snow, smoke, auroras.
 
-  cumbres   cordillera de noche con luna, pinos y un lago que la refleja; a ratos, una estrella fugaz
-  aurora    cortinas de aurora boreal sobre un bosque nevado
-  nevada    una cabaña con las ventanas encendidas, humo en la chimenea y nieve cayendo
-  velero    un velero cruza el mar bajo la luna, entre nubes y oleaje
-  peces     un fondo marino con peces, medusas, algas que se mecen y burbujas
-  tuberias  tuberías de colores que crecen y llenan la pantalla
-  batalla   dos flotas se enfrentan en el espacio, con rayos y explosiones
-  fogata    una fogata arde junto a la tienda, con chispas y el bosque alrededor
-  cerezo    un cerezo en flor al atardecer; los pétalos caen con el viento
-  lluvia    lluvia sobre la ciudad de noche, relámpagos y luces reflejadas en la calle
-  galaxia   una galaxia espiral que gira
-  nebulosa  nubes de gas de colores que fluyen
-  hiperespacio   las estrellas pasan a toda velocidad
+  cumbres   a mountain range at night with a moon, pines and a lake that reflects it; now and then, a shooting star
+  aurora    curtains of northern lights over a snowy forest
+  nevada    a cabin with its windows lit, smoke from the chimney and falling snow
+  velero    a sailboat crosses the sea under the moon, among clouds and swell
+  peces     a seabed with fish, jellyfish, swaying seaweed and bubbles
+  tuberias  colored pipes that grow and fill the screen
+  batalla   two fleets face each other in space, with beams and explosions
+  fogata    a campfire burns next to the tent, with sparks and the forest around it
+  cerezo    a cherry tree in bloom at sunset; the petals fall with the wind
+  lluvia    rain over the city at night, lightning and lights reflected on the street
+  galaxia   a spinning spiral galaxy
+  nebulosa  flowing clouds of colored gas
+  hiperespacio   the stars rush past at full speed
 
-Con el motor de sombreado (necesita numpy: sudo apt install python3-numpy):
-  oceano    atardecer sobre el mar, con el brillo del sol corriendo sobre las olas
-  planeta   un gigante de gas con anillos gira frente a las estrellas
-  dona      una dona de colores que gira, con luz y brillo
-  lava      lámpara de lava: gotas que se unen y se separan
-  vuelo     vuelo bajo sobre montañas, valles y lagos
-  boreal    aurora boreal sobre montañas, reflejada en un lago
-  nubes     vuelo sobre un mar de nubes al atardecer
-  agujero   un agujero negro con su disco de gas incandescente
-  estanque  gotas de lluvia abren círculos en un estanque bajo la luna
-  fuego     llamas que suben por toda la pantalla
-  tunel     un túnel de luz sin fin
-  fractal   un fractal de Julia que cambia de forma
+With the shading engine (needs numpy: sudo apt install python3-numpy):
+  oceano    sunset over the sea, with the sun's glitter running over the waves
+  planeta   a ringed gas giant spins in front of the stars
+  dona      a spinning colored donut, with light and shine
+  lava      lava lamp: blobs that merge and split
+  vuelo     low flight over mountains, valleys and lakes
+  boreal    northern lights over mountains, reflected in a lake
+  nubes     flight over a sea of clouds at sunset
+  agujero   a black hole with its disk of glowing gas
+  estanque  raindrops open rings on a pond under the moon
+  fuego     flames rising across the whole screen
+  tunel     an endless tunnel of light
+  fractal   a Julia fractal that changes shape
 
-Uso: tmux-arte ESCENA                corre hasta que se toca una tecla
-     tmux-arte ESCENA --test N       dibuja N cuadros sin esperar teclas (pruebas)
-     tmux-arte ESCENA --texto [N]    imprime el cuadro N (20 por defecto) como texto plano, sin color
-     tmux-arte --lista               nombres de las escenas que esta máquina puede dibujar (--todas: todas)
+Usage: tmux-arte SCENE                 runs until a key is pressed
+       tmux-arte SCENE --test N        draws N frames without waiting for keys (tests)
+       tmux-arte SCENE --texto [N]     prints frame N (20 by default) as plain text, without color
+       tmux-arte --lista               names of the scenes this machine can draw (--todas: all of them)
 
-Color: real (24 bits) si la terminal lo anuncia en COLORTERM; si no, 256 colores. WS_ARTE_COLOR=24|256 lo fuerza.
+Color: true color (24 bits) if the terminal announces it in COLORTERM; otherwise 256 colors. WS_ARTE_COLOR=24|256 forces it.
 """
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ import signal
 import sys
 import time
 
-try:                                                         # el motor de sombreado necesita numpy (python3-numpy)
+try:                                                         # the shading engine needs numpy (python3-numpy)
     import numpy as np
 except ImportError:
     np = None
@@ -58,14 +58,14 @@ except ImportError:
 RGB = tuple[int, int, int]
 
 
-# ── Color y ruido ────────────────────────────────────────────────────────────────────────────────────────────────
+# ── Color and noise ──────────────────────────────────────────────────────────────────────────────────────────────
 def mezcla(a: RGB, b: RGB, t: float) -> RGB:
     t = 0.0 if t < 0 else 1.0 if t > 1 else t
     return (int(a[0] + (b[0] - a[0]) * t), int(a[1] + (b[1] - a[1]) * t), int(a[2] + (b[2] - a[2]) * t))
 
 
 def degradado(paradas: list[tuple[float, RGB]], t: float) -> RGB:
-    """Color en t (0..1) sobre una lista de paradas (posición, color)."""
+    """Color at t (0..1) over a list of stops (position, color)."""
     for (p0, c0), (p1, c1) in zip(paradas, paradas[1:]):
         if t <= p1:
             return mezcla(c0, c1, (t - p0) / (p1 - p0) if p1 > p0 else 0)
@@ -73,14 +73,14 @@ def degradado(paradas: list[tuple[float, RGB]], t: float) -> RGB:
 
 
 def _h(n: int, semilla: int = 0) -> float:
-    """Número fijo en 0..1 para un entero (el mismo cada vez: sirve de textura estable)."""
+    """Fixed number in 0..1 for an integer (the same every time: it works as a stable texture)."""
     n = (n * 374761393 + semilla * 668265263) & 0xFFFFFFFF
     n = ((n ^ (n >> 13)) * 1274126177) & 0xFFFFFFFF
     return ((n ^ (n >> 16)) & 0xFFFF) / 0xFFFF
 
 
 def ruido(x: float, semilla: int = 0) -> float:
-    """Ruido suave en 0..1 a lo largo de x."""
+    """Smooth noise in 0..1 along x."""
     i = math.floor(x)
     f = x - i
     f = f * f * (3 - 2 * f)
@@ -95,9 +95,9 @@ def a256(c: RGB) -> int:
     return 16 + 36 * q(r) + 6 * q(g) + q(b)
 
 
-# ── Lienzo ───────────────────────────────────────────────────────────────────────────────────────────────────────
+# ── Canvas ───────────────────────────────────────────────────────────────────────────────────────────────────────
 class Lienzo:
-    """Rejilla de celdas: carácter, color de texto y color de fondo."""
+    """Grid of cells: character, text color and background color."""
 
     def __init__(self, w: int, h: int, fondo: RGB = (0, 0, 0)):
         self.w, self.h = w, h
@@ -123,7 +123,7 @@ class Lienzo:
                 self.bg[y][x] = bg
 
     def arte(self, x: int, y: int, filas: list[str], fg, bg: RGB | None = None) -> None:
-        """Dibuja un sprite; el espacio es transparente. fg: un color o una función (carácter, columna, fila) → color."""
+        """Draws a sprite; the space is transparent. fg: a color or a function (character, column, row) → color."""
         for j, fila in enumerate(filas):
             for i, c in enumerate(fila):
                 if c != " ":
@@ -136,14 +136,14 @@ class Lienzo:
             self.bg[y] = [c] * self.w
 
 
-# ── Piezas compartidas ───────────────────────────────────────────────────────────────────────────────────────────
+# ── Shared pieces ────────────────────────────────────────────────────────────────────────────────────────────────
 def perfil(w: int, rng: random.Random, lo: int, hi: int, inicio: int, giro: float, plano: float) -> list[int]:
-    """Altura por columna de una sierra: sube, baja o sigue plano, de a un paso (así se dibuja con / \\ _)."""
+    """Height per column of a ridge: it goes up, down or stays flat, one step at a time (so it is drawn with / \\ _)."""
     alt, d, out = inicio, rng.choice((-1, 1)), []
     for _ in range(w):
         if rng.random() < giro:
             d = rng.choice((-1, 0, 1)) if rng.random() < plano else -d if d else rng.choice((-1, 1))
-        if alt + d > hi:                                     # arriba hace pico; abajo queda un valle plano
+        if alt + d > hi:                                     # a peak at the top; a flat valley at the bottom
             d = -1 if hi - lo > 3 else 0
         elif alt + d < lo:
             d = 0
@@ -153,7 +153,7 @@ def perfil(w: int, rng: random.Random, lo: int, hi: int, inicio: int, giro: floa
 
 
 def sierra(L: Lienzo, alturas: list[int], base: int, relleno: RGB, trazo: RGB, textura: RGB | None = None, semilla: int = 0) -> None:
-    """Pinta una sierra: la silueta va rellena de color y el borde se traza con / \\ _ sobre el cielo."""
+    """Paints a ridge: the silhouette is filled with color and the edge is traced with / \\ _ against the sky."""
     ant = alturas[0]
     for x, a in enumerate(alturas):
         for k in range(1, a + 1):
@@ -171,7 +171,7 @@ def sierra(L: Lienzo, alturas: list[int], base: int, relleno: RGB, trazo: RGB, t
 
 
 def pino(n: int) -> list[str]:
-    """Pino de n pisos: una punta, ramas que se abren y el tronco."""
+    """Pine with n tiers: a tip, branches that spread out and the trunk."""
     filas = [" " * n + "^"]
     for k in range(1, n):
         filas.append(" " * (n - k) + "/" * k + "|" + "\\" * k)
@@ -196,7 +196,7 @@ def pinta_estrellas(L: Lienzo, est, t: float, tope: int, tinte: RGB = (255, 255,
 
 
 def luna(L: Lienzo, cx: int, cy: int, ry: int, color: RGB, semilla: int = 3, menguante: float = 0.0) -> None:
-    """Disco de luna con cráteres y halo. menguante > 0 le quita una tajada (luna creciente)."""
+    """Moon disk with craters and a halo. menguante > 0 cuts a slice off it (crescent moon)."""
     rx = ry * 2
     for dy in range(-ry - 2, ry + 3):
         for dx in range(-rx - 5, rx + 6):
@@ -223,12 +223,12 @@ def luna(L: Lienzo, cx: int, cy: int, ry: int, color: RGB, semilla: int = 3, men
 
 
 def pie(L: Lienzo, color: RGB) -> None:
-    for i, c in enumerate(f" cualquier tecla para volver . {time.strftime('%H:%M')} "):
+    for i, c in enumerate(f" press any key to return . {time.strftime('%H:%M')} "):
         L.pon(i, L.h - 1, c, color)
 
 
 class Escena:
-    """Una escena arma su parte fija una vez (base) y en cada cuadro le suma lo que se mueve."""
+    """A scene builds its fixed part once (base) and on each frame adds what moves."""
 
     def __init__(self, w: int, h: int, rng: random.Random):
         self.w, self.h, self.rng = w, h, rng
@@ -239,14 +239,14 @@ class Escena:
     def cuadro(self, t: float) -> Lienzo: ...
 
 
-# ── Cumbres: cordillera, luna y lago ─────────────────────────────────────────────────────────────────────────────
+# ── Cumbres: mountain range, moon and lake ───────────────────────────────────────────────────────────────────────
 class Cumbres(Escena):
     CIELO = [(0.0, (6, 8, 26)), (0.55, (20, 22, 58)), (0.85, (52, 38, 86)), (1.0, (92, 58, 96))]
 
     def armar(self) -> None:
         w, h, rng, L = self.w, self.h, self.rng, self.base
         self.lago = max(4, h // 6)
-        self.orilla = orilla = h - self.lago - 1          # última fila de tierra
+        self.orilla = orilla = h - self.lago - 1          # last row of land
         L.cielo(self.CIELO, orilla + 1)
         self.est = estrellas(w, orilla - 2, rng)
         self.lx, self.ly, self.lr = int(w * 0.72), max(4, int(h * 0.22)), max(3, h // 10)
@@ -256,7 +256,7 @@ class Cumbres(Escena):
         medio = perfil(w, rng, alto // 7, int(alto * 0.38), int(alto * 0.25), 0.14, 0.5)
         self.cerca = cerca = perfil(w, rng, 1, max(3, alto // 7), 2, 0.10, 0.9)
         sierra(L, lejos, orilla, (44, 44, 92), (150, 150, 205), (86, 88, 140), 1)
-        for x in range(w):                                  # nieve: el trazo de lo más alto va en blanco
+        for x in range(w):                                  # snow: the outline of the highest part is white
             if lejos[x] > alto * 0.44:
                 for y in (orilla - lejos[x], orilla - lejos[x] + 1):
                     if L.ch[y][x] in "/\\_":
@@ -264,14 +264,14 @@ class Cumbres(Escena):
         sierra(L, medio, orilla, (26, 30, 64), (96, 106, 160), (52, 60, 104), 2)
         sierra(L, cerca, orilla, (9, 16, 24), (52, 96, 78), (24, 46, 40), 3)
         x = rng.randrange(1, 4)
-        while x < w - 6:                                    # pinos sobre la loma de enfrente
+        while x < w - 6:                                    # pines on the near hill
             n = rng.choice((2, 3, 3, 4, 4, 5, 6)) if h >= 28 else rng.choice((2, 3, 3, 4))
             verde = mezcla((30, 92, 62), (70, 150, 96), rng.random())
             f = pino(n)
             L.arte(x, orilla - min(cerca[x + n], cerca[min(w - 1, x + n + 1)]) - len(f) + 1, f,
                    lambda c, i, j, v=verde, m=len(f): (120, 86, 56) if c == "|" and j == m - 1 else mezcla(v, (8, 20, 16), j / (m * 1.6)), (6, 14, 18))
             x += n * 2 + rng.choice((2, 3, 5, 9, 14, 20))
-        for y in range(orilla + 1, h):                      # el lago
+        for y in range(orilla + 1, h):                      # the lake
             L.bg[y] = [mezcla((16, 26, 60), (5, 9, 24), (y - orilla - 1) / max(1, self.lago - 1))] * w
         self.fugaz = (-1.0, 0, 0)
 
@@ -287,7 +287,7 @@ class Cumbres(Escena):
                 x, y = fx + cab - i * 2, fy + (cab - i * 2) // 4
                 if 0 <= x < w and 0 <= y < orilla - 3 and L.ch[y][x] in " .'+*" and L.bg[y][x][2] < 110:
                     L.pon(x, y, "*" if i == 0 else "-" if i < 5 else ".", mezcla(L.bg[y][x], (255, 250, 225), 1 - i / 9))
-        for y in range(orilla + 1, h - 1):                  # agua: ondas tenues y el camino de luz de la luna
+        for y in range(orilla + 1, h - 1):                  # water: faint ripples and the moon's path of light
             p = y - orilla
             ancho = 2 + p * 2
             for x in range(w):
@@ -314,7 +314,7 @@ class Aurora(Escena):
         self.suelo = suelo = h - max(3, h // 9)
         L.cielo(self.CIELO, suelo + 1)
         self.est = estrellas(w, suelo, rng, 34)
-        self.frente = Lienzo(w, h)                           # bosque y nieve: se pinta ENCIMA de la aurora
+        self.frente = Lienzo(w, h)                           # forest and snow: painted ON TOP of the aurora
         F = self.frente
         self.masc = [[False] * w for _ in range(h)]
         loma = perfil(w, rng, 1, max(2, h // 8), 2, 0.08, 0.9)
@@ -376,7 +376,7 @@ class Aurora(Escena):
         return L
 
 
-# ── Nevada: la cabaña ────────────────────────────────────────────────────────────────────────────────────────────
+# ── Nevada: the cabin ────────────────────────────────────────────────────────────────────────────────────────────
 class Nevada(Escena):
     CIELO = [(0.0, (14, 18, 40)), (0.6, (30, 36, 70)), (1.0, (60, 62, 100))]
     CABANA = [
@@ -399,7 +399,7 @@ class Nevada(Escena):
         L.cielo(self.CIELO, suelo + 1)
         lejos = perfil(w, rng, 2, max(4, h // 4), max(3, h // 7), 0.10, 0.4)
         sierra(L, lejos, suelo, (38, 44, 82), (132, 146, 196), (70, 80, 124), 11)
-        for x in range(2, w - 2, 1):                        # bosque lejano, pequeño
+        for x in range(2, w - 2, 1):                        # distant forest, small
             if _h(x, 12) > 0.80 and not cx - 2 <= x <= cx + cw + 2:
                 y = suelo - lejos[x]
                 L.pon(x, y, "^", (70, 96, 110))
@@ -416,19 +416,19 @@ class Nevada(Escena):
             L.pon(x, suelo - a + 1 if a > ant else suelo - ant + 1 if a < ant else suelo - a, "/" if a > ant else "\\" if a < ant else "_", nieve)
             ant = a
         self.cy = cy = suelo - len(self.CABANA) + 1
-        for j in range(3, 9):                                # cuerpo macizo
+        for j in range(3, 9):                                # solid body
             ini = len(self.CABANA[j]) - len(self.CABANA[j].lstrip())
             for i in range(ini, len(self.CABANA[j])):
                 L.pon(cx + i, cy + j, " ", None, (34, 24, 20) if j >= 5 else (58, 66, 96))
         L.pon(cx + 20, cy + 1, " ", None, (44, 30, 26)); L.pon(cx + 21, cy + 1, " ", None, (44, 30, 26))
         L.arte(cx, cy, self.CABANA, lambda c, i, j: nieve if j in (0, 2, 3, 4) else (168, 122, 86))
         self.ventanas = [(cx + i, cy + j) for j in (6, 7) for i in (*range(8, 14), *range(21, 27))]
-        for i in range(5, 32):                               # nieve acumulada al pie
+        for i in range(5, 32):                               # snow piled up at the foot
             if _h(i, 16) > 0.4:
                 L.pon(cx + i, suelo + 1, "._,"[int(_h(i, 17) * 3)], nieve)
         ocupado = range(cx - 3, cx + cw + 4)
         x = rng.randrange(0, 4)
-        while x < w - 6:                                    # pinos nevados alrededor
+        while x < w - 6:                                    # snowy pines all around
             n = rng.choice((4, 5, 6, 7, 8)) if h >= 28 else rng.choice((3, 4, 5))
             if x + 2 * n >= ocupado.start and x < ocupado.stop:
                 x += 3
@@ -449,18 +449,18 @@ class Nevada(Escena):
     def cuadro(self, t: float) -> Lienzo:
         L, w, h = self.base.copia(), self.w, self.h
         luz = 0.82 + 0.18 * ruido(t * 3.1, 70)
-        for x, y in self.ventanas:                           # ventanas encendidas, con el parpadeo del fuego
+        for x, y in self.ventanas:                           # lit windows, flickering with the fire
             L.pon(x, y, None, (96, 60, 30), mezcla((70, 40, 16), (255, 190, 86), luz))
-        for i in range(0, 34):                               # resplandor en la nieve
+        for i in range(0, 34):                               # glow on the snow
             L.pon(self.cx + 3 + i, self.suelo + 1, None, None, mezcla(L.bg[self.suelo + 1][min(w - 1, self.cx + 3 + i)], (255, 190, 86), 0.16 * luz))
         hx, hy = self.cx + 20, self.cy - 1
-        for k, (_, fase) in enumerate(self.humo):            # humo de la chimenea
+        for k, (_, fase) in enumerate(self.humo):            # chimney smoke
             v = (t * 0.22 + fase) % 1.0
             x = hx + int(v * 9 + 2.2 * math.sin(v * 7 + k))
             y = hy - int(v * min(11, hy))
             if 0 <= y < h and 0 <= x < w and L.ch[y][x] in " .'*+":
                 L.pon(x, y, "(" if k % 3 == 0 else ")" if k % 3 == 1 else "~", mezcla(L.bg[y][x], (200, 204, 220), 0.75 * (1 - v)))
-        for c in self.copos:                                 # nieve cayendo: los copos lentos van al fondo
+        for c in self.copos:                                 # falling snow: the slow flakes go in the background
             x = int(c[0] + 2.2 * math.sin(t * 0.7 + c[3]) + t * 1.3 * c[2]) % w
             y = int(c[1] + t * (1.2 + 3.4 * c[2])) % h
             if L.ch[y][x] == " ":
@@ -469,7 +469,7 @@ class Nevada(Escena):
         return L
 
 
-# ── Velero ───────────────────────────────────────────────────────────────────────────────────────────────────────
+# ── Velero: the sailboat ─────────────────────────────────────────────────────────────────────────────────────────
 class Velero(Escena):
     CIELO = [(0.0, (5, 8, 24)), (0.6, (16, 26, 58)), (1.0, (44, 52, 96))]
     BARCO = [
@@ -495,7 +495,7 @@ class Velero(Escena):
 
     def armar(self) -> None:
         w, h, rng, L = self.w, self.h, self.rng, self.base
-        self.hz = hz = int(h * 0.56)                         # fila del horizonte
+        self.hz = hz = int(h * 0.56)                         # horizon row
         L.cielo(self.CIELO, hz)
         self.est = estrellas(w, hz - 1, rng, 30)
         self.lx, self.lr = int(w * 0.76), max(3, h // 10)
@@ -515,7 +515,7 @@ class Velero(Escena):
                     xx, yy = x + i, y0 + j
                     if c != " " and 0 <= xx < w and 0 <= yy < hz - 1 and L.bg[yy][xx][0] < 120:
                         L.pon(xx, yy, c, mezcla(L.bg[yy][xx], (170, 182, 220), 0.55))
-        for y in range(hz, h - 1):                           # oleaje: más largo y más vivo cuanto más cerca
+        for y in range(hz, h - 1):                           # swell: longer and livelier the closer it is
             p = (y - hz) / max(1, h - hz - 1)
             largo = 0.42 - 0.30 * p
             for x in range(w):
@@ -540,7 +540,7 @@ class Velero(Escena):
         bx = int((w * 0.3 + bw + t * 1.1) % (w + bw + 10)) - bw
         by = hz + max(1, (h - hz) // 3) - len(self.BARCO) + 2 + round(0.9 * math.sin(t * 0.9))
         vela, casco = (236, 230, 208), (184, 132, 88)
-        for j, fila in enumerate(self.BARCO):                # velas y casco macizos, luego el trazo
+        for j, fila in enumerate(self.BARCO):                # solid sails and hull, then the outline
             if 2 <= j <= 8:
                 for i in range(fila.index("/") + 1, fila.rindex("\\")):
                     L.pon(bx + i, by + j, " ", None, (60, 62, 78) if i < 16 else (72, 72, 86))
@@ -548,7 +548,7 @@ class Velero(Escena):
                 for i in range(fila.index("\\") + 1, fila.rindex("/")):
                     L.pon(bx + i, by + j, " ", None, (40, 26, 20))
         L.arte(bx, by, self.BARCO, lambda c, i, j: (236, 96, 80) if c == ">" else (255, 206, 110) if c == "o" else casco if j >= 9 or c == "|" else vela)
-        for i in range(8, 30):                               # estela al pie del casco
+        for i in range(8, 30):                               # wake at the foot of the hull
             if _h(i + int(t * 5), 6) > 0.4:
                 L.pon(bx + i, by + len(self.BARCO), "~-'"[int(_h(i + int(t * 3), 7) * 3)], (200, 220, 240))
         pie(L, (110, 126, 168))
@@ -556,13 +556,13 @@ class Velero(Escena):
 
 
 def espejo(filas: list[str]) -> list[str]:
-    """El mismo dibujo mirando al otro lado."""
+    """The same drawing facing the other way."""
     w = max(len(f) for f in filas)
     tr = str.maketrans("()<>/\\[]{}`'", ")(><\\/][}{'`")
     return [f.ljust(w)[::-1].translate(tr) for f in filas]
 
 
-# ── Tuberías ─────────────────────────────────────────────────────────────────────────────────────────────────────
+# ── Tuberias: pipes ──────────────────────────────────────────────────────────────────────────────────────────────
 class Tuberias(Escena):
     FONDO = (6, 8, 14)
     COLORES = [(86, 196, 255), (255, 120, 104), (140, 232, 150), (255, 204, 96), (206, 140, 255), (255, 150, 210), (110, 232, 220)]
@@ -590,7 +590,7 @@ class Tuberias(Escena):
             self.reinicia(t)
             L = self.L
         for c in self.cabezas:
-            for _ in range(2 if c[2] in (1, 3) else 1):      # en horizontal avanza doble: las celdas son altas
+            for _ in range(2 if c[2] in (1, 3) else 1):      # moves double horizontally: cells are tall
                 x, y, d, col = c
                 nd = d
                 if r.random() < 0.2:
@@ -605,13 +605,13 @@ class Tuberias(Escena):
                     break
                 c[0], c[1], c[2] = x, y, nd
         S = L.copia()
-        for x, y, _, col in self.cabezas:                    # la punta de cada tubería brilla
+        for x, y, _, col in self.cabezas:                    # the tip of each pipe glows
             S.pon(x, y, "●", mezcla(col, (255, 255, 255), 0.6))
         pie(S, (90, 96, 120))
         return S
 
 
-# ── Peces ────────────────────────────────────────────────────────────────────────────────────────────────────────
+# ── Peces: fish ──────────────────────────────────────────────────────────────────────────────────────────────────
 class Peces(Escena):
     FORMAS = [
         ["><>"],
@@ -628,10 +628,10 @@ class Peces(Escena):
         self.fondo = h - 3
         for y in range(h):
             L.bg[y] = [degradado([(0.0, (24, 96, 150)), (0.5, (10, 48, 96)), (1.0, (3, 16, 40))], y / (h - 1))] * w
-        for y in range(self.fondo, h):                       # arena
+        for y in range(self.fondo, h):                       # sand
             for x in range(w):
                 L.pon(x, y, ".,:'  "[int(_h(x * 13 + y * 7, 30) * 6)], (150, 132, 92), mezcla((74, 64, 44), (40, 34, 26), (y - self.fondo) / 3))
-        for _ in range(max(2, w // 40)):                     # rocas
+        for _ in range(max(2, w // 40)):                     # rocks
             x = r.randrange(2, w - 12)
             L.arte(x, self.fondo - 2, ["  _.--._", " /  .   \\", "/_.___.__\\"], (120, 124, 136), (38, 44, 58))
         self.algas = [(r.randrange(1, w - 1), r.randrange(3, max(5, h // 3)), r.uniform(0, 6.28), mezcla((40, 150, 90), (120, 220, 110), r.random())) for _ in range(max(6, w // 7))]
@@ -645,15 +645,15 @@ class Peces(Escena):
 
     def cuadro(self, t: float) -> Lienzo:
         L, w, h, fondo = self.base.copia(), self.w, self.h, self.fondo
-        for y in range(fondo):                               # rayos de luz que bajan de la superficie
+        for y in range(fondo):                               # rays of light coming down from the surface
             fila, f = L.bg[y], 0.20 * (1 - y / fondo)
             for x in range(w):
                 v = ruido((x + y * 1.6) * 0.07 + t * 0.12, 31)
                 if v > 0.55:
                     fila[x] = mezcla(fila[x], (150, 220, 240), (v - 0.55) * 2.2 * f)
-        for x in range(w):                                   # la superficie
+        for x in range(w):                                   # the surface
             L.pon(x, 0, "~" if math.sin(x * 0.4 + t * 1.5) > 0 else "-", (190, 232, 250))
-        for x0, alto, fase, col in self.algas:               # algas que se mecen
+        for x0, alto, fase, col in self.algas:               # swaying seaweed
             for k in range(alto):
                 dx = math.sin(t * 1.1 + k * 0.55 + fase) * 1.6 * k / alto
                 L.pon(x0 + round(dx), fondo - 1 - k, "(" if math.cos(t * 1.1 + k * 0.55 + fase) < 0 else ")", mezcla(col, (10, 50, 40), 0.5 * (1 - k / alto)))
@@ -675,7 +675,7 @@ class Peces(Escena):
         return L
 
 
-# ── Batalla en el espacio ────────────────────────────────────────────────────────────────────────────────────────
+# ── Batalla: battle in space ─────────────────────────────────────────────────────────────────────────────────────
 class Batalla(Escena):
     CAZA = ["|\\__", "}===>-", "|/"]
     CRUCERO = ["     ___/\\___", " ___/________\\__", "[=__o___o___o___>>=-", "    \\________/"]
@@ -685,7 +685,7 @@ class Batalla(Escena):
         w, h, r, L = self.w, self.h, self.rng, self.base
         for y in range(h):
             L.bg[y] = [mezcla((3, 4, 14), (12, 6, 26), y / (h - 1))] * w
-        luna(L, int(w * 0.5), h + max(3, h // 5), max(6, h // 3), (70, 120, 190), 9)   # un planeta asoma por abajo
+        luna(L, int(w * 0.5), h + max(3, h // 5), max(6, h // 3), (70, 120, 190), 9)   # a planet peeks in from below
         self.est = [(r.uniform(0, w), r.randrange(h - 1), r.choice((0.6, 0.6, 1.6, 1.6, 4.0))) for _ in range(w * h // 22)]
         self.naves = []
         for lado in (0, 1):
@@ -702,7 +702,7 @@ class Batalla(Escena):
 
     def cuadro(self, t: float) -> Lienzo:
         L, w, h, r = self.base.copia(), self.w, self.h, self.rng
-        for x0, y, vel in self.est:                          # estrellas en tres planos
+        for x0, y, vel in self.est:                          # stars on three planes
             x = int((x0 - t * vel) % w)
             if L.ch[y][x] == " " and L.bg[y][x][2] < 60:
                 L.pon(x, y, "." if vel < 1 else "+" if vel < 2 else "-", mezcla(L.bg[y][x], (230, 236, 255), 0.35 + vel * 0.15))
@@ -763,7 +763,7 @@ class Batalla(Escena):
 RAMPA = " .,:;*+o#@"
 
 
-# ── Hiperespacio ─────────────────────────────────────────────────────────────────────────────────────────────────
+# ── Hiperespacio: hyperspace ─────────────────────────────────────────────────────────────────────────────────────
 class Hiperespacio(Escena):
     def armar(self) -> None:
         w, h, r, L = self.w, self.h, self.rng, self.base
@@ -782,7 +782,7 @@ class Hiperespacio(Escena):
             ca, sa = math.cos(ang), math.sin(ang)
             c = "-" if abs(ca) > 0.92 else "|" if abs(sa) > 0.92 else "\\" if ca * sa > 0 else "/"
             largo = 1 + int(f * f * 9)
-            for j in range(largo):                           # la estela se alarga al acercarse
+            for j in range(largo):                           # the trail lengthens as it approaches
                 rr = self.radio * max(0.0, f - j * 0.012) ** 2.4
                 x, y = int(self.cx + ca * rr), int(self.cy + sa * rr * 0.5)
                 if 0 <= x < w and 0 <= y < h - 1:
@@ -791,14 +791,14 @@ class Hiperespacio(Escena):
         return L
 
 
-# ── Galaxia ──────────────────────────────────────────────────────────────────────────────────────────────────────
+# ── Galaxia: galaxy ──────────────────────────────────────────────────────────────────────────────────────────────
 class Galaxia(Escena):
     def armar(self) -> None:
         w, h, r = self.w, self.h, self.rng
         self.base = Lienzo(w, h, (3, 3, 10))
         self.est = estrellas(w, h - 1, r, 40)
         esc = min(w / 2.0, (h - 1) * 1.0) * 0.98
-        self.polar = []                                      # por celda: radio y ángulo (disco inclinado)
+        self.polar = []                                      # per cell: radius and angle (tilted disk)
         for y in range(h - 1):
             for x in range(w):
                 u, v = (x - w / 2) / 2.0 / esc * 2, (y - (h - 1) / 2) / esc * 2 * 1.25
@@ -816,13 +816,13 @@ class Galaxia(Escena):
             brazo = math.cos(2 * a + 7.5 * math.log(rr + 0.06))
             d = 1.5 * math.exp(-rr * 5.5) + max(0.0, brazo) ** 2.2 * math.exp(-rr * 1.9) * 0.95 + 0.10 * math.exp(-rr * 2.5)
             u, v = rr * math.cos(a), rr * math.sin(a)
-            g = _h(int(u * 46) * 7919 + int(v * 46) * 104729, 77)   # grano: gira con la galaxia
+            g = _h(int(u * 46) * 7919 + int(v * 46) * 104729, 77)   # grain: rotates with the galaxy
             d *= 0.45 + 1.1 * g
             if d < 0.09:
                 continue
             col = degradado([(0.0, (255, 244, 214)), (0.18, (255, 214, 150)), (0.45, (150, 176, 255)), (0.8, (120, 110, 230)), (1.25, (70, 60, 150))], rr)
             if g > 0.93 and rr > 0.2:
-                col = (255, 150, 200)                        # nudos rosados donde nacen estrellas
+                col = (255, 150, 200)                        # pink knots where stars are born
             f = min(1.0, d)
             fondo = mezcla((3, 3, 10), col, min(0.5, f * 0.42))
             L.pon(x, y, RAMPA[min(9, 1 + int(f * 8.99))], mezcla(fondo, col, 0.35 + 0.65 * f), fondo)
@@ -830,7 +830,7 @@ class Galaxia(Escena):
         return L
 
 
-# ── Nebulosa ─────────────────────────────────────────────────────────────────────────────────────────────────────
+# ── Nebulosa: nebula ─────────────────────────────────────────────────────────────────────────────────────────────
 class Nebulosa(Escena):
     TONOS = [(0.0, (6, 4, 24)), (0.25, (60, 20, 110)), (0.45, (190, 50, 140)), (0.62, (255, 140, 80)), (0.78, (255, 226, 150)), (0.9, (90, 210, 220)), (1.0, (20, 60, 130))]
 
@@ -859,7 +859,7 @@ class Nebulosa(Escena):
         return L
 
 
-# ── Fogata ───────────────────────────────────────────────────────────────────────────────────────────────────────
+# ── Fogata: campfire ─────────────────────────────────────────────────────────────────────────────────────────────
 class Fogata(Escena):
     CIELO = [(0.0, (4, 6, 18)), (1.0, (14, 16, 36))]
     TIENDA = ["      /\\", "     /  \\", "    / /\\ \\", "   / /  \\ \\", "  /_/____\\_\\"]
@@ -882,7 +882,7 @@ class Fogata(Escena):
         self.fx = fx = w // 2
         self.fw, self.fh = min(26, w // 3) | 1, min(max(8, h // 2), suelo - 3)
         x = r.randrange(0, 3)
-        while x < w - 4:                                    # bosque oscuro a los lados
+        while x < w - 4:                                    # dark forest on the sides
             n = r.choice((4, 5, 6, 7, 8, 9)) if h >= 28 else r.choice((3, 4, 5))
             if x + 2 * n < fx - self.fw - 16 or x > fx + self.fw + 4:
                 L.arte(x, suelo - n - 1 + 1, pino(n), lambda c, i, j: (26, 54, 46), (5, 10, 12))
@@ -896,14 +896,14 @@ class Fogata(Escena):
     def cuadro(self, t: float) -> Lienzo:
         L, r, fw, fh, C = self.base.copia(), self.rng, self.fw, self.fh, self.calor
         medio = fw // 2
-        for i in range(fw):                                  # la base arde más al centro
+        for i in range(fw):                                  # the base burns hotter at the center
             C[fh][i] = max(0.0, 1.0 - (abs(i - medio) / (medio + 0.5)) ** 1.6) * r.uniform(0.75, 1.0)
-        for j in range(fh):                                  # el calor sube, se mueve y se enfría
+        for j in range(fh):                                  # the heat rises, drifts and cools
             abajo = C[j + 1]
             C[j] = [max(0.0, (abajo[max(0, min(fw - 1, i + r.choice((-1, 0, 0, 1))))] * 2 + abajo[i]) / 3 - r.uniform(0.0, 2.3 / fh)) for i in range(fw)]
         vivo = 0.82 + 0.18 * ruido(t * 4, 93)
         y0, x0 = self.suelo - fh, self.fx - medio
-        for dx in range(-fw - 18, fw + 19):                  # resplandor en el suelo y en la tienda
+        for dx in range(-fw - 18, fw + 19):                  # glow on the ground and on the tent
             x = self.fx + dx
             if 0 <= x < self.w:
                 for y in range(self.suelo - 5, self.h):
@@ -917,7 +917,7 @@ class Fogata(Escena):
                 if v > 0.06:
                     col = degradado(self.LLAMA, min(1.0, v * 1.15))
                     L.pon(x0 + i, y0 + j, RAMPA[min(9, 1 + int(v * 9.5))], col, mezcla(L.bg[y0 + j][x0 + i], col, min(0.55, v * 0.6)))
-        for c in self.chispas:                               # chispas que suben
+        for c in self.chispas:                               # rising sparks
             f = (t * c[2] + c[0]) % 1.0
             x, y = self.fx + int(c[1] * medio * 0.6 + 3 * math.sin(f * 9 + c[0] * 20)), self.suelo - int(fh * 0.5 + f * fh * 1.1)
             if 0 <= y < self.suelo and 0 <= x < self.w and L.ch[y][x] in " .'+*":
@@ -927,7 +927,7 @@ class Fogata(Escena):
         return L
 
 
-# ── Lluvia en la ciudad ──────────────────────────────────────────────────────────────────────────────────────────
+# ── Lluvia: rain in the city ─────────────────────────────────────────────────────────────────────────────────────
 class Lluvia(Escena):
     CIELO = [(0.0, (10, 12, 24)), (1.0, (28, 30, 52))]
 
@@ -979,10 +979,10 @@ class Lluvia(Escena):
             for x, y, c in traza:
                 if 0 <= x < w and L.bg[y][x][2] > 50:
                     L.pon(x, y, c, (255, 255, 255))
-        for x, y, col, f in self.luces:                      # alguna ventana parpadea
+        for x, y, col, f in self.luces:                      # a window flickers now and then
             if f > 0.9 and ruido(t * 2 + f * 50, 8) > 0.6:
                 L.pon(x, y, None, None, mezcla(col, (0, 0, 0), 0.6))
-        for y in range(calle, h - 1):                        # la calle mojada refleja las luces
+        for y in range(calle, h - 1):                        # the wet street reflects the lights
             origen = calle - 1 - (y - calle) * 2
             for x in range(w):
                 xs = x + int(1.5 * math.sin(y * 1.3 + t * 2 + x * 0.2))
@@ -991,7 +991,7 @@ class Lluvia(Escena):
                     if c[0] > 90 or c[2] > 120:
                         f = 0.55 - 0.08 * (y - calle)
                         L.pon(x, y, "~" if _h(x + y * 9 + int(t * 6), 4) > 0.5 else "=", mezcla(L.bg[y][x], c, max(0.1, f)))
-        for x0, fase, vel in self.gotas:                     # lluvia inclinada, más viva la de enfrente
+        for x0, fase, vel in self.gotas:                     # slanted rain, livelier in the foreground
             f = (t * vel * 0.9 + fase) % 1.0
             y = int(f * (h - 1))
             x = int(x0 - y * 0.45) % w
@@ -1003,7 +1003,7 @@ class Lluvia(Escena):
         return L
 
 
-# ── Cerezo en flor ───────────────────────────────────────────────────────────────────────────────────────────────
+# ── Cerezo: cherry tree in bloom ─────────────────────────────────────────────────────────────────────────────────
 class Cerezo(Escena):
     CIELO = [(0.0, (30, 28, 70)), (0.45, (110, 70, 120)), (0.8, (236, 140, 130)), (1.0, (255, 204, 150))]
 
@@ -1031,7 +1031,7 @@ class Cerezo(Escena):
         w, h, r, L = self.w, self.h, self.rng, self.base
         self.suelo = suelo = h - max(3, h // 7)
         L.cielo(self.CIELO, suelo + 1)
-        luna(L, int(w * 0.80), int(suelo * 0.72), max(3, h // 9), (255, 232, 190), 6)   # sol bajo entre la bruma
+        luna(L, int(w * 0.80), int(suelo * 0.72), max(3, h // 9), (255, 232, 190), 6)   # low sun in the haze
         lejos = perfil(w, r, 1, max(3, h // 5), h // 8, 0.08, 0.4)
         sierra(L, lejos, suelo, (120, 84, 120), (190, 130, 150))
         loma = perfil(w, r, 0, 2, 1, 0.05, 0.9)
@@ -1047,12 +1047,12 @@ class Cerezo(Escena):
         tx = int(w * 0.36)
         self.rama(tx, suelo, math.pi / 2 + r.uniform(-0.12, 0.12), min(suelo * 0.26, w * 0.06), 0)
         self.flores = []
-        for px, py in self.puntas:                           # copas de flor alrededor de cada punta
+        for px, py in self.puntas:                           # crowns of blossom around each tip
             for _ in range(26):
                 x, y = int(px + r.gauss(0, 3.6)), int(py + r.gauss(0, 1.5))
                 if 0 <= x < w and 0 <= y < suelo - 1:
                     self.flores.append((x, y, r.choices("@*o.", weights=(3, 4, 3, 2))[0], r.random()))
-        for x in range(w):                                   # pétalos caídos
+        for x in range(w):                                   # fallen petals
             if _h(x, 97) > 0.55 and abs(x - tx) < w * 0.3:
                 L.pon(x, suelo - loma[x] + 1 + int(_h(x, 98) * 2), ".,*"[int(_h(x, 99) * 3)], (250, 180, 205))
         self.petalos = [(r.uniform(0, w), r.uniform(0, 1), r.uniform(0.05, 0.14), r.uniform(0, 6.28)) for _ in range(max(24, w // 3))]
@@ -1063,7 +1063,7 @@ class Cerezo(Escena):
             brillo = 0.5 + 0.5 * math.sin(t * 0.9 + f * 30 + x * 0.15)
             col = mezcla(mezcla((236, 120, 170), (255, 214, 230), f), (255, 255, 255), 0.25 * brillo)
             L.pon(x + (1 if brillo > 0.93 and c in ".o" else 0), y, c, col)
-        for x0, fase, vel, des in self.petalos:              # pétalos que caen con el viento
+        for x0, fase, vel, des in self.petalos:              # petals falling with the wind
             f = (t * vel + fase) % 1.0
             y = int(f * (suelo + 1))
             x = int(x0 + f * w * 0.22 + 3 * math.sin(f * 14 + des)) % w
@@ -1074,10 +1074,10 @@ class Cerezo(Escena):
 
 
 
-# ── Motor de sombreado ───────────────────────────────────────────────────────────────────────────────────────────
-# Cada escena del motor calcula una imagen a color con más resolución que la terminal (como un «shader») y el motor
-# la pasa a caracteres: la luz de cada celda elige el carácter de una rampa (con tramado para que no se vean
-# escalones) y donde hay un borde marcado se dibuja la línea que lo sigue ( | / - \ ).
+# ── Shading engine ───────────────────────────────────────────────────────────────────────────────────────────────
+# Each engine scene computes a color image at a higher resolution than the terminal (like a shader) and the engine
+# turns it into characters: the light of each cell picks the character from a ramp (dithered so no steps show)
+# and where there is a strong edge it draws the line that follows it ( | / - \ ).
 RAMPA_M = " .,:;+*o#%@"
 BORDE_M = "|/-\\"
 
@@ -1092,15 +1092,15 @@ def _col(r: float, g: float, b: float):
 
 class Motor(Escena):
     FONDO, UMBRAL, GAMA = 0.30, 0.85, 0.85
-    ESTRELLAS = False                                        # estrellas que titilan sobre lo oscuro (se pintan por celda)
+    ESTRELLAS = False                                        # stars twinkling over the dark parts (painted per cell)
 
     def armar(self) -> None:
         w, h = self.w, self.h
         self.sx, self.sy = (2 if w * h <= 7000 else 1), 2
         H2, W2 = h * self.sy, w * self.sx
         j, i = np.mgrid[0:H2, 0:W2].astype(np.float32)
-        self.V = (j + 0.5) / H2 * 2 - 1                      # -1 arriba … 1 abajo
-        self.U = ((i + 0.5) / W2 * 2 - 1) * (w / (2.0 * h))  # proporción real: una celda mide el doble de alto
+        self.V = (j + 0.5) / H2 * 2 - 1                      # -1 top … 1 bottom
+        self.U = ((i + 0.5) / W2 * 2 - 1) * (w / (2.0 * h))  # real aspect ratio: a cell is twice as tall
         bayer = np.array([[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]], dtype=np.float32) / 16
         self.trama = np.tile(bayer, (h // 4 + 1, w // 4 + 1))[:h, :w]
         self.rampa, self.borde = np.array(list(RAMPA_M)), np.array(list(BORDE_M))
@@ -1117,7 +1117,7 @@ class Motor(Escena):
         lum = rgb @ np.array((0.299, 0.587, 0.114), dtype=np.float32)
         cel = rgb.reshape(h, sy, w, sx, 3).mean(axis=(1, 3))
         lc = lum.reshape(h, sy, w, sx).mean(axis=(1, 3))
-        p = np.pad(lum, 1, mode="edge")                      # bordes (Sobel) en la imagen fina
+        p = np.pad(lum, 1, mode="edge")                      # edges (Sobel) on the fine image
         gx = ((p[:-2, 2:] + 2 * p[1:-1, 2:] + p[2:, 2:]) - (p[:-2, :-2] + 2 * p[1:-1, :-2] + p[2:, :-2])) * sx
         gy = ((p[2:, :-2] + 2 * p[2:, 1:-1] + p[2:, 2:]) - (p[:-2, :-2] + 2 * p[:-2, 1:-1] + p[:-2, 2:])) * (sy / 2.0)
         mag = np.hypot(gx, gy).reshape(h, sy, w, sx).transpose(0, 2, 1, 3).reshape(h, w, sy * sx)
@@ -1128,7 +1128,7 @@ class Motor(Escena):
         k = (((np.arctan2(gy, gx) % np.pi) + np.pi / 8) // (np.pi / 4)).astype(np.int32) % 4
         n = len(RAMPA_M)
         idx = np.clip(np.floor(lc ** self.GAMA * (n - 1) + self.trama), 0, n - 1).astype(np.int32)
-        idx[lc < 0.075] = 0                                  # lo muy oscuro queda liso, sin punteado
+        idx[lc < 0.075] = 0                                  # very dark areas stay flat, with no stipple
         ch = np.where(fuerte, self.borde[k], self.rampa[idx])
         fg = np.clip(cel * 1.3 + 0.10 + fuerte[..., None] * 0.22, 0, 1)
         L = Lienzo.__new__(Lienzo)
@@ -1147,7 +1147,7 @@ class Motor(Escena):
 
 
 class Oceano(Motor):
-    """Atardecer sobre el mar: el sol, nubes y el brillo que corre sobre las olas."""
+    """Sunset over the sea: the sun, clouds and the glitter running over the waves."""
 
     def sombra(self, t: float):
         U, V, hz = self.U, self.V, -0.08
@@ -1173,7 +1173,7 @@ class Oceano(Motor):
 
 
 class Planeta(Motor):
-    """Un gigante de gas con anillos gira despacio frente a las estrellas."""
+    """A ringed gas giant spins slowly in front of the stars."""
     UMBRAL, ESTRELLAS = 1.0, True
 
     def preparar(self) -> None:
@@ -1201,7 +1201,7 @@ class Planeta(Motor):
         r = np.sqrt(d2)
         fondo = _col(0.02, 0.02, 0.06) + (np.exp(-(r - R) * 10) * (0.5 - 0.5 * (U * 0.85 + V * 0.5) / (r + 1e-3)))[..., None] * _col(0.25, 0.4, 0.9) * 0.55
         out = np.where(dentro[..., None], planeta, fondo)
-        zr = V / math.tan(0.30)                              # anillos: un plano inclinado que pasa por el centro
+        zr = V / math.tan(0.30)                              # rings: a tilted plane through the center
         rr = np.sqrt(U * U + V * V + zr * zr) / R
         vis = (rr > 1.28) & (rr < 2.15) & (~dentro | (zr > z))
         tono = (0.50 + 0.50 * np.sin(rr * 46)) * (0.55 + 0.45 * np.sin(rr * 9 + 1)) * (np.abs(rr - 1.72) > 0.035)
@@ -1210,7 +1210,7 @@ class Planeta(Motor):
 
 
 class Dona(Motor):
-    """Una dona de colores gira en el espacio (la clásica, con luz y brillo)."""
+    """A colored donut spins in space (the classic one, with light and shine)."""
     UMBRAL, ESTRELLAS = 1.1, True
 
     def sombra(self, t: float):
@@ -1218,7 +1218,7 @@ class Dona(Motor):
         a, b = 0.9 + t * 0.7, 0.4 + t * 0.45
         ca, sa, cb, sb = math.cos(a), math.sin(a), math.cos(b), math.sin(b)
 
-        def gira(x, y, z):                                   # del espacio de la cámara al de la dona
+        def gira(x, y, z):                                   # from camera space to donut space
             y, z = y * ca - z * sa, y * sa + z * ca
             x, z = x * cb + z * sb, -x * sb + z * cb
             return x, y, z
@@ -1252,7 +1252,7 @@ class Dona(Motor):
 
 
 class Lava(Motor):
-    """Lámpara de lava: gotas que suben, bajan, se unen y se separan."""
+    """Lava lamp: blobs that rise, sink, merge and split."""
     FONDO = 0.42
 
     def preparar(self) -> None:
@@ -1277,7 +1277,7 @@ class Lava(Motor):
 
 
 class Vuelo(Motor):
-    """Vuelo bajo sobre montañas, valles y lagos que no se acaban."""
+    """Low flight over endless mountains, valleys and lakes."""
     PASOS, UMBRAL = 72, 0.7
 
     @staticmethod
@@ -1321,14 +1321,14 @@ class Vuelo(Motor):
 
 
 def _azar2(i, j):
-    """Número fijo en 0..1 para cada par de enteros (textura estable, vectorizada)."""
+    """Fixed number in 0..1 for each pair of integers (stable texture, vectorized)."""
     n = (i.astype(np.int64) * 374761393 + j.astype(np.int64) * 668265263) & 0xFFFFFFFF
     n = ((n ^ (n >> 13)) * 1274126177) & 0xFFFFFFFF
     return (((n ^ (n >> 16)) & 0xFFFF) / 65535.0).astype(np.float32)
 
 
 def ruido2(x, y):
-    """Ruido suave en 0..1 sobre el plano."""
+    """Smooth noise in 0..1 over the plane."""
     x, y = np.asarray(x, dtype=np.float32), np.asarray(y, dtype=np.float32)
     x, y = np.broadcast_arrays(x, y)
     i, j = np.floor(x), np.floor(y)
@@ -1339,7 +1339,7 @@ def ruido2(x, y):
 
 
 def nubes2(x, y, octavas: int = 4):
-    """Ruido en varias escalas (nubes, humo, gas), 0..1."""
+    """Noise at several scales (clouds, smoke, gas), 0..1."""
     v, amp, tot = 0.0, 0.5, 0.0
     for _ in range(octavas):
         v, tot = v + amp * ruido2(x, y), tot + amp
@@ -1348,12 +1348,12 @@ def nubes2(x, y, octavas: int = 4):
 
 
 def _paleta(t, a, b, c, d):
-    """Paleta cíclica: a + b·cos(2π(c·t + d)), por canal."""
+    """Cyclic palette: a + b·cos(2π(c·t + d)), per channel."""
     return _col(*a) + _col(*b) * np.cos(6.2832 * (_col(*c) * t[..., None] + _col(*d)))
 
 
 class Boreal(Motor):
-    """Aurora boreal sobre montañas, reflejada en un lago quieto."""
+    """Northern lights over mountains, reflected in a still lake."""
     ESTRELLAS, UMBRAL = True, 1.2
 
     def preparar(self) -> None:
@@ -1379,7 +1379,7 @@ class Boreal(Motor):
         arriba = cielo + self.luz(U, V, t)
         monte = V > (hz + self.cresta)[None, :]
         arriba = np.where(monte[..., None], _col(0.03, 0.045, 0.07) + arriba * 0.06, arriba)
-        vr = 2 * hz - V + 0.012 * np.sin(V * 90 + t * 1.5 + U * 6)                    # el lago: el mismo cielo, al revés y con onda
+        vr = 2 * hz - V + 0.012 * np.sin(V * 90 + t * 1.5 + U * 6)                    # the lake: the same sky, upside down and rippled
         ur = U + 0.01 * np.sin(V * 70 - t * 1.2)
         refl = (cielo + self.luz(ur, vr, t)) * 0.62
         refl = np.where((vr > (hz + self.cresta)[None, :])[..., None], _col(0.008, 0.014, 0.026), refl)
@@ -1387,7 +1387,7 @@ class Boreal(Motor):
 
 
 class Tunel(Motor):
-    """Un túnel de luz sin fin."""
+    """An endless tunnel of light."""
     UMBRAL = 1.1
 
     def sombra(self, t: float):
@@ -1403,7 +1403,7 @@ class Tunel(Motor):
 
 
 class Nubes(Motor):
-    """Vuelo sobre un mar de nubes al atardecer."""
+    """Flight over a sea of clouds at sunset."""
     UMBRAL = 0.75
 
     def sombra(self, t: float):
@@ -1428,7 +1428,7 @@ class Nubes(Motor):
 
 
 class Fuego(Motor):
-    """Llamas que suben por toda la pantalla."""
+    """Flames rising across the whole screen."""
     FONDO, UMBRAL = 0.38, 1.0
 
     def sombra(self, t: float):
@@ -1445,7 +1445,7 @@ class Fuego(Motor):
 
 
 class Estanque(Motor):
-    """Gotas de lluvia abren círculos en un estanque bajo la luna."""
+    """Raindrops open rings on a pond under the moon."""
     UMBRAL = 0.6
 
     def preparar(self) -> None:
@@ -1470,7 +1470,7 @@ class Estanque(Motor):
 
 
 class Fractal(Motor):
-    """Un fractal de Julia que cambia de forma sin repetirse."""
+    """A Julia fractal that changes shape without repeating."""
     UMBRAL = 1.3
 
     def sombra(self, t: float):
@@ -1493,14 +1493,14 @@ class Fractal(Motor):
 
 
 class Agujero(Motor):
-    """Un agujero negro con su disco de gas incandescente."""
+    """A black hole with its disk of glowing gas."""
     ESTRELLAS, UMBRAL = True, 1.0
 
     def sombra(self, t: float):
         U, V, Rs = self.U, self.V, 0.20
         r = np.hypot(U, V) + 1e-4
         ang = np.arctan2(V, U)
-        tira = 1 - np.clip(Rs * Rs * 2.2 / (r * r), 0, 0.95)                          # el espacio se curva hacia el centro
+        tira = 1 - np.clip(Rs * Rs * 2.2 / (r * r), 0, 0.95)                          # space bends toward the center
         gas = nubes2(U * tira * 2.2 + 5, V * tira * 2.2 + 3, 4)
         fondo = _col(0.015, 0.012, 0.04) + (np.clip(gas - 0.52, 0, 1) * 0.9)[..., None] * _col(0.30, 0.16, 0.50)
 
@@ -1510,28 +1510,28 @@ class Agujero(Motor):
             f = np.clip((rd - 0.3) / 0.7, 0, 1)[..., None]
             return np.where(f < 0.35, _mix(_col(1.0, 0.97, 0.86), _col(1.0, 0.70, 0.26), f / 0.35), _mix(_col(1.0, 0.70, 0.26), _col(0.80, 0.20, 0.06), (f - 0.35) / 0.65)) * luz[..., None]
 
-        vd = V / 0.24                                                                # el disco, casi de canto
+        vd = V / 0.24                                                                # the disk, almost edge-on
         rd = np.hypot(U, vd)
         doppler = (1.0 + 0.65 * (-U / (rd + 1e-3)))[..., None]
         frente = disco(rd, np.arctan2(vd, U), 1.0) * doppler
         arco = disco(np.clip((r - Rs * 1.62) / (Rs * 1.15), 0, 1) * 0.7 + 0.3, ang, 0.6) * (np.clip((r - Rs * 1.62) / 0.02, 0, 1) * np.clip((Rs * 2.9 - r) / 0.05, 0, 1) * (0.42 + 0.25 * (V < 0)))[..., None]
         anillo = np.exp(-((r - Rs * 1.62) / 0.012) ** 2)[..., None] * _col(1.0, 0.86, 0.60) * 0.9
         out = fondo + arco + anillo
-        out = np.where((r < Rs * 1.58)[..., None], _col(0.0, 0.0, 0.0), out)        # la sombra
+        out = np.where((r < Rs * 1.58)[..., None], _col(0.0, 0.0, 0.0), out)        # the shadow
         return np.where(((V > 0) | (r > Rs * 1.58))[..., None], out + frente * ((V > 0) | (r > Rs * 2.9))[..., None] + frente * 0.0, out)
 
 
 ESCENAS = {"cumbres": Cumbres, "aurora": Aurora, "nevada": Nevada, "velero": Velero, "peces": Peces, "tuberias": Tuberias, "batalla": Batalla,
            "fogata": Fogata, "cerezo": Cerezo, "lluvia": Lluvia, "galaxia": Galaxia, "nebulosa": Nebulosa, "hiperespacio": Hiperespacio}
 MOTOR = {"oceano": Oceano, "boreal": Boreal, "nubes": Nubes, "planeta": Planeta, "agujero": Agujero, "vuelo": Vuelo, "estanque": Estanque,
-         "fuego": Fuego, "lava": Lava, "tunel": Tunel, "fractal": Fractal, "dona": Dona}   # necesitan numpy
+         "fuego": Fuego, "lava": Lava, "tunel": Tunel, "fractal": Fractal, "dona": Dona}   # these need numpy
 if np is not None:
     ESCENAS.update(MOTOR)
 
 
-# ── Salida a la terminal ─────────────────────────────────────────────────────────────────────────────────────────
+# ── Terminal output ──────────────────────────────────────────────────────────────────────────────────────────────
 class Pantalla:
-    """Escribe solo las celdas que cambiaron entre un cuadro y el siguiente (sin parpadeo)."""
+    """Writes only the cells that changed between one frame and the next (no flicker)."""
 
     def __init__(self, real: bool):
         self.real, self.ant = real, None
@@ -1584,14 +1584,14 @@ def main() -> int:
     if a[0] == "--lista":
         print("\n".join(ESCENAS))
         return 0
-    if a[0] == "--todas":                                    # también las que piden numpy, aunque falte
+    if a[0] == "--todas":                                    # also the ones that need numpy, even if it is missing
         print("\n".join({**ESCENAS, **MOTOR}))
         return 0
-    if a[0] in MOTOR and np is None:                          # sin numpy: avisa y muestra una escena clásica
-        print(f"tmux-arte: «{a[0]}» usa el motor de sombreado y falta numpy (sudo apt install python3-numpy); muestro otra escena", file=sys.stderr)
+    if a[0] in MOTOR and np is None:                          # no numpy: warn and show a classic scene
+        print(f"tmux-arte: «{a[0]}» uses the shading engine and numpy is missing (sudo apt install python3-numpy); showing another scene", file=sys.stderr)
         a[0] = "aurora"
     if a[0] not in ESCENAS:
-        print(f"tmux-arte: no conozco la escena «{a[0]}» (hay: {', '.join(ESCENAS)})", file=sys.stderr)
+        print(f"tmux-arte: unknown scene «{a[0]}» (available: {', '.join(ESCENAS)})", file=sys.stderr)
         return 2
     modo = a[1] if len(a) > 1 else ""
     n = int(a[2]) if len(a) > 2 and a[2].isdigit() else 20
@@ -1599,7 +1599,7 @@ def main() -> int:
     w, h = tamano()
     esc = ESCENAS[a[0]](w, h, rng)
     if modo == "--texto":
-        for i in range(n + 1):                               # las escenas con memoria (tuberías, batalla) avanzan cuadro a cuadro
+        for i in range(n + 1):                               # scenes with memory (tuberias, batalla) advance frame by frame
             L = esc.cuadro(i * 0.12)
         print("\n".join("".join(f).rstrip() for f in L.ch))
         return 0
@@ -1630,7 +1630,7 @@ def main() -> int:
     t0, i = time.monotonic(), 0
     try:
         while True:
-            if cambio[0]:                                    # la ventana cambió de tamaño: se vuelve a armar
+            if cambio[0]:                                    # the window was resized: build it again
                 cambio[0] = False
                 os.environ.pop("COLUMNS", None)
                 os.environ.pop("LINES", None)

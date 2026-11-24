@@ -1,34 +1,34 @@
 #!/usr/bin/env bash
 #
-# tmux-fondo — mantiene la barra y corre las tareas de fondo. Lo llama tmux-watch en cada refresco de la barra.
-#   Siempre (barato, solo opciones de tmux):
-#     · estado de Claude de cada pestaña con su tiempo (tmux-estado --todas)
-#     · etiqueta de pestaña, ⏺ de grabación y CI/PR en los formatos de las pestañas
-#     · tus segmentos personales en status-right, cada uno UNA vez: ~/.config/ws-local/barra-extra.conf
-#       (una línea por segmento, p. ej. #(~/.local/bin/ws-cache 30 ~/ruta/mi-segmento.sh); «# » = comentario).
-#       Ese archivo es personal: no va al kit del equipo. Sobrevive a cambios de tema y a recargar la configuración.
-#   Cada minuto como máximo (WS_FONDO_CADA), una corrida a la vez:
-#     · CI/PR/ticket de cada pestaña (tmux-rama --actualizar)
-#     · historial buscable, si lo encendiste (tmux-historial --muestrear)
-#   Una vez al día: ws-personal sync (tu configuración personal al repo privado)
-# Uso: tmux-fondo            todo
-#      tmux-fondo --barra    solo la barra (lo usa maravillas.tmux al cargar la configuración)
+# tmux-fondo — maintains the status bar and runs the background tasks. tmux-watch calls it on every bar refresh.
+#   Always (cheap, tmux options only):
+#     · each tab's Claude state with its time (tmux-estado --todas)
+#     · tab label, recording ⏺ and CI/PR in the tab formats
+#     · your personal segments in status-right, each one ONCE: ~/.config/ws-local/barra-extra.conf
+#       (one line per segment, e.g. #(~/.local/bin/ws-cache 30 ~/path/my-segment.sh); «# » = comment).
+#       That file is personal: it does not go into the team kit. It survives theme changes and config reloads.
+#   At most once a minute (WS_FONDO_CADA), one run at a time:
+#     · CI/PR/ticket of each tab (tmux-rama --actualizar)
+#     · searchable history, if you turned it on (tmux-historial --muestrear)
+#   Once a day: ws-personal sync (your personal configuration to the private repo)
+# Usage: tmux-fondo          everything
+#      tmux-fondo --barra    only the bar (used by maravillas.tmux when loading the configuration)
 set -uo pipefail
 B="$HOME/.local/bin"
 EXTRA="${WS_BARRA_EXTRA:-$HOME/.config/ws-local/barra-extra.conf}"
 
 barra() {
-  [[ -x "$B/tmux-estado" ]] && "$B/tmux-estado" --todas   # estado de Claude con su tiempo (parche 56)
+  [[ -x "$B/tmux-estado" ]] && "$B/tmux-estado" --todas   # Claude state with its time (patch 56)
   [[ -x "$B/tmux-etiqueta" ]] && "$B/tmux-etiqueta" --barra
   [[ -x "$B/tmux-favoritos" ]] && "$B/tmux-favoritos" --barra
   local o seg actual
   for o in window-status-format window-status-current-format; do
     [[ "$(tmux show -gv "$o" 2>/dev/null)" == *"@crama"* ]] || tmux set -ag "$o" '#{?@cgrab, #{@cgrab},}#{?@crama, #[dim]#{@crama}#[nodim],}'
   done
-  for o in window-status-format window-status-current-format; do   # 🔒/🔓 del nivel de protección (parche 59)
+  for o in window-status-format window-status-current-format; do   # 🔒/🔓 of the protection level (patch 59)
     [[ "$(tmux show -gv "$o" 2>/dev/null)" == *"@cnivel_ico"* ]] || tmux set -ag "$o" '#{?@cnivel_ico, #{@cnivel_ico},}'
   done
-  # En modo enfoque la barra es mínima a propósito; al salir se restaura la de antes (con tus segmentos).
+  # In focus mode the bar is minimal on purpose; on leaving, the previous one is restored (with your segments).
   [[ -f "$EXTRA" && -z "$(tmux show -gqv @enf_fin 2>/dev/null)" ]] || return 0
   actual="$(tmux show -gv status-right 2>/dev/null)"
   while IFS= read -r seg || [[ -n "$seg" ]]; do
@@ -49,12 +49,12 @@ exec 9>"$st/lock"; flock -n 9 || exit 0
 touch "$marca"
 [[ "$(tmux show -gqv @rama_barra)" == off ]] || timeout 50 "$B/tmux-rama" --actualizar
 [[ "$(tmux show -gqv @historial)" == on && -x "$B/tmux-historial" ]] && timeout 30 "$B/tmux-historial" --muestrear
-# Una vez al día: tu configuración personal al repo privado (ws-personal, ADR-011). Si encuentra algo que parece
-# secreto no hace commit y te avisa.
+# Once a day: your personal configuration to the private repo (ws-personal, ADR-011). If it finds something that
+# looks like a secret it does not commit and notifies you.
 dia="$st/personal-$(date +%F)"
 if [[ ! -f "$dia" && -x "$B/ws-personal" && -d "${WS_PERSONAL_DIR:-$HOME/code/estacion-personal}/.git" ]]; then
   touch "$dia"
   ( timeout 120 "$B/ws-personal" sync --silencioso >/dev/null 2>&1 \
-      || "$B/ws-aviso" "ws-personal: no sincronicé" "Revisa en la PC: ws-personal sync (¿posible secreto o sin red?)" ) &
+      || "$B/ws-aviso" "ws-personal: sync failed" "Check on the PC: ws-personal sync (possible secret or no network?)" ) &
 fi
 exit 0

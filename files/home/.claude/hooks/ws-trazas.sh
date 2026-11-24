@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
 #
-# ws-trazas.sh — hook de Claude Code para casi todos los eventos: una línea JSON por evento, para explotar después
-# (estimación por ticket, cuellos de botella, espera humana, costo por tipo de trabajo). ADR-008, fase F2.
+# ws-trazas.sh — Claude Code hook for almost every event: one JSON line per event, to mine later
+# (estimation per ticket, bottlenecks, human wait, cost per type of work). ADR-008, phase F2.
 #
-# Qué guarda (nunca el contenido: ni prompts, ni comandos completos, ni archivos, ni salidas):
-#   herramienta  (PostToolUse/Failure) herramienta, servidor y método MCP, acción resumida, duración, espera de tu
-#                aprobación dentro de esa duración, ok/tipo de error, bytes de entrada y salida, líneas +/− y extensión
-#                (Edit/Write), programas de la línea de Bash, skill, tipo y modelo de subagente, modo de permisos.
-#                Acción resumida: Bash → programa y subcomando («git commit»); Edit/Write/Read → ruta relativa al
-#                repo; WebFetch → dominio; Task/Agent → tipo de subagente; MCP → método; Skill → nombre.
-#   prompt       (UserPromptSubmit) caracteres, palabras, comando «/x» si lo es, si es pregunta, si trae código.
-#   turno        (Stop/StopFailure) duración del turno desde tu prompt.
-#   aviso        (Notification) tipo (permiso, inactividad…) y la herramienta que pide permiso.
-#   denegado     (PermissionDenied) herramienta y acción.
-#   subagente    (SubagentStart/Stop) tipo y duración.
-#   compactacion (PreCompact) manual/auto y tamaño de la transcripción.
-#   sesion       (SessionStart/End) origen o motivo, commit inicial, archivos sin commit; al cerrar: commits hechos y
-#                líneas +/− desde el inicio (diff contra el commit inicial).
-# Común: ts, ts_ms, sesion, proyecto, rama, ticket (de la rama: ABC-123).
-# Destino: ~/.local/share/ws-telemetria/trazas/AAAA-MM-DD.jsonl (0700). ws-telemetria comprime los de más de
-# 35 días y borra los de más de 13 meses. Silencioso; siempre exit 0 (nunca bloquea a Claude).
+# What it stores (never the content: no prompts, no full commands, no files, no outputs):
+#   herramienta  (PostToolUse/Failure) tool, MCP server and method, summarized action, duration, wait for your
+#                approval within that duration, ok/error type, input and output bytes, lines +/− and extension
+#                (Edit/Write), programs on the Bash line, skill, subagent type and model, permission mode.
+#                Summarized action: Bash → program and subcommand («git commit»); Edit/Write/Read → path relative to
+#                the repo; WebFetch → domain; Task/Agent → subagent type; MCP → method; Skill → name.
+#   prompt       (UserPromptSubmit) characters, words, «/x» command if it is one, whether it is a question, has code.
+#   turno        (Stop/StopFailure) duration of the turn since your prompt.
+#   aviso        (Notification) type (permission, inactivity…) and the tool asking for permission.
+#   denegado     (PermissionDenied) tool and action.
+#   subagente    (SubagentStart/Stop) type and duration.
+#   compactacion (PreCompact) manual/auto and size of the transcript.
+#   sesion       (SessionStart/End) source or reason, initial commit, uncommitted files; on close: commits made and
+#                lines +/− since the start (diff against the initial commit).
+# Common: ts, ts_ms, sesion, proyecto, rama, ticket (from the branch: ABC-123).
+# Destination: ~/.local/share/ws-telemetria/trazas/YYYY-MM-DD.jsonl (0700). ws-telemetria compresses those older
+# than 35 days and deletes those older than 13 months. Silent; always exit 0 (it never blocks Claude).
 set -uo pipefail
 entrada="$(cat)"
 DIR="${WS_TRAZAS_DIR:-$HOME/.local/share/ws-telemetria/trazas}"
@@ -32,7 +32,7 @@ IFS=$'\x1f' read -r ev tuid ses cwd ntipo agente < <(jq -r '[.hook_event_name //
   .cwd // "", .notification_type // "", .agent_id // ""] | join("\u001f")' <<<"$entrada" 2>/dev/null)
 ses="$(limpio "${ses:-s}")"; S="$RUN/s/$ses"
 
-# Marcas de tiempo (sin escribir traza)
+# Timestamps (no trace written)
 case "$ev" in
   PreToolUse) printf '%s' "$ahora" > "$RUN/t/$(limpio "${tuid:-$ses}")"; exit 0 ;;
   "") exit 0 ;;
@@ -49,7 +49,7 @@ case "$ev" in
     m="$RUN/t/$(limpio "${tuid:-$ses}")"; ini="$(leer "$m")"; rm -f "$m"
     esp="$(leer "$S.espera")"; dur=""; espera=""
     [[ -n "$ini" ]] && dur=$(( ahora - ini ))
-    # Si pediste aprobación después de que empezó la herramienta, ese tiempo fue tuyo, no de la herramienta.
+    # If approval was requested after the tool started, that time was yours, not the tool's.
     if [[ -n "$esp" && -n "$ini" ]] && (( esp >= ini )); then espera=$(( ahora - esp )); rm -f "$S.espera"; fi
     extra="$(jq -nc --arg d "$dur" --arg e "$espera" '{dur_ms: ($d | tonumber? // null), espera_ms: ($e | tonumber? // null)}')" ;;
   UserPromptSubmit)
@@ -68,7 +68,7 @@ case "$ev" in
     tp="$(jq -r '.transcript_path // empty' <<<"$entrada")"
     extra="{\"transcripcion_bytes\":$(stat -c %s "$tp" 2>/dev/null || echo null)}" ;;
   SessionStart)
-    sha="$(T_GIT=3 git_ rev-parse HEAD || true)"     # en /mnt/c git tarda: con 1 s se quedaba sin el commit de partida
+    sha="$(T_GIT=3 git_ rev-parse HEAD || true)"     # git is slow on /mnt/c: with 1 s the starting commit was missed
     sucios="$(T_GIT=2 git_ status --porcelain | wc -l)"
     [[ -n "$sha" ]] && printf '%s %s' "$sha" "$ahora" > "$S.git"
     extra="$(jq -nc --arg s "${sha:0:12}" --arg n "$sucios" '{commit: $s, sin_commit: ($n | tonumber? // 0)}')" ;;
@@ -83,8 +83,8 @@ case "$ev" in
         lineas_menos: (($st | capture("(?<x>[0-9]+) deletion").x // "0") | tonumber),
         dur_ms: (if $i == "" then null else (($a | tonumber) - ($i | tonumber)) end)}')"
     else
-      # Sin el commit de partida (la sesión se retomó con otro id o git no contestó a tiempo): se toma la hora del primer
-      # mensaje de la conversación y se cuentan los commits y las líneas desde entonces.
+      # Without the starting commit (the session resumed with another id or git did not answer in time): take the time
+      # of the first message of the conversation and count the commits and lines since then.
       tp="$(jq -r '.transcript_path // empty' <<<"$entrada" 2>/dev/null)"
       t0="$([[ -f "$tp" ]] && head -c 400000 "$tp" | jq -r 'select(.timestamp != null) | .timestamp' 2>/dev/null | head -1)"
       if [[ -n "$t0" ]]; then
@@ -106,7 +106,7 @@ jq -c --argjson x "$extra" --arg ts_ms "$ahora" --arg rama "$rama" --arg raiz "$
   def lineas(s): if (s // "") == "" then 0 else ((s | split("\n") | length)) end;
   def segmentos: [splits("\\s*(&&|\\|\\||;|\\|)\\s*")] | map(select(length > 0));
   def palabras(s): [s | splits("\\s+") | select(length > 0)];
-  # Programa de un segmento de Bash: sin variables VAR=x, sudo, env, timeout N, nice; solo el nombre base.
+  # Program of a Bash segment: without VAR=x variables, sudo, env, timeout N, nice; base name only.
   def programa: palabras(.) | map(select(test("^[A-Za-z_][A-Za-z0-9_]*=") | not))
       | until((length == 0) or (.[0] | test("^(sudo|env|nice|time|command|exec|nohup|timeout|[0-9]+[smh]?)$") | not); .[1:]);
   def errtipo(e): (e // "" | ascii_downcase) as $e
@@ -127,7 +127,7 @@ jq -c --argjson x "$extra" --arg ts_ms "$ahora" --arg rama "$rama" --arg raiz "$
   + (if ($ev | test("^(PostToolUse|PostToolUseFailure|PermissionDenied)$")) then
       (if $t == "Bash" then (($i.command // "") | segmentos | map(programa) | map(select(length > 0))
                               | map(select(.[0] != "cd"))) else [] end) as $segs
-      # Nombres de programa plausibles: minúsculas, cortos y con pocos dígitos (un token o llave pegada no pasa).
+      # Plausible program names: lowercase, short and with few digits (a pasted token or key does not pass).
       | ($segs | map(.[0] | split("/") | last
           | select(test("^[a-z][a-z0-9._+-]{0,24}$") and ([scan("[0-9]")] | length) <= 3))) as $progs
       | {tipo: (if $ev == "PermissionDenied" then "denegado" else "herramienta" end), herramienta: $t,
@@ -142,7 +142,7 @@ jq -c --argjson x "$extra" --arg ts_ms "$ahora" --arg rama "$rama" --arg raiz "$
                   elif $t == "SlashCommand" then (($i.command // "") | capture("^(?<c>/[A-Za-z0-9:_-]+)").c // "")
                   elif $mp then ($mp[2:] | join("__")) else "" end),
          programas: (if $t == "Bash" then ($progs | unique) else null end),
-         # Commits que hizo este comando: segmentos «git … commit» (con -c/-C antes del subcomando), sin --dry-run.
+         # Commits made by this command: «git … commit» segments (with -c/-C before the subcommand), without --dry-run.
          commits: (if $t == "Bash" and $ev == "PostToolUse" then
                      ([$segs[] | select((.[0] | split("/") | last) == "git") | select(any(.[]; . == "--dry-run") | not)
                        | .[1:] | until(length == 0 or (.[0] | startswith("-") | not); if (.[0] | test("^-[cC]$")) then .[2:] else .[1:] end)
@@ -179,7 +179,7 @@ jq -c --argjson x "$extra" --arg ts_ms "$ahora" --arg rama "$rama" --arg raiz "$
   + $x
   | with_entries(select(.value != null))' <<<"$entrada" >> "$DIR/$(date +%F).jsonl" 2>/dev/null || true
 
-# Marcas huérfanas: herramientas de más de 2 h; sesiones de más de 3 días
+# Orphan timestamps: tools older than 2 h; sessions older than 3 days
 find "$RUN/t" -type f -mmin +120 -delete 2>/dev/null || true
 find "$RUN/s" -type f -mmin +4320 -delete 2>/dev/null || true
 exit 0

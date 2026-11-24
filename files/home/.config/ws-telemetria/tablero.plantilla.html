@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="es">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="refresh" content="60">
-<title>Consumo de Claude</title>
+<title>Claude usage</title>
 <style>
   :root {
     --bg: #f6f5f1; --panel: #ffffff; --ink: #1f1e1b; --muted: #6b675f; --line: #e3e0d8;
@@ -56,21 +56,21 @@
 </head>
 <body>
 <header>
-  <h1>Consumo de Claude</h1>
+  <h1>Claude usage</h1>
   <span class="sub" id="gen"></span>
 </header>
 <main id="app"></main>
 <script>
 const D = /*__DATOS__*/null;
 const $ = (s) => document.querySelector(s);
-const n = (x) => (x || 0).toLocaleString("es-MX");
+const n = (x) => (x || 0).toLocaleString("en-US");
 const k = (x) => x >= 1e9 ? (x / 1e9).toFixed(2) + " B" : x >= 1e6 ? (x / 1e6).toFixed(1) + " M" : x >= 1e3 ? (x / 1e3).toFixed(1) + " k" : String(x || 0);
-const usd = (x) => "$" + (x || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const usd = (x) => "$" + (x || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 function card(cls, titulo, html) { return `<section class="card ${cls}"><h2>${titulo}</h2>${html}</section>`; }
 function tabla(cols, filas) {
-  if (!filas.length) return `<div class="vacio">Sin datos todavía.</div>`;
+  if (!filas.length) return `<div class="vacio">No data yet.</div>`;
   return `<div class="tabla"><table><thead><tr>${cols.map((c) => `<th>${c[0]}</th>`).join("")}</tr></thead><tbody>${
     filas.map((f) => `<tr>${cols.map((c, i) => `<td class="${i === 0 ? "texto" : ""}">${c[1](f)}</td>`).join("")}</tr>`).join("")
   }</tbody></table></div>`;
@@ -80,26 +80,26 @@ function barras(dias) {
   const max = Math.max(1, ...dias.map((d) => d.costo));
   const rects = dias.map((d, i) => {
     const h = (H - 26) * d.costo / max, x = m + i * bw, y = H - 18 - h;
-    return `<rect x="${x + 1}" y="${y}" width="${bw - 2}" height="${h}" rx="2" fill="var(--bar)"><title>${d.dia}: ${usd(d.costo)} · ${k(d.tokens)} tokens · ${d.turnos} turnos</title></rect>` +
+    return `<rect x="${x + 1}" y="${y}" width="${bw - 2}" height="${h}" rx="2" fill="var(--bar)"><title>${d.dia}: ${usd(d.costo)} · ${k(d.tokens)} tokens · ${d.turnos} turns</title></rect>` +
       (i % 5 === 0 ? `<text x="${x}" y="${H - 4}">${d.dia.slice(5)}</text>` : "");
   }).join("");
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Costo equivalente por día">${rects}<text x="0" y="10">${usd(max)}</text></svg>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Equivalent cost by day">${rects}<text x="0" y="10">${usd(max)}</text></svg>`;
 }
 
-// ---- Tendencias: gráficas SVG a mano (sin librerías), con el valor en <title> y los extremos impresos ----
+// ---- Trends: hand-made SVG charts (no libraries), with the value in <title> and the extremes printed ----
 const SER = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--s4)", "var(--s5)", "var(--s6)"];
 const dur = (s) => s >= 3600 ? (s / 3600).toFixed(1) + " h" : s >= 90 ? Math.round(s / 60) + " min" : Math.round(s || 0) + " s";
 const sem = (f) => f.inicio.slice(8) + "/" + f.inicio.slice(5, 7);
 function leyenda(nombres) { return `<div class="leyenda">${nombres.map((x, i) => `<span><i style="background:${SER[i % SER.length]}"></i>${esc(x)}</span>`).join("")}</div>`; }
-// Cambio contra el periodo anterior. sentido: +1 si subir es bueno, -1 si subir es malo, 0 si solo informa.
+// Change against the previous period. sentido: +1 if going up is good, -1 if going up is bad, 0 if informational only.
 function delta(a, b, sentido, fmt) {
-  if (!b && !a) return `<span class="delta neutro">sin datos</span>`;
-  if (!b) return `<span class="delta neutro">nuevo</span>`;
+  if (!b && !a) return `<span class="delta neutro">no data</span>`;
+  if (!b) return `<span class="delta neutro">new</span>`;
   const p = 100 * (a - b) / b, fl = p > 0.5 ? "▲" : p < -0.5 ? "▼" : "＝";
   const cls = Math.abs(p) <= 0.5 || !sentido ? "neutro" : (p > 0) === (sentido > 0) ? "baja" : sentido < 0 ? "sube" : "mal";
-  return `<span class="delta ${cls}">${fl} ${Math.abs(p).toFixed(0)}% <span class="neutro">(antes ${fmt(b)})</span></span>`;
+  return `<span class="delta ${cls}">${fl} ${Math.abs(p).toFixed(0)}% <span class="neutro">(was ${fmt(b)})</span></span>`;
 }
-// Barras apiladas por periodo. claves = series en orden; pct = normaliza cada barra a 100 %.
+// Stacked bars by period. claves = series in order; pct = normalizes each bar to 100 %.
 function apiladas(filas, claves, campo, etiqueta, pct, fmt) {
   const W = 720, H = 190, mi = 46, mb = 20, mt = 12, bw = (W - mi) / Math.max(1, filas.length);
   const tot = filas.map((f) => claves.reduce((a, c) => a + (f[campo][c] || 0), 0));
@@ -119,9 +119,9 @@ function apiladas(filas, claves, campo, etiqueta, pct, fmt) {
     if (!pct && tot[i] && bw > 34) g += `<text x="${x + bw / 2}" y="${y - 3}" text-anchor="middle">${fmt(tot[i])}</text>`;
     if (filas.length <= 14 || i % 2 === 0) g += `<text x="${x + bw / 2}" y="${H - 5}" text-anchor="middle">${etiqueta(f)}</text>`;
   });
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Barras apiladas por periodo">${g}</svg>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Stacked bars by period">${g}</svg>`;
 }
-// Líneas punto a punto. series = [{nombre, valores}], con el último valor impreso al final de cada línea.
+// Point-to-point lines. series = [{nombre, valores}], with the last value printed at the end of each line.
 function lineas(etiquetas, series, fmt, tope) {
   const W = 720, H = 180, mi = 46, md = 64, mb = 20, mt = 12, alto = H - mb - mt, ancho = W - mi - md;
   const max = tope || Math.max(1, ...series.flatMap((s) => s.valores)) * 1.08;
@@ -137,212 +137,212 @@ function lineas(etiquetas, series, fmt, tope) {
     s.valores.forEach((v, i) => { g += `<circle cx="${px(i)}" cy="${py(v)}" r="${i === s.valores.length - 1 ? 3.5 : 2}" fill="${c}"><title>${esc(etiquetas[i])} · ${esc(s.nombre)}: ${fmt(v)}</title></circle>`; });
     finales.push({ y: py(s.valores[s.valores.length - 1] || 0), t: fmt(s.valores[s.valores.length - 1] || 0), c });
   });
-  finales.sort((a, b) => a.y - b.y).forEach((f, i, a) => { if (i && f.y - a[i - 1].y < 12) f.y = a[i - 1].y + 12; });   // que no se encimen
+  finales.sort((a, b) => a.y - b.y).forEach((f, i, a) => { if (i && f.y - a[i - 1].y < 12) f.y = a[i - 1].y + 12; });   // keep them from overlapping
   for (const f of finales) g += `<text x="${W - md + 8}" y="${f.y + 3}" style="fill:${f.c};font-weight:600">${f.t}</text>`;
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Líneas por periodo">${g}</svg>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Lines by period">${g}</svg>`;
 }
-// Mapa de horas: filas = días (lunes primero), columnas = hora local.
+// Hour map: rows = days (monday first), columns = local hour.
 function calor(M) {
   const W = 720, mi = 30, mt = 14, cw = (W - mi) / 24, ch = 20, H = mt + ch * 7 + 4, max = Math.max(1, ...M.flat());
-  const dias = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"];
+  const dias = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
   let g = "";
   for (let h = 0; h < 24; h += 3) g += `<text x="${mi + h * cw + 2}" y="10">${String(h).padStart(2, "0")} h</text>`;
   M.forEach((fila, d) => {
     g += `<text x="0" y="${mt + d * ch + 14}">${dias[d]}</text>`;
     fila.forEach((v, h) => {
-      g += `<rect x="${mi + h * cw + 1}" y="${mt + d * ch + 1}" width="${cw - 2}" height="${ch - 2}" rx="2" fill="${v ? "var(--s1)" : "var(--line)"}" opacity="${v ? (0.18 + 0.82 * v / max).toFixed(2) : 1}"><title>${dias[d]} ${String(h).padStart(2, "0")}:00 · ${n(v)} turnos</title></rect>`;
+      g += `<rect x="${mi + h * cw + 1}" y="${mt + d * ch + 1}" width="${cw - 2}" height="${ch - 2}" rx="2" fill="${v ? "var(--s1)" : "var(--line)"}" opacity="${v ? (0.18 + 0.82 * v / max).toFixed(2) : 1}"><title>${dias[d]} ${String(h).padStart(2, "0")}:00 · ${n(v)} turns</title></rect>`;
     });
   });
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Turnos por día de la semana y hora">${g}</svg>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Turns by day of the week and hour">${g}</svg>`;
 }
-// ---- OpenTelemetry (colector local ws-otel): API, permisos, tiempo activo, hooks, subagentes ----
+// ---- OpenTelemetry (local ws-otel collector): API, permissions, active time, hooks, subagents ----
 const ms = (x) => x == null ? "—" : x >= 1000 ? (x / 1000).toFixed(1) + " s" : Math.round(x) + " ms";
 function otel(O, h) {
-  h.push(`<div class="seccion">API, permisos y tiempo activo<small>OpenTelemetry de Claude Code, guardado en tu máquina por ws-otel${O && O.desde ? " · desde " + esc(O.desde) : ""}</small></div>`);
+  h.push(`<div class="seccion">API, permissions and active time<small>Claude Code OpenTelemetry, stored on your machine by ws-otel${O && O.desde ? " · since " + esc(O.desde) : ""}</small></div>`);
   if (!O || !O.api) {
-    h.push(card("c12", "Sin señales todavía", `<div class="vacio">El colector no ha recibido nada. Revisa <code>ws-otel estado</code> y reinicia tus pestañas de Claude (/exit y claude -c): la exportación se activa al arrancar.</div>`));
+    h.push(card("c12", "No signals yet", `<div class="vacio">The collector has not received anything. Check <code>ws-otel estado</code> and restart your Claude tabs (/exit and claude -c): the export is enabled at startup.</div>`));
     return;
   }
   const A = O.api, C = O.codigo || {}, act = O.activo || [];
   const tuyo = act.reduce((a, d) => a + d.tuyo_min, 0), cl = act.reduce((a, d) => a + d.claude_min, 0);
   const comp = [
-    ["Llamadas a la API", n(A.llamadas), `<span class="delta neutro">${usd(A.costo)} equiv.</span>`],
-    ["Duración típica", ms(A.med_ms), `<span class="delta neutro">p95 ${ms(A.p95_ms)}</span>`],
-    ["Primer token", ms(A.ttft_med_ms), `<span class="delta neutro">p95 ${ms(A.ttft_p95_ms)}</span>`],
-    ["Errores de API", A.error_pct + "%", `<span class="delta ${A.errores ? "sube" : "neutro"}">${n(A.errores)} errores · ${n(A.agotados)} sin más reintentos</span>`],
-    ["Tiempo activo tuyo", (tuyo / 60).toFixed(1) + " h", `<span class="delta neutro">Claude: ${(cl / 60).toFixed(1)} h</span>`],
-    ["Esperando tu aprobación", (A.espera_total_min || 0) + " min", `<span class="delta neutro">${n(A.espera_n || 0)} diálogos · típico ${ms(A.espera_med_ms)}</span>`],
-    ["Código", "+" + n(C.lineas_mas) + " / −" + n(C.lineas_menos), `<span class="delta neutro">${n(C.commits)} commits · ${n(C.prs)} PR</span>`],
+    ["API calls", n(A.llamadas), `<span class="delta neutro">${usd(A.costo)} equiv.</span>`],
+    ["Typical duration", ms(A.med_ms), `<span class="delta neutro">p95 ${ms(A.p95_ms)}</span>`],
+    ["First token", ms(A.ttft_med_ms), `<span class="delta neutro">p95 ${ms(A.ttft_p95_ms)}</span>`],
+    ["API errors", A.error_pct + "%", `<span class="delta ${A.errores ? "sube" : "neutro"}">${n(A.errores)} errors · ${n(A.agotados)} out of retries</span>`],
+    ["Your active time", (tuyo / 60).toFixed(1) + " h", `<span class="delta neutro">Claude: ${(cl / 60).toFixed(1)} h</span>`],
+    ["Waiting for your approval", (A.espera_total_min || 0) + " min", `<span class="delta neutro">${n(A.espera_n || 0)} dialogs · typical ${ms(A.espera_med_ms)}</span>`],
+    ["Code", "+" + n(C.lineas_mas) + " / −" + n(C.lineas_menos), `<span class="delta neutro">${n(C.commits)} commits · ${n(C.prs)} PR</span>`],
   ];
-  h.push(card("c12", `Últimos ${O.dias} días`, `<div class="comp">${comp.map((c) => `<div><span>${c[0]}</span><b>${c[1]}</b>${c[2]}</div>`).join("")}</div>
-    <div class="nota">Tiempo activo: el tuyo es mientras escribes o lees; el de Claude, mientras responde o corre herramientas. «Primer token» es lo que tarda el modelo en empezar a contestar.</div>`));
+  h.push(card("c12", `Last ${O.dias} days`, `<div class="comp">${comp.map((c) => `<div><span>${c[0]}</span><b>${c[1]}</b>${c[2]}</div>`).join("")}</div>
+    <div class="nota">Active time: yours is while you type or read; Claude's, while it responds or runs tools. "First token" is how long the model takes to start answering.</div>`));
   const Dd = (O.api_dias || []).filter((d) => d.llamadas);
-  if (Dd.length > 1) h.push(card("c6", "Duración de las llamadas a la API por día", lineas(Dd.map((d) => d.dia.slice(8) + "/" + d.dia.slice(5, 7)),
-    [{ nombre: "mediana", valores: Dd.map((d) => d.med_ms || 0) }, { nombre: "p95", valores: Dd.map((d) => d.p95_ms || 0) }], ms) + leyenda(["mediana", "p95"])));
-  if (act.length > 1) h.push(card("c6", "Tiempo activo por día (minutos)", lineas(act.map((d) => d.dia.slice(8) + "/" + d.dia.slice(5, 7)),
-    [{ nombre: "tuyo", valores: act.map((d) => d.tuyo_min) }, { nombre: "Claude", valores: act.map((d) => d.claude_min) }], (x) => Math.round(x) + " min") + leyenda(["tuyo", "Claude"])));
-  h.push(card("c6", "API por modelo", tabla([["Modelo", (f) => esc(f.modelo)], ["Llamadas", (f) => n(f.llamadas)], ["Mediana", (f) => ms(f.med_ms)], ["p95", (f) => ms(f.p95_ms)], ["Costo", (f) => usd(f.costo)]], O.api_modelos || [])));
-  h.push(card("c6", "Costo por origen de la llamada", tabla([["Origen", (f) => esc(f.origen)], ["Llamadas", (f) => n(f.n)], ["Costo", (f) => usd(f.costo)]], O.api_origen || [])));
-  h.push(card("c4", "Errores de API por código", tabla([["Código", (f) => esc(f.codigo)], ["Veces", (f) => n(f.n)]], O.errores || [])));
-  h.push(card("c4", "Quién decide los permisos", tabla([["Fuente", (f) => esc(f.fuente)], ["Acepta", (f) => n(f.acepta)], ["Rechaza", (f) => n(f.rechaza)]], O.permisos || []) +
-    `<div class="nota">config = una regla tuya · hook = un hook · user_* = tú, en el diálogo.</div>`));
-  h.push(card("c4", "Herramientas más rechazadas", tabla([["Herramienta", (f) => esc(f.herramienta)], ["Rechazos", (f) => n(f.n)]], O.rechazos || [])));
-  h.push(card("c6", "Cuánto tardan tus hooks", tabla([["Hook", (f) => esc(f.evento)], ["Veces", (f) => n(f.n)], ["Mediana", (f) => ms(f.med_ms)], ["p95", (f) => ms(f.p95_ms)], ["Total", (f) => f.total_s + " s"]], O.hooks || [])));
-  h.push(card("c6", "Subagentes terminados", tabla([["Tipo", (f) => esc(f.tipo)], ["Veces", (f) => n(f.n)], ["Duración típica", (f) => ms(f.med_ms)], ["Tokens", (f) => k(f.tokens)], ["Herramientas", (f) => n(f.herramientas)]], O.subagentes || [])));
+  if (Dd.length > 1) h.push(card("c6", "API call duration by day", lineas(Dd.map((d) => d.dia.slice(8) + "/" + d.dia.slice(5, 7)),
+    [{ nombre: "median", valores: Dd.map((d) => d.med_ms || 0) }, { nombre: "p95", valores: Dd.map((d) => d.p95_ms || 0) }], ms) + leyenda(["median", "p95"])));
+  if (act.length > 1) h.push(card("c6", "Active time by day (minutes)", lineas(act.map((d) => d.dia.slice(8) + "/" + d.dia.slice(5, 7)),
+    [{ nombre: "yours", valores: act.map((d) => d.tuyo_min) }, { nombre: "Claude", valores: act.map((d) => d.claude_min) }], (x) => Math.round(x) + " min") + leyenda(["yours", "Claude"])));
+  h.push(card("c6", "API by model", tabla([["Model", (f) => esc(f.modelo)], ["Calls", (f) => n(f.llamadas)], ["Median", (f) => ms(f.med_ms)], ["p95", (f) => ms(f.p95_ms)], ["Cost", (f) => usd(f.costo)]], O.api_modelos || [])));
+  h.push(card("c6", "Cost by call origin", tabla([["Origin", (f) => esc(f.origen)], ["Calls", (f) => n(f.n)], ["Cost", (f) => usd(f.costo)]], O.api_origen || [])));
+  h.push(card("c4", "API errors by code", tabla([["Code", (f) => esc(f.codigo)], ["Times", (f) => n(f.n)]], O.errores || [])));
+  h.push(card("c4", "Who decides permissions", tabla([["Source", (f) => esc(f.fuente)], ["Accepts", (f) => n(f.acepta)], ["Rejects", (f) => n(f.rechaza)]], O.permisos || []) +
+    `<div class="nota">config = a rule of yours · hook = a hook · user_* = you, in the dialog.</div>`));
+  h.push(card("c4", "Most rejected tools", tabla([["Tool", (f) => esc(f.herramienta)], ["Rejections", (f) => n(f.n)]], O.rechazos || [])));
+  h.push(card("c6", "How long your hooks take", tabla([["Hook", (f) => esc(f.evento)], ["Times", (f) => n(f.n)], ["Median", (f) => ms(f.med_ms)], ["p95", (f) => ms(f.p95_ms)], ["Total", (f) => f.total_s + " s"]], O.hooks || [])));
+  h.push(card("c6", "Finished subagents", tabla([["Type", (f) => esc(f.tipo)], ["Times", (f) => n(f.n)], ["Typical duration", (f) => ms(f.med_ms)], ["Tokens", (f) => k(f.tokens)], ["Tools", (f) => n(f.herramientas)]], O.subagentes || [])));
   const K = O.compactaciones || {};
-  h.push(card("c4", "Compactaciones", `<div class="kpi">${n(K.n)}<small>${n(K.auto)} automáticas</small></div>
-    <div class="fila"><span>antes: ${k(K.antes_med || 0)} tokens</span><span>después: ${k(K.despues_med || 0)}</span></div><div class="fila"><span>duración típica: ${ms(K.med_ms)}</span></div>`));
-  h.push(card("c4", "Conexiones a servidores MCP", tabla([["Servidor", (f) => esc(f.servidor)], ["Estado", (f) => esc(f.estado)], ["Veces", (f) => n(f.n)]], O.mcp || [])));
-  h.push(card("c4", "Skills activadas", tabla([["Skill", (f) => esc(f.skill)], ["Cómo", (f) => esc(f.origen)], ["Veces", (f) => n(f.n)]], O.skills || [])));
+  h.push(card("c4", "Compactions", `<div class="kpi">${n(K.n)}<small>${n(K.auto)} automatic</small></div>
+    <div class="fila"><span>before: ${k(K.antes_med || 0)} tokens</span><span>after: ${k(K.despues_med || 0)}</span></div><div class="fila"><span>typical duration: ${ms(K.med_ms)}</span></div>`));
+  h.push(card("c4", "MCP server connections", tabla([["Server", (f) => esc(f.servidor)], ["Status", (f) => esc(f.estado)], ["Times", (f) => n(f.n)]], O.mcp || [])));
+  h.push(card("c4", "Activated skills", tabla([["Skill", (f) => esc(f.skill)], ["How", (f) => esc(f.origen)], ["Times", (f) => n(f.n)]], O.skills || [])));
 }
 function tendencias(T, h) {
   if (!T || !T.semanas || !T.semanas.some((f) => f.turnos)) return;
   const A = T.actual, B = T.anterior, S = T.semanas;
-  h.push(`<div class="seccion">Tendencias<small>hora local · datos desde ${esc(T.desde)} (${n(T.dias_con_datos)} días con actividad)</small></div>`);
+  h.push(`<div class="seccion">Trends<small>local time · data since ${esc(T.desde)} (${n(T.dias_con_datos)} days with activity)</small></div>`);
   const comp = [
-    ["Costo equivalente", usd(A.costo), delta(A.costo, B.costo, -1, usd)],
-    ["Turnos tuyos", n(A.turnos), delta(A.turnos, B.turnos, 0, n)],
-    ["Sesiones", n(A.sesiones), delta(A.sesiones, B.sesiones, 0, n)],
-    ["Costo por turno", usd(A.turnos ? A.costo / A.turnos : 0), delta(A.turnos ? A.costo / A.turnos : 0, B.turnos ? B.costo / B.turnos : 0, -1, usd)],
-    ["Entrada desde caché", A.cache_pct + "%", delta(A.cache_pct, B.cache_pct, 1, (x) => x + "%")],
-    ["Turno típico (mediana)", dur(A.dur_p50), delta(A.dur_p50, B.dur_p50, -1, dur)],
-    ["Turno lento (p90)", dur(A.dur_p90), delta(A.dur_p90, B.dur_p90, -1, dur)],
-    ["Costo en subagentes", A.sub_pct + "%", delta(A.sub_pct, B.sub_pct, 0, (x) => x + "%")],
-    ["Costo en trabajo automático", (A.auto_pct || 0) + "%", delta(A.auto_pct || 0, B.auto_pct || 0, 0, (x) => x + "%")],
+    ["Equivalent cost", usd(A.costo), delta(A.costo, B.costo, -1, usd)],
+    ["Your turns", n(A.turnos), delta(A.turnos, B.turnos, 0, n)],
+    ["Sessions", n(A.sesiones), delta(A.sesiones, B.sesiones, 0, n)],
+    ["Cost per turn", usd(A.turnos ? A.costo / A.turnos : 0), delta(A.turnos ? A.costo / A.turnos : 0, B.turnos ? B.costo / B.turnos : 0, -1, usd)],
+    ["Input from cache", A.cache_pct + "%", delta(A.cache_pct, B.cache_pct, 1, (x) => x + "%")],
+    ["Typical turn (median)", dur(A.dur_p50), delta(A.dur_p50, B.dur_p50, -1, dur)],
+    ["Slow turn (p90)", dur(A.dur_p90), delta(A.dur_p90, B.dur_p90, -1, dur)],
+    ["Cost in subagents", A.sub_pct + "%", delta(A.sub_pct, B.sub_pct, 0, (x) => x + "%")],
+    ["Cost in automatic work", (A.auto_pct || 0) + "%", delta(A.auto_pct || 0, B.auto_pct || 0, 0, (x) => x + "%")],
   ];
-  h.push(card("c12", "Últimos 7 días frente a los 7 anteriores", `<div class="comp">${comp.map((c) => `<div><span>${c[0]}</span><b>${c[1]}</b>${c[2]}</div>`).join("")}</div>
-    <div class="nota">Un turno tuyo empieza con un mensaje que escribiste. El trabajo automático es lo que Claude hace sin que escribas: retomar cuando termina una tarea en segundo plano, avisos del sistema o una compactación (${n(A.turnos_auto || 0)} veces en estos 7 días).</div>`));
-  h.push(card("c8", `Costo por semana y proyecto (${S.length} semanas)`, apiladas(S, T.lideres, "proyectos", sem, false, usd) + leyenda(T.lideres) +
-    `<div class="nota">Cada barra empieza en lunes; la última es la semana en curso.</div>`));
-  h.push(card("c4", "Proyectos que más cambiaron (7 días)", tabla([["Proyecto", (f) => esc(f.proyecto)], ["Ahora", (f) => usd(f.actual)], ["Antes", (f) => usd(f.anterior)],
-    ["Cambio", (f) => `<span class="delta ${f.cambio > 0 ? "sube" : "baja"}">${f.cambio > 0 ? "▲" : "▼"} ${usd(Math.abs(f.cambio))}</span>`]], T.movimientos)));
-  if (T.familias.length) h.push(card("c6", "Modelos por semana (% del costo)", apiladas(S, T.familias, "modelos", sem, true, usd) + leyenda(T.familias)));
-  h.push(card("c6", "Cuándo trabajas (turnos por hora, 30 días)", calor(T.calor)));
-  h.push(card("c6", "Duración del turno por semana", lineas(S.map(sem), [{ nombre: "mediana", valores: S.map((f) => f.dur_p50) }, { nombre: "p90", valores: S.map((f) => f.dur_p90) }], dur) +
-    leyenda(["mediana", "p90 (1 de cada 10 turnos tarda más)"])));
-  h.push(card("c6", "Turnos y sesiones por semana", lineas(S.map(sem), [{ nombre: "turnos", valores: S.map((f) => f.turnos) }], n) +
-    `<div class="nota">Sesiones por semana: ${S.map((f) => n(f.sesiones)).join(" · ")}</div>`));
+  h.push(card("c12", "Last 7 days against the previous 7", `<div class="comp">${comp.map((c) => `<div><span>${c[0]}</span><b>${c[1]}</b>${c[2]}</div>`).join("")}</div>
+    <div class="nota">A turn of yours starts with a message you wrote. Automatic work is what Claude does without you typing: resuming when a background task finishes, system notices or a compaction (${n(A.turnos_auto || 0)} times in these 7 days).</div>`));
+  h.push(card("c8", `Cost by week and project (${S.length} weeks)`, apiladas(S, T.lideres, "proyectos", sem, false, usd) + leyenda(T.lideres) +
+    `<div class="nota">Each bar starts on Monday; the last one is the current week.</div>`));
+  h.push(card("c4", "Projects that changed the most (7 days)", tabla([["Project", (f) => esc(f.proyecto)], ["Now", (f) => usd(f.actual)], ["Before", (f) => usd(f.anterior)],
+    ["Change", (f) => `<span class="delta ${f.cambio > 0 ? "sube" : "baja"}">${f.cambio > 0 ? "▲" : "▼"} ${usd(Math.abs(f.cambio))}</span>`]], T.movimientos)));
+  if (T.familias.length) h.push(card("c6", "Models by week (% of cost)", apiladas(S, T.familias, "modelos", sem, true, usd) + leyenda(T.familias)));
+  h.push(card("c6", "When you work (turns per hour, 30 days)", calor(T.calor)));
+  h.push(card("c6", "Turn duration by week", lineas(S.map(sem), [{ nombre: "median", valores: S.map((f) => f.dur_p50) }, { nombre: "p90", valores: S.map((f) => f.dur_p90) }], dur) +
+    leyenda(["median", "p90 (1 in 10 turns takes longer)"])));
+  h.push(card("c6", "Turns and sessions by week", lineas(S.map(sem), [{ nombre: "turns", valores: S.map((f) => f.turnos) }], n) +
+    `<div class="nota">Sessions by week: ${S.map((f) => n(f.sesiones)).join(" · ")}</div>`));
   const Dd = T.dias.filter((d) => d.turnos);
   if (Dd.length > 1) {
-    h.push(card("c6", "Caché y razonamiento por día (30 días)", lineas(Dd.map((d) => d.dia.slice(8) + "/" + d.dia.slice(5, 7)),
-      [{ nombre: "entrada desde caché", valores: Dd.map((d) => d.cache_pct) }, { nombre: "razonamiento sobre la salida", valores: Dd.map((d) => d.razon_pct) }], (x) => Math.round(x) + "%", 100) +
-      leyenda(["entrada desde caché", "razonamiento sobre la salida"])));
-    h.push(card("c6", "Salida por turno, por día (30 días)", lineas(Dd.map((d) => d.dia.slice(8) + "/" + d.dia.slice(5, 7)), [{ nombre: "tokens de salida por turno", valores: Dd.map((d) => d.salida_turno) }], k)));
+    h.push(card("c6", "Cache and reasoning by day (30 days)", lineas(Dd.map((d) => d.dia.slice(8) + "/" + d.dia.slice(5, 7)),
+      [{ nombre: "input from cache", valores: Dd.map((d) => d.cache_pct) }, { nombre: "reasoning over output", valores: Dd.map((d) => d.razon_pct) }], (x) => Math.round(x) + "%", 100) +
+      leyenda(["input from cache", "reasoning over output"])));
+    h.push(card("c6", "Output per turn, by day (30 days)", lineas(Dd.map((d) => d.dia.slice(8) + "/" + d.dia.slice(5, 7)), [{ nombre: "output tokens per turn", valores: Dd.map((d) => d.salida_turno) }], k)));
   }
 }
 
 function render() {
-  if (!D) { $("#app").innerHTML = `<div class="card c12">Sin datos: corre <code>ws-telemetria build</code>.</div>`; return; }
-  $("#gen").textContent = `Actualizado ${D.generado} · se refresca cada ${D.refresco_s} s · costo = equivalente a precios de la API (tu plan Team no cobra por token)`;
+  if (!D) { $("#app").innerHTML = `<div class="card c12">No data: run <code>ws-telemetria build</code>.</div>`; return; }
+  $("#gen").textContent = `Updated ${D.generado} · refreshes every ${D.refresco_s} s · cost = equivalent at API prices (your Team plan is not billed per token)`;
   const K = D.kpi, h = [];
-  for (const [id, t] of [["hoy", "Hoy"], ["7d", "Últimos 7 días"], ["30d", "Últimos 30 días"]]) {
-    h.push(card("c3", t, `<div class="kpi">${usd(K[id].costo)}<small>equiv. API</small></div>
-      <div class="fila"><span>${k(K[id].tokens)} tokens</span><span>${n(K[id].turnos)} turnos</span></div>`));
+  for (const [id, t] of [["hoy", "Today"], ["7d", "Last 7 days"], ["30d", "Last 30 days"]]) {
+    h.push(card("c3", t, `<div class="kpi">${usd(K[id].costo)}<small>API equiv.</small></div>
+      <div class="fila"><span>${k(K[id].tokens)} tokens</span><span>${n(K[id].turnos)} turns</span></div>`));
   }
-  h.push(card("c3", "Eficiencia", `<div class="kpi">${K.cache_pct}%<small>de la entrada viene de caché</small></div>
-    <div class="fila"><span>salida media/turno: ${k(K.salida_por_turno)}</span><span>razonamiento: ${K.razonamiento_pct}%</span></div>
-    <div class="fila"><span>prompt medio: ${n(K.prompt_chars_medio)} car.</span><span>subagentes: ${K.subagentes_pct}%</span></div>`));
-  h.push(card("c8", "Costo equivalente por día (30 días)", barras(D.dias)));
+  h.push(card("c3", "Efficiency", `<div class="kpi">${K.cache_pct}%<small>of the input comes from cache</small></div>
+    <div class="fila"><span>mean output/turn: ${k(K.salida_por_turno)}</span><span>reasoning: ${K.razonamiento_pct}%</span></div>
+    <div class="fila"><span>mean prompt: ${n(K.prompt_chars_medio)} chars</span><span>subagents: ${K.subagentes_pct}%</span></div>`));
+  h.push(card("c8", "Equivalent cost by day (30 days)", barras(D.dias)));
   const cop = D.copiloto;
-  h.push(card("c4", "Copiloto de la terminal", `<div class="kpi">${n(cop.consultas)}<small>consultas</small></div>
-    <div class="fila"><span>${k(cop.in)} entrada · ${k(cop.out)} salida</span><span>${usd(cop.costo)}</span></div>`));
+  h.push(card("c4", "Terminal copilot", `<div class="kpi">${n(cop.consultas)}<small>queries</small></div>
+    <div class="fila"><span>${k(cop.in)} input · ${k(cop.out)} output</span><span>${usd(cop.costo)}</span></div>`));
   tendencias(D.tendencias, h);
   const RZ = D.razones;
   if (RZ && RZ.razones && RZ.razones.length) {
-    h.push(`<div class="seccion">Razones para estimar<small>últimos ${RZ.dias} días · ${n(RZ.turnos)} turnos tuyos · úsalas como unidad al proyectar</small></div>`);
+    h.push(`<div class="seccion">Ratios for estimating<small>last ${RZ.dias} days · ${n(RZ.turnos)} turns of yours · use them as the unit when projecting</small></div>`);
     const fmtv = (f) => (f.unidad === "USD" || f.unidad === "USD/h" ? usd(f.valor) + (f.unidad === "USD/h" ? "/h" : "") : n(f.valor) + (f.unidad === "%" ? " %" : f.unidad === "×" ? " ×" : " " + esc(f.unidad)));
     for (const g of [...new Set(RZ.razones.map((x) => x.grupo))]) {
-      h.push(card("c6", g, tabla([["Razón", (f) => esc(f.nombre)], ["Valor", (f) => `<b>${fmtv(f)}</b>`], ["Calculado sobre", (f) => `<span class="sub">${esc(f.base)}</span>`]], RZ.razones.filter((x) => x.grupo === g))));
+      h.push(card("c6", g, tabla([["Ratio", (f) => esc(f.nombre)], ["Value", (f) => `<b>${fmtv(f)}</b>`], ["Computed from", (f) => `<span class="sub">${esc(f.base)}</span>`]], RZ.razones.filter((x) => x.grupo === g))));
     }
   }
   otel(D.otel, h);
-  h.push(`<div class="seccion">Detalle<small>últimos 30 días, salvo que la tarjeta diga otra cosa</small></div>`);
-  h.push(card("c6", "Por proyecto", tabla([
-    ["Proyecto", (f) => esc(f.proyecto)], ["Sesiones", (f) => n(f.sesiones)], ["Turnos", (f) => n(f.turnos)],
-    ["Nuevo", (f) => k(f.in)], ["Caché", (f) => k(f.cr)], ["Salida", (f) => k(f.out)], ["Costo", (f) => usd(f.costo)], ["Último", (f) => esc(f.ultimo)],
+  h.push(`<div class="seccion">Detail<small>last 30 days, unless the card says otherwise</small></div>`);
+  h.push(card("c6", "By project", tabla([
+    ["Project", (f) => esc(f.proyecto)], ["Sessions", (f) => n(f.sesiones)], ["Turns", (f) => n(f.turnos)],
+    ["New", (f) => k(f.in)], ["Cache", (f) => k(f.cr)], ["Output", (f) => k(f.out)], ["Cost", (f) => usd(f.costo)], ["Last", (f) => esc(f.ultimo)],
   ], D.proyectos)));
-  h.push(card("c6", "Por modelo", tabla([
-    ["Modelo", (f) => esc(f.modelo) + (f.estimado ? ` <span class="chip">precio estimado</span>` : "")],
-    ["Respuestas", (f) => n(f.respuestas)], ["Entrada", (f) => k(f.in + f.cw)], ["Caché", (f) => k(f.cr)],
-    ["Salida", (f) => k(f.out)], ["Razon.", (f) => k(f.think)], ["Costo", (f) => usd(f.costo)],
+  h.push(card("c6", "By model", tabla([
+    ["Model", (f) => esc(f.modelo) + (f.estimado ? ` <span class="chip">estimated price</span>` : "")],
+    ["Responses", (f) => n(f.respuestas)], ["Input", (f) => k(f.in + f.cw)], ["Cache", (f) => k(f.cr)],
+    ["Output", (f) => k(f.out)], ["Reason.", (f) => k(f.think)], ["Cost", (f) => usd(f.costo)],
   ], D.modelos)));
-  h.push(card("c8", "Sesiones con más consumo", tabla([
-    ["Sesión", (f) => `${esc(f.proyecto)} <span class="chip">${esc(f.sesion)}</span>`], ["Rama", (f) => esc(f.rama)],
-    ["Inicio", (f) => esc((f.inicio || "").slice(0, 16).replace("T", " "))], ["Turnos", (f) => n(f.turnos)],
-    ["Tokens", (f) => k(f.tokens)], ["Subagentes", (f) => k(f.sub_tokens)], ["Costo", (f) => usd(f.costo)],
+  h.push(card("c8", "Sessions with the most usage", tabla([
+    ["Session", (f) => `${esc(f.proyecto)} <span class="chip">${esc(f.sesion)}</span>`], ["Branch", (f) => esc(f.rama)],
+    ["Start", (f) => esc((f.inicio || "").slice(0, 16).replace("T", " "))], ["Turns", (f) => n(f.turnos)],
+    ["Tokens", (f) => k(f.tokens)], ["Subagents", (f) => k(f.sub_tokens)], ["Cost", (f) => usd(f.costo)],
   ], D.sesiones)));
-  h.push(card("c4", "Herramientas más usadas", tabla([["Herramienta", (f) => esc(f.herramienta)], ["Usos", (f) => n(f.usos)]], D.herramientas)));
+  h.push(card("c4", "Most used tools", tabla([["Tool", (f) => esc(f.herramienta)], ["Uses", (f) => n(f.usos)]], D.herramientas)));
   const turnos = D.turnos_recientes.map((t) => {
     const tot = Math.max(1, t.nuevo + t.contexto + t.salida);
-    return { ...t, barra: `<div class="barra" title="nuevo ${k(t.nuevo)} · contexto ${k(t.contexto)} · salida ${k(t.salida)}">
+    return { ...t, barra: `<div class="barra" title="new ${k(t.nuevo)} · context ${k(t.contexto)} · output ${k(t.salida)}">
       <span style="width:${100 * t.nuevo / tot}%;background:var(--acc)"></span><span style="width:${100 * t.contexto / tot}%;background:var(--bar2)"></span>
       <span style="width:${100 * t.salida / tot}%;background:var(--ok)"></span></div>` };
   });
-  h.push(card("c8", "Últimos turnos: lo que preguntas frente a lo que se procesa y responde", tabla([
-    ["Inicio", (f) => esc(f.inicio.slice(5, 16).replace("T", " "))], ["Proyecto", (f) => esc(f.proyecto)],
-    ["Prompt", (f) => n(f.prompt_chars) + " car."], ["Nuevo", (f) => k(f.nuevo)], ["Contexto", (f) => k(f.contexto)],
-    ["Salida", (f) => k(f.salida)], ["Proporción", (f) => `<div style="width:140px">${f.barra}</div>`], ["Costo", (f) => usd(f.costo)],
-  ], turnos) + `<div class="leyenda"><span><i style="background:var(--acc)"></i>entrada nueva</span><span><i style="background:var(--bar2)"></i>contexto reusado (caché)</span><span><i style="background:var(--ok)"></i>salida</span></div>`));
+  h.push(card("c8", "Latest turns: what you ask against what is processed and answered", tabla([
+    ["Start", (f) => esc(f.inicio.slice(5, 16).replace("T", " "))], ["Project", (f) => esc(f.proyecto)],
+    ["Prompt", (f) => n(f.prompt_chars) + " chars"], ["New", (f) => k(f.nuevo)], ["Context", (f) => k(f.contexto)],
+    ["Output", (f) => k(f.salida)], ["Proportion", (f) => `<div style="width:140px">${f.barra}</div>`], ["Cost", (f) => usd(f.costo)],
+  ], turnos) + `<div class="leyenda"><span><i style="background:var(--acc)"></i>new input</span><span><i style="background:var(--bar2)"></i>reused context (cache)</span><span><i style="background:var(--ok)"></i>output</span></div>`));
   const rec = Object.entries(D.recursos || {}).map(([p, r]) => ({ proyecto: p, ...r })).sort((a, b) => b.cpu_pct - a.cpu_pct);
-  h.push(card("c4", "Recursos de Claude por proyecto (24 h)", tabla([
-    ["Proyecto", (f) => esc(f.proyecto)], ["CPU", (f) => f.cpu_pct + "%"], ["RAM máx", (f) => n(f.ram_mb) + " MB"],
-    ["Ops/s", (f) => f.iops], ["Leído", (f) => f.leidos_mb + " MB"], ["Escrito", (f) => f.escritos_mb + " MB"],
-  ], rec) + `<div class="leyenda">Muestras cada minuto del proceso de Claude. La inferencia ocurre en la nube: tu GPU no participa.</div>`));
+  h.push(card("c4", "Claude resources by project (24 h)", tabla([
+    ["Project", (f) => esc(f.proyecto)], ["CPU", (f) => f.cpu_pct + "%"], ["Max RAM", (f) => n(f.ram_mb) + " MB"],
+    ["Ops/s", (f) => f.iops], ["Read", (f) => f.leidos_mb + " MB"], ["Written", (f) => f.escritos_mb + " MB"],
+  ], rec) + `<div class="leyenda">Samples of the Claude process every minute. Inference happens in the cloud: your GPU is not involved.</div>`));
   const R = D.ruteo;
-  if (R) h.push(card("c6", "Ruteo de modelos (30 días)", `<div class="kpi">${R.tasa_aceptacion}%<small>de las sugerencias aceptadas</small></div>
-    <div class="fila"><span>${n(R.sugerencias)} sugerencias</span><span>${n(R.aceptado)} aceptadas · ${n(R.rechazado)} no · ${n(R.editar)} editadas</span></div>
-    <div class="fila"><span>${n(R.igual)} ya estaban en el nivel correcto</span><span>${n(R.manual)} desde el menú · ${n(R.cr)} con cr</span></div>` +
-    tabla([["Regla", (f) => esc(f.regla)], ["Nivel", (f) => esc(f.nivel)], ["Sugerida", (f) => n(f.sugerida)],
-           ["Aceptada", (f) => n(f.aceptada)], ["Rechazada", (f) => n(f.rechazada)]], R.reglas)));
+  if (R) h.push(card("c6", "Model routing (30 days)", `<div class="kpi">${R.tasa_aceptacion}%<small>of the suggestions accepted</small></div>
+    <div class="fila"><span>${n(R.sugerencias)} suggestions</span><span>${n(R.aceptado)} accepted · ${n(R.rechazado)} not · ${n(R.editar)} edited</span></div>
+    <div class="fila"><span>${n(R.igual)} were already at the right level</span><span>${n(R.manual)} from the menu · ${n(R.cr)} with cr</span></div>` +
+    tabla([["Rule", (f) => esc(f.regla)], ["Level", (f) => esc(f.nivel)], ["Suggested", (f) => n(f.sugerida)],
+           ["Accepted", (f) => n(f.aceptada)], ["Rejected", (f) => n(f.rechazada)]], R.reglas)));
   const G = D.telegram;
-  if (G) h.push(card("c6", "Telegram (30 días)", `<div class="kpi">${n(G.respuestas)}<small>respuestas desde el celular</small></div>
-    <div class="fila"><span>${n(G.enviados)} avisos enviados</span><span>${n(G.cambio)} con la pantalla cambiada · ${n(G.vencido)} vencidos</span></div>
-    <div class="fila"><span>${G.no_autorizado ? `<span class="chip">${n(G.no_autorizado)} intentos no autorizados</span>` : "0 intentos no autorizados"}</span><span>${n(G.errores)} errores de envío o de la API</span></div>` +
-    tabla([["Cuándo", (f) => esc(f.ts.slice(5, 16).replace("T", " "))], ["Evento", (f) => esc(f.evento)], ["Detalle", (f) => esc(f.detalle)]], G.recientes)));
+  if (G) h.push(card("c6", "Telegram (30 days)", `<div class="kpi">${n(G.respuestas)}<small>replies from the phone</small></div>
+    <div class="fila"><span>${n(G.enviados)} notifications sent</span><span>${n(G.cambio)} with the screen changed · ${n(G.vencido)} expired</span></div>
+    <div class="fila"><span>${G.no_autorizado ? `<span class="chip">${n(G.no_autorizado)} unauthorized attempts</span>` : "0 unauthorized attempts"}</span><span>${n(G.errores)} send or API errors</span></div>` +
+    tabla([["When", (f) => esc(f.ts.slice(5, 16).replace("T", " "))], ["Event", (f) => esc(f.evento)], ["Detail", (f) => esc(f.detalle)]], G.recientes)));
   const W = D.palabras;
-  if (W && W.turnos) h.push(card("c6", "Palabras (30 días)", `<div class="kpi">${n(W.prompt_medio)} → ${n(W.resp_medio)}<small>palabras por turno: lo que escribes → lo que Claude responde</small></div>
-    <div class="fila"><span>${n(W.prompt_total)} escritas · ${n(W.resp_total)} respondidas</span><span>${W.resp_por_prompt} palabras de respuesta por cada palabra tuya</span></div>
-    <div class="fila"><span>${W.tokens_salida_por_palabra} tokens de salida por palabra visible</span><span>incluye razonamiento y llamadas a herramientas</span></div>` +
-    tabla([["Proyecto", (f) => esc(f.proyecto)], ["Turnos", (f) => n(f.turnos)], ["Escritas", (f) => n(f.prompt)], ["Respondidas", (f) => n(f.resp)]], W.proyectos)));
+  if (W && W.turnos) h.push(card("c6", "Words (30 days)", `<div class="kpi">${n(W.prompt_medio)} → ${n(W.resp_medio)}<small>words per turn: what you write → what Claude answers</small></div>
+    <div class="fila"><span>${n(W.prompt_total)} written · ${n(W.resp_total)} answered</span><span>${W.resp_por_prompt} answer words per word of yours</span></div>
+    <div class="fila"><span>${W.tokens_salida_por_palabra} output tokens per visible word</span><span>includes reasoning and tool calls</span></div>` +
+    tabla([["Project", (f) => esc(f.proyecto)], ["Turns", (f) => n(f.turnos)], ["Written", (f) => n(f.prompt)], ["Answered", (f) => n(f.resp)]], W.proyectos)));
   const N = D.red;
-  if (N) h.push(card("c6", "Red (24 h)", `<div class="kpi">↓ ${N.wsl_baja_mb} MB · ↑ ${N.wsl_sube_mb} MB<small>todo WSL, medido (git, npm, az, Claude…)</small></div>
-    <div class="fila"><span>${n(N.muestras)} muestras de 1 min</span><span>Claude por proyecto: estimado desde los tokens (~4 bytes por token)</span></div>` +
-    tabla([["Proyecto", (f) => esc(f.proyecto)], ["↑ Enviado", (f) => f.sube_mb + " MB"], ["↓ Recibido", (f) => f.baja_mb + " MB"]], N.claude)));
-  // Parche 51: trazas, estimación y presupuestos
+  if (N) h.push(card("c6", "Network (24 h)", `<div class="kpi">↓ ${N.wsl_baja_mb} MB · ↑ ${N.wsl_sube_mb} MB<small>all of WSL, measured (git, npm, az, Claude…)</small></div>
+    <div class="fila"><span>${n(N.muestras)} 1 min samples</span><span>Claude by project: estimated from tokens (~4 bytes per token)</span></div>` +
+    tabla([["Project", (f) => esc(f.proyecto)], ["↑ Sent", (f) => f.sube_mb + " MB"], ["↓ Received", (f) => f.baja_mb + " MB"]], N.claude)));
+  // Patch 51: traces, estimation and budgets
   const dms = (ms) => ms == null ? "—" : ms >= 60000 ? (ms / 60000).toFixed(1) + " min" : (ms / 1000).toFixed(1) + " s";
   const chips = (l, f) => l.length ? `<div class="leyenda">${l.map((x) => `<span class="chip">${f(x)}</span>`).join("")}</div>` : "";
   const TZ = D.trazas;
   if (TZ) {
-    h.push(card("c6", "Herramientas: tiempo, errores y costo (30 días)", `<div class="kpi">${n(TZ.llamadas)}<small>llamadas · ${TZ.error_pct}% con error</small></div>
-      <div class="fila"><span>Tu espera para aprobar: ${n(TZ.espera.n)} veces · mediana ${TZ.espera.med_s} s · p95 ${TZ.espera.p95_s} s</span><span>${TZ.espera.total_min} min en total</span></div>` +
-      tabla([["Herramienta", (f) => esc(f.nombre)], ["Usos", (f) => n(f.usos)], ["Errores", (f) => n(f.errores)], ["Mediana", (f) => dms(f.med_ms)],
-             ["p95", (f) => dms(f.p95_ms)], ["$ aprox.", (f) => usd(f.costo)]], TZ.herramientas.slice(0, 10))));
-    h.push(card("c6", "Bash por tipo de trabajo (30 días)", tabla([["Tipo", (f) => esc(f.nombre)], ["Usos", (f) => n(f.usos)], ["Minutos", (f) => f.total_min],
-             ["Errores", (f) => n(f.errores)]], TZ.bash_categorias) +
-      tabla([["Comando", (f) => esc(f.nombre)], ["Usos", (f) => n(f.usos)], ["Mediana", (f) => dms(f.med_ms)], ["Tipo", (f) => esc(f.categoria)]], TZ.bash.slice(0, 8))));
-    h.push(card("c6", "Código: lenguajes y archivos (30 días)", `<div class="fila"><span>${n(TZ.sesiones.commits)} commits en ${n(TZ.sesiones.cerradas)} sesiones cerradas</span>
-      <span>+${n(TZ.sesiones.lineas_mas)} / −${n(TZ.sesiones.lineas_menos)} líneas (diff de cada sesión)</span></div>` +
-      tabla([["Extensión", (f) => esc(f.ext)], ["Ediciones", (f) => n(f.ediciones)], ["+ líneas", (f) => n(f.lineas_mas)], ["− líneas", (f) => n(f.lineas_menos)]], TZ.lenguajes.slice(0, 6)) +
-      tabla([["Archivo", (f) => esc(f.archivo)], ["Ediciones", (f) => n(f.ediciones)], ["+", (f) => n(f.lineas_mas)], ["−", (f) => n(f.lineas_menos)]], TZ.archivos.slice(0, 8))));
-    h.push(card("c6", "MCP, subagentes, skills y errores (30 días)",
-      tabla([["Servidor MCP", (f) => esc(f.nombre)], ["Usos", (f) => n(f.usos)], ["Errores", (f) => n(f.errores)], ["Mediana", (f) => dms(f.med_ms)],
-             ["Métodos", (f) => esc(f.metodos.join(", "))]], TZ.mcp) +
-      tabla([["Subagente", (f) => esc(f.nombre)], ["Usos", (f) => n(f.usos)], ["Mediana", (f) => dms(f.med_ms)]], TZ.subagentes) +
+    h.push(card("c6", "Tools: time, errors and cost (30 days)", `<div class="kpi">${n(TZ.llamadas)}<small>calls · ${TZ.error_pct}% with errors</small></div>
+      <div class="fila"><span>Your wait to approve: ${n(TZ.espera.n)} times · median ${TZ.espera.med_s} s · p95 ${TZ.espera.p95_s} s</span><span>${TZ.espera.total_min} min in total</span></div>` +
+      tabla([["Tool", (f) => esc(f.nombre)], ["Uses", (f) => n(f.usos)], ["Errors", (f) => n(f.errores)], ["Median", (f) => dms(f.med_ms)],
+             ["p95", (f) => dms(f.p95_ms)], ["$ approx.", (f) => usd(f.costo)]], TZ.herramientas.slice(0, 10))));
+    h.push(card("c6", "Bash by type of work (30 days)", tabla([["Type", (f) => esc(f.nombre)], ["Uses", (f) => n(f.usos)], ["Minutes", (f) => f.total_min],
+             ["Errors", (f) => n(f.errores)]], TZ.bash_categorias) +
+      tabla([["Command", (f) => esc(f.nombre)], ["Uses", (f) => n(f.usos)], ["Median", (f) => dms(f.med_ms)], ["Type", (f) => esc(f.categoria)]], TZ.bash.slice(0, 8))));
+    h.push(card("c6", "Code: languages and files (30 days)", `<div class="fila"><span>${n(TZ.sesiones.commits)} commits in ${n(TZ.sesiones.cerradas)} closed sessions</span>
+      <span>+${n(TZ.sesiones.lineas_mas)} / −${n(TZ.sesiones.lineas_menos)} lines (diff of each session)</span></div>` +
+      tabla([["Extension", (f) => esc(f.ext)], ["Edits", (f) => n(f.ediciones)], ["+ lines", (f) => n(f.lineas_mas)], ["− lines", (f) => n(f.lineas_menos)]], TZ.lenguajes.slice(0, 6)) +
+      tabla([["File", (f) => esc(f.archivo)], ["Edits", (f) => n(f.ediciones)], ["+", (f) => n(f.lineas_mas)], ["−", (f) => n(f.lineas_menos)]], TZ.archivos.slice(0, 8))));
+    h.push(card("c6", "MCP, subagents, skills and errors (30 days)",
+      tabla([["MCP server", (f) => esc(f.nombre)], ["Uses", (f) => n(f.usos)], ["Errors", (f) => n(f.errores)], ["Median", (f) => dms(f.med_ms)],
+             ["Methods", (f) => esc(f.metodos.join(", "))]], TZ.mcp) +
+      tabla([["Subagent", (f) => esc(f.nombre)], ["Uses", (f) => n(f.usos)], ["Median", (f) => dms(f.med_ms)]], TZ.subagentes) +
       chips(TZ.skills, (x) => `skill ${esc(x.nombre)}: ${x.usos}`) + chips(TZ.errores_tipo, (x) => `error ${esc(x.tipo)}: ${x.n}`) +
-      chips(TZ.denegados, (x) => `denegado ${esc(x.accion)}: ${x.n}`) +
-      chips(Object.entries(TZ.compactaciones), (x) => `compactación ${esc(x[0])}: ${x[1]}`) +
+      chips(TZ.denegados, (x) => `denied ${esc(x.accion)}: ${x.n}`) +
+      chips(Object.entries(TZ.compactaciones), (x) => `compaction ${esc(x[0])}: ${x[1]}`) +
       chips(TZ.prompts.comandos, (x) => `${esc(x.comando)}: ${x.n}`)));
   }
   const ES = D.estimacion;
-  if (ES && ES.length) h.push(card("c12", "Estimación por ticket (90 días)", `<div class="fila"><span>Ticket tomado de la rama (ABC-123). Horas activas = turnos unidos si el hueco es ≤ 15 min.</span>
-      <span>Detalle: <code>ws-telemetria estimar</code> · CSV: <code>ws-telemetria exportar</code></span></div>` +
-    tabla([["Ticket / rama", (f) => esc(f.clave)], ["Proyecto", (f) => esc(f.proyecto)], ["Horas activas", (f) => f.horas_activas], ["Días", (f) => n(f.dias)],
-           ["Turnos", (f) => n(f.turnos)], ["Costo", (f) => usd(f.costo)], ["Modelo", (f) => esc(f.modelo)], ["+/− líneas", (f) => `+${n(f.lineas_mas)}/−${n(f.lineas_menos)}`],
-           ["Commits", (f) => n(f.commits)], ["Errores", (f) => n(f.errores)], ["Del", (f) => esc(f.inicio.slice(5))], ["Al", (f) => esc(f.fin.slice(5))]], ES)));
+  if (ES && ES.length) h.push(card("c12", "Estimation by ticket (90 days)", `<div class="fila"><span>Ticket taken from the branch (ABC-123). Active hours = turns merged if the gap is ≤ 15 min.</span>
+      <span>Detail: <code>ws-telemetria estimar</code> · CSV: <code>ws-telemetria exportar</code></span></div>` +
+    tabla([["Ticket / branch", (f) => esc(f.clave)], ["Project", (f) => esc(f.proyecto)], ["Active hours", (f) => f.horas_activas], ["Days", (f) => n(f.dias)],
+           ["Turns", (f) => n(f.turnos)], ["Cost", (f) => usd(f.costo)], ["Model", (f) => esc(f.modelo)], ["+/− lines", (f) => `+${n(f.lineas_mas)}/−${n(f.lineas_menos)}`],
+           ["Commits", (f) => n(f.commits)], ["Errors", (f) => n(f.errores)], ["From", (f) => esc(f.inicio.slice(5))], ["To", (f) => esc(f.fin.slice(5))]], ES)));
   const PR = D.presupuestos;
-  if (PR && PR.length) h.push(card("c6", "Presupuestos del mes", tabla([["Proyecto", (f) => esc(f.proyecto)], ["Gastado", (f) => usd(f.gastado)],
-      ["Presupuesto", (f) => usd(f.presupuesto)], ["Uso", (f) => `<span class="${f.pct >= 100 ? "chip" : ""}">${f.pct}%</span>`], ["Proyección", (f) => usd(f.proyeccion)]], PR)));
-  h.push(`<footer>Datos locales en ~/.local/share/ws-telemetria (13 meses, sin texto de conversaciones) · consultas propias: <code>ws-telemetria sql</code> · ADR-008</footer>`);
+  if (PR && PR.length) h.push(card("c6", "Budgets for the month", tabla([["Project", (f) => esc(f.proyecto)], ["Spent", (f) => usd(f.gastado)],
+      ["Budget", (f) => usd(f.presupuesto)], ["Used", (f) => `<span class="${f.pct >= 100 ? "chip" : ""}">${f.pct}%</span>`], ["Projection", (f) => usd(f.proyeccion)]], PR)));
+  h.push(`<footer>Local data in ~/.local/share/ws-telemetria (13 months, no conversation text) · your own queries: <code>ws-telemetria sql</code> · ADR-008</footer>`);
   $("#app").innerHTML = h.join("");
 }
 render();

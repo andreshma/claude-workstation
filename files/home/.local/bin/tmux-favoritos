@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# tmux-favoritos — pestañas favoritas: marca la carpeta de una pestaña con ★ y vuelve a ella desde una lista,
-# esté abierta o no. La marca es de la carpeta, no de la pestaña: sobrevive a cerrar la pestaña y a reiniciar tmux.
-# Ctrl+b * pone o quita la pestaña actual · Ctrl+b F abre la lista.
+# tmux-favoritos — favorite tabs: mark a tab's folder with ★ and get back to it from a list, whether it is
+# open or not. The mark belongs to the folder, not the tab: it survives closing the tab and restarting tmux.
+# Ctrl+b * adds or removes the current tab · Ctrl+b F opens the list.
 #
-# Uso: tmux-favoritos                       lista (Enter: ir o abrir · Ctrl+X: quitar de favoritas)
-#      tmux-favoritos --alternar [ventana]  pone o quita la carpeta de esa pestaña (por defecto, la actual)
-#      tmux-favoritos --quitar <carpeta>    quita una carpeta de favoritas
-#      tmux-favoritos --lista               la lista en texto: carpeta<TAB>fila visible
-#      tmux-favoritos --marcar              pone o quita la ★ en todas las pestañas abiertas (lo llaman los hooks)
-#      tmux-favoritos --barra               agrega la ★ a los formatos de la barra (idempotente)
-# Archivo: ~/.config/tmux-claude/favoritos, una carpeta por línea. Se puede editar a mano.
+# Usage: tmux-favoritos                     list (Enter: go or open · Ctrl+X: remove from favorites)
+#      tmux-favoritos --alternar [window]   adds or removes that tab's folder (default: the current one)
+#      tmux-favoritos --quitar <folder>     removes a folder from favorites
+#      tmux-favoritos --lista               the list as text: folder<TAB>visible row
+#      tmux-favoritos --marcar              sets or clears the ★ on all open tabs (called by the hooks)
+#      tmux-favoritos --barra               adds the ★ to the status bar formats (idempotent)
+# File: ~/.config/tmux-claude/favoritos, one folder per line. It can be edited by hand.
 set -uo pipefail
 FAV="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-claude/favoritos"
 TAB=$'\t'
@@ -20,7 +20,7 @@ favoritas() { [[ -f "$FAV" ]] && grep -v '^[[:space:]]*$' "$FAV"; }
 es_favorita() { favoritas | grep -qxF -- "$1"; }
 
 #######################################
-# Reescribe el archivo sin una carpeta (escritura atómica: nunca queda a medias).
+# Rewrites the file without one folder (atomic write: never left half-written).
 #######################################
 quitar() {
   local tmp; tmp="$(mktemp "$FAV.XXXXXX")" || return 1
@@ -29,7 +29,7 @@ quitar() {
 }
 
 #######################################
-# Sincroniza la opción @fav de cada pestaña abierta con el archivo.
+# Syncs the @fav option of every open tab with the file.
 #######################################
 marcar() {
   local w d
@@ -40,7 +40,7 @@ marcar() {
 }
 
 #######################################
-# Filas de la lista: carpeta<TAB>★ nombre · abierta o no · ruta corta.
+# List rows: folder<TAB>★ name · open or not · short path.
 #######################################
 lista() {
   local d abiertas donde
@@ -48,8 +48,8 @@ lista() {
   while IFS= read -r d; do
     donde="$(awk -F "$TAB" -v d="$d" '$1 == d { print $2; exit }' <<<"$abiertas")"
     if [[ -n "$donde" ]]; then donde=$'\e[32m● '"${donde:0:26}"$'\e[0m'
-    elif [[ -d "$d" ]]; then donde=$'\e[2m○ sin pestaña\e[0m'
-    else donde=$'\e[31m✗ ya no existe\e[0m'; fi
+    elif [[ -d "$d" ]]; then donde=$'\e[2m○ no tab\e[0m'
+    else donde=$'\e[31m✗ no longer exists\e[0m'; fi
     printf '%s\t\e[33m★\e[0m %-24s %-40s \e[2m%s\e[0m\n' "$d" "$(basename "$d" | cut -c1-24)" "$donde" "${d/#"$HOME"/\~}"
   done < <(favoritas)
 }
@@ -62,27 +62,27 @@ case "${1:-}" in
     done; exit 0 ;;
   --marcar) marcar; exit 0 ;;
   --lista) lista; exit 0 ;;
-  --quitar) quitar "${2:?carpeta}"; marcar; exit 0 ;;
+  --quitar) quitar "${2:?folder}"; marcar; exit 0 ;;
   --alternar)
     d="$(tmux display -p ${2:+-t "$2"} '#{pane_current_path}')"
     [[ -n "$d" ]] || exit 1
     mkdir -p "$(dirname "$FAV")"
-    if es_favorita "$d"; then quitar "$d"; msg="☆ Quitada de favoritas: $(basename "$d")"
-    else printf '%s\n' "$d" >> "$FAV"; msg="★ Favorita: $(basename "$d") · Ctrl+b F abre la lista"; fi
+    if es_favorita "$d"; then quitar "$d"; msg="☆ Removed from favorites: $(basename "$d")"
+    else printf '%s\n' "$d" >> "$FAV"; msg="★ Favorite: $(basename "$d") · Ctrl+b F opens the list"; fi
     marcar; "$0" --barra
     tmux display "$msg"; exit 0 ;;
 esac
 
 if [[ -z "$(favoritas)" ]]; then
-  echo "Aún no hay favoritas. En una pestaña, Ctrl+b * la marca (o Menú → Pestañas y sesión)."
+  echo "No favorites yet. In a tab, Ctrl+b * marks it (or Menu → Tabs and session)."
   read -rsn1; exit 0
 fi
 command -v fzf >/dev/null || { lista | cut -f2; read -rsn1; exit 0; }
 yo="$(printf '%q' "$0")"
-sel="$(lista | fzf --ansi --reverse --delimiter="$TAB" --with-nth=2 --prompt='favoritas> ' \
-  --header 'Enter: ir o abrir · Ctrl+X: quitar de favoritas' \
+sel="$(lista | fzf --ansi --reverse --delimiter="$TAB" --with-nth=2 --prompt='favorites> ' \
+  --header 'Enter: go or open · Ctrl+X: remove from favorites' \
   --bind "ctrl-x:execute-silent($yo --quitar {1})+reload($yo --lista)" \
   --preview 'git -C {1} log --oneline -8 2>/dev/null; echo; ls -p {1} 2>/dev/null | head -40')" || exit 0
 d="${sel%%"$TAB"*}"
-[[ -d "$d" ]] || { echo "Esa carpeta ya no existe: $d (Ctrl+X la quita de la lista)"; read -rsn1; exit 1; }
+[[ -d "$d" ]] || { echo "That folder no longer exists: $d (Ctrl+X removes it from the list)"; read -rsn1; exit 1; }
 exec "$(dirname "$0")/tmux-open" --dir "$d"

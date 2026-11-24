@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
 #
-# tmux-watch — vigía de la estación. tmux lo corre cada status-interval desde la barra
-# (#(tmux-watch)) y su salida es el semáforo que ves a la derecha:
-#   ⚠ 2,5      pestañas esperando tu aprobación o con error de API
-#   ⏳ 3(12m)  pestañas sin actividad de Claude hace rato (¿se atoró?)
-#   ◉ $4.1/h   consumo estimado de todas las sesiones en los últimos 10 min (verde/amarillo/rojo)
-#   5h 82%     límites de uso, si tu plan los expone
-# Además manda recordatorios de Windows (vía win-notify.sh alert), con pausa entre uno y otro.
-# Umbrales (opciones de tmux, con su valor por defecto):
+# tmux-watch — the workstation's watchdog. tmux runs it every status-interval from the status bar
+# (#(tmux-watch)) and its output is the traffic light you see on the right:
+#   ⚠ 2,5      tabs waiting for your approval or with an API error
+#   ⏳ 3(12m)  tabs with no Claude activity for a while (stalled?)
+#   ◉ $4.1/h   estimated usage of all sessions over the last 10 min (green/yellow/red)
+#   5h 82%     usage limits, if your plan exposes them
+# It also sends Windows reminders (via win-notify.sh alert), with a pause between them.
+# Thresholds (tmux options, with their default value):
 #   @cwatch_remind 3 (min)   @cwatch_stall 10 (min)   @cburn_warn 5   @cburn_crit 15 (USD/h)
-# Uso: tmux-watch            salida para la barra
-#      tmux-watch --goto     salta a la primera pestaña que espera o está inactiva
+# Usage: tmux-watch          output for the bar
+#      tmux-watch --goto     jumps to the first tab that is waiting or stalled
 set -uo pipefail
 uid="$(id -u)"; burn="/tmp/claude-burn-$uid"; st="/tmp/claude-watch-$uid"; mkdir -p "$st" && chmod 700 "$st"
 now="$(date +%s)"
 opt() { local v; v="$(tmux show -gqv "$1")"; echo "${v:-$2}"; }
 remind=$(( $(opt @cwatch_remind 3) * 60 )); stall=$(( $(opt @cwatch_stall 10) * 60 ))
 warn="$(opt @cburn_warn 5)"; crit="$(opt @cburn_crit 15)"
-# tcolor <nombre> <por defecto> — color semántico del tema activo (ver tmux-theme).
+# tcolor <name> <default> — semantic colour of the active theme (see tmux-theme).
 tcolor() { local v; v="$(tmux show -gqv "@t_$1" 2>/dev/null)"; echo "${v:-$2}"; }
 notify_on() { [[ "$(tmux show -gqv @cnotify)" != off ]]; }
 
-# alert <clave> <cada (s)> <pane> <título> <mensaje> — aviso de Windows con pausa por clave.
+# alert <key> <every (s)> <pane> <title> <message> — Windows notification with a per-key pause.
 alert() {
   local f="$st/$1" last; last="$(cat "$f" 2>/dev/null || echo 0)"
   (( now - last >= $2 )) || return 0
@@ -31,7 +31,7 @@ alert() {
 }
 mins() { echo "$(( ($1 + 59) / 60 ))m"; }
 
-# Colector local de OpenTelemetry (ws-otel): si no corre, se levanta. Sin él, lo que Claude emite se pierde.
+# Local OpenTelemetry collector (ws-otel): if it is not running, start it. Without it, what Claude emits is lost.
 if [[ -x "$HOME/.local/bin/ws-otel" ]]; then
   op="$(cat "${XDG_RUNTIME_DIR:-/tmp}/ws-otel-$(id -u)/pid" 2>/dev/null)"
   { [[ -n "$op" ]] && kill -0 "$op" 2>/dev/null; } || ( "$HOME/.local/bin/ws-otel" asegurar >/dev/null 2>&1 & )
@@ -41,28 +41,28 @@ waiting=(); stalled=(); goto=""; cands=()
 while IFS='|' read -r wid idx name pane main ts sub; do
   [[ -n "$main" ]] || { tmux set -wu -t "$wid" @cstall 2>/dev/null; continue; }
   age=$(( now - ${ts:-$now} ))
-  case "$main" in
+  case "$main" in   # @cmain values are stored identifiers written by tmux-state.sh
     "te necesita"|"error API")
       waiting+=("$idx"); goto="${goto:-$wid}"; cands+=("$wid"); tmux set -wu -t "$wid" @cstall 2>/dev/null
       (( age >= remind )) && alert "wait-$wid" "$remind" "$pane" "Claude · $idx $name" \
-        "Sigue esperando tu respuesta ($main) hace $(mins "$age")" ;;
-    "te toca")   # Claude terminó dejándote algo: cuenta en ⚠, con un solo recordatorio (no es un diálogo abierto)
+        "Still waiting for your answer ($main) for $(mins "$age")" ;;
+    "te toca")   # Claude finished leaving you something: counts in ⚠, with a single reminder (not an open dialog)
       waiting+=("$idx"); goto="${goto:-$wid}"; cands+=("$wid"); tmux set -wu -t "$wid" @cstall 2>/dev/null
       (( age >= remind )) && alert "wait-$wid" 86400 "$pane" "Claude · $idx $name" \
-        "Te dejó algo por hacer o responder hace $(mins "$age")" ;;
+        "It left you something to do or answer $(mins "$age") ago" ;;
     listo) rm -f "$st/wait-$wid" "$st/stall-$wid"; tmux set -wu -t "$wid" @cstall 2>/dev/null ;;
     *)
       if (( age >= stall )); then
         stalled+=("$idx($(mins "$age"))"); goto="${goto:-$wid}"; cands+=("$wid"); tmux set -w -t "$wid" @cstall 1
         alert "stall-$wid" $(( stall * 2 )) "$pane" "Claude · $idx $name" \
-          "Sin actividad hace $(mins "$age") (estado: $main${sub:+, $sub agentes}). ¿Se atoró?"
+          "No activity for $(mins "$age") (state: $main${sub:+, $sub agents}). Stalled?"
       else tmux set -wu -t "$wid" @cstall 2>/dev/null; fi ;;
   esac
 done < <(tmux list-windows -a -F '#{window_id}|#{window_index}|#{window_name}|#{pane_id}|#{@cmain}|#{@cts}|#{@csub}' 2>/dev/null)
 
 if [[ "${1:-}" == --goto ]]; then
-  # Salta a la SIGUIENTE que te espera, no a la que ya tienes enfrente (antes elegía la primera, que muchas veces era
-  # la actual, y parecía no hacer nada). switch-client cambia también de grupo; select-window solo dentro del mismo.
+  # Jumps to the NEXT one waiting for you, not the one already in front of you (it used to pick the first, which was
+  # often the current one, and seemed to do nothing). switch-client also switches group; select-window only within it.
   cur="$(tmux display -p '#{window_id}' 2>/dev/null)"; goto=""; visto=0
   for w in "${cands[@]}"; do [[ "$w" == "$cur" ]] && { visto=1; continue; }; (( visto )) && { goto="$w"; break; }; done
   [[ -n "$goto" ]] || for w in "${cands[@]}"; do [[ "$w" != "$cur" ]] && { goto="$w"; break; }; done
@@ -70,12 +70,12 @@ if [[ "${1:-}" == --goto ]]; then
     ses="$(tmux display -p -t "$goto" '#{session_id}' 2>/dev/null)"
     [[ -n "$ses" ]] && tmux switch-client -t "$ses" 2>/dev/null
     tmux select-window -t "$goto"
-  elif (( ${#cands[@]} )); then tmux display "Esta es la única pestaña que te espera"
-  else tmux display "Ninguna pestaña espera ni está inactiva"; fi
+  elif (( ${#cands[@]} )); then tmux display "This is the only tab waiting for you"
+  else tmux display "No tab is waiting or stalled"; fi
   exit 0
 fi
 
-# Consumo: suma de las tasas de cada sesión con muestras en los últimos 10 min.
+# Usage: sum of the rates of each session with samples in the last 10 min.
 rate="$(find "$burn" -maxdepth 1 -name '*.log' -mmin -10 2>/dev/null | while read -r f; do
   awk -v now="$now" 'NF == 2 && $1 >= now - 600 { if (!t0) { t0 = $1; c0 = $2 } c1 = $2 }
     END { if (t0 && now - t0 >= 60) printf "%.4f\n", (c1 - c0) / (now - t0) * 3600; else print 0 }' "$f"
@@ -88,19 +88,19 @@ lim=$(( ${five:--1} > ${week:--1} ? ${five:--1} : ${week:--1} ))
 level="$(awk -v r="$rate" -v w="$warn" -v c="$crit" -v l="$lim" \
   'BEGIN { if (r >= c || l >= 90) print "crit"; else if (r >= w || l >= 75) print "warn"; else print "ok" }')"
 case "$level" in crit) c="$(tcolor alert colour196)" ;; warn) c="$(tcolor tool colour214)" ;; *) c="$(tcolor ok colour82)" ;; esac
-[[ "$level" == crit ]] && alert burn 1800 "$(tmux display -p '#{pane_id}' 2>/dev/null)" "Claude · consumo alto" \
-  "Consumo estimado de \$${rate}/h en los últimos 10 min$( (( lim >= 0 )) && echo "; límite de uso al ${lim}%")"
+[[ "$level" == crit ]] && alert burn 1800 "$(tmux display -p '#{pane_id}' 2>/dev/null)" "Claude · high usage" \
+  "Estimated usage of \$${rate}/h over the last 10 min$( (( lim >= 0 )) && echo "; usage limit at ${lim}%")"
 
 out=""
 (( ${#waiting[@]} )) && out+="#[fg=$(tcolor alert colour196),bold]⚠ $(IFS=,; echo "${waiting[*]}")#[default] "
 (( ${#stalled[@]} )) && out+="#[fg=$(tcolor tool colour214)]⏳ $(IFS=,; echo "${stalled[*]}")#[default] "
 [[ "$rate" != 0.0 || "$level" != ok ]] && out+="#[fg=$c]◉ \$${rate}/h#[default] "
 (( five >= 0 )) && out+="#[fg=$c]5h ${five}%#[default] "
-# Tema automático: si Windows cambió entre claro y oscuro, reaplicar (cada 2 min como máximo).
+# Automatic theme: if Windows switched between light and dark, reapply (at most every 2 min).
 if [[ "$(tmux show -gqv @theme_mode)" == auto ]]; then
   last="$(cat "$st/theme-check" 2>/dev/null || echo 0)"
   if (( now - last >= 120 )); then echo "$now" > "$st/theme-check"; ( "$HOME/.local/bin/tmux-theme" check >/dev/null 2>&1 & ); fi
 fi
-# Parche 53: tareas de fondo (CI/PR de cada pestaña, historial buscable), cada minuto como máximo.
+# Patch 53: background tasks (CI/PR of each tab, searchable history), at most once a minute.
 ( "$HOME/.local/bin/tmux-fondo" >/dev/null 2>&1 & )
 printf '%s' "$out"

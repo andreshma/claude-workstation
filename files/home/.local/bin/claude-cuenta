@@ -1,36 +1,36 @@
 #!/usr/bin/env bash
 #
-# claude-cuenta — dos cuentas de Claude (la de trabajo y la personal) en la misma estación.
-# Cada cuenta tiene su propio login (CLAUDE_CONFIG_DIR, método oficial), pero ambas comparten
-# conversaciones, historial, todos y todo el setup: al cambiar de cuenta, `claude -c` sigue la
-# misma conversación. La de trabajo usa ~/.claude; la personal usa ~/.claude-personal.
+# claude-cuenta — two Claude accounts (work and personal) on the same workstation.
+# Each account has its own login (CLAUDE_CONFIG_DIR, the official method), but both share
+# conversations, history, todos and the whole setup: after switching accounts, `claude -c` continues the
+# same conversation. The work account uses ~/.claude; the personal one uses ~/.claude-personal.
 #
-# Uso:
-#   claude-cuenta setup              prepara ~/.claude-personal (enlaces, MCP y estado de arranque); no toca ~/.claude
-#   claude-cuenta login personal     inicia sesión en la cuenta personal (elige la organización)
-#   claude-cuenta logout personal    cierra solo la sesión personal (la de trabajo no se toca)
-#   claude-cuenta pestaña [PANE]     cambia la pestaña a la otra cuenta y retoma la conversación
-#   claude-cuenta usar trabajo|personal   cuenta para pestañas nuevas
-#   claude-cuenta proyecto trabajo|personal|quitar [carpeta | --pane ID]
-#                                    fija la cuenta de un proyecto (su repo y sus worktrees): toda pestaña nueva que
-#                                    abra ahí usa esa cuenta, sin importar la cuenta por defecto. Sin carpeta: la actual.
-#   claude-cuenta proyectos          lista los proyectos con cuenta fija
-#   claude-cuenta estado             cuenta por defecto, organización de cada una y proyectos con cuenta fija
+# Usage:
+#   claude-cuenta setup              prepares ~/.claude-personal (links, MCP and startup state); leaves ~/.claude alone
+#   claude-cuenta login personal     signs in to the personal account (pick the organization)
+#   claude-cuenta logout personal    signs out of the personal account only (the work one is untouched)
+#   claude-cuenta pestaña [PANE]     switches the tab to the other account and resumes the conversation
+#   claude-cuenta usar trabajo|personal   account for new tabs
+#   claude-cuenta proyecto trabajo|personal|quitar [folder | --pane ID]
+#                                    pins the account of a project (its repo and worktrees): every new tab opened
+#                                    there uses that account, whatever the default is. No folder: the current one.
+#   claude-cuenta proyectos          lists the projects with a pinned account
+#   claude-cuenta estado             default account, organization of each one and projects with a pinned account
 set -euo pipefail
 M="$HOME/.claude"
 P="$HOME/.claude-personal"
 CONF="$HOME/.config/claude-cuentas"
 mkdir -p "$CONF"
 
-# Lo que comparten las dos cuentas: setup, conversaciones y estado de trabajo. Queda propio de cada
-# una: .credentials.json, .claude.json (cuenta), remote-settings.json y policy-limits.json
-# (políticas de SU organización), stats-cache.json (uso) y cachés.
+# What both accounts share: setup, conversations and work state. Each one keeps its own:
+# .credentials.json, .claude.json (account), remote-settings.json and policy-limits.json
+# (policies of ITS organization), stats-cache.json (usage) and caches.
 COMPARTIDO=(settings.json CLAUDE.md estandares.md rules hooks agents agent-memory commands skills
             workflows output-styles keybindings.json themes plugins projects tasks todos plans file-history
             history.jsonl paste-cache statusline.sh statusline-present.sh)
 
-# Del estado global (~/.claude.json) se copian a la cuenta personal solo el arranque ya hecho
-# (onboarding, tema, carpetas de confianza) y los MCP; nunca la cuenta (oauthAccount, userID, llaves).
+# From the global state (~/.claude.json) only the finished startup (onboarding, theme, trusted
+# folders) and the MCP servers are copied to the personal account; never the account (oauthAccount, userID, keys).
 CLAVES_ESTADO='["hasCompletedOnboarding","lastOnboardingVersion","lastReleaseNotesSeen","theme",
   "projects","mcpServers","autoUpdates","editorMode","preferredNotifChannel","verbose",
   "bypassPermissionsModeAccepted","hasAcknowledgedCostThreshold","shiftEnterKeyBindingInstalled"]'
@@ -43,39 +43,39 @@ setup() {
   for x in "${COMPARTIDO[@]}"; do
     [[ -e "$M/$x" ]] || continue
     if [[ -L "$P/$x" ]]; then continue
-    elif [[ -e "$P/$x" ]]; then echo "  aviso   $P/$x ya existe y no es enlace: se deja como está"
-    else ln -s "$M/$x" "$P/$x"; echo "  enlace  ~/.claude-personal/$x"; fi
+    elif [[ -e "$P/$x" ]]; then echo "  warn    $P/$x already exists and is not a link: left as is"
+    else ln -s "$M/$x" "$P/$x"; echo "  link    ~/.claude-personal/$x"; fi
   done
-  # Estado de arranque y MCP: sin esto, Claude trata la cuenta personal como primera vez y
-  # muestra la pantalla de login/bienvenida aunque ya tenga sesión.
+  # Startup state and MCP: without this, Claude treats the personal account as a first run and
+  # shows the login/welcome screen even though it is already signed in.
   local src="$HOME/.claude.json" dst="$P/.claude.json"
   if [[ -f "$src" ]]; then
     [[ -f "$dst" ]] || echo '{}' > "$dst"
     jq --slurpfile s "$src" --argjson k "$CLAVES_ESTADO" '
       . as $p | ($s[0] | with_entries(select(.key as $x | $k | index($x)))) as $base
-      | $base * $p                                   # lo propio de la personal manda
+      | $base * $p                                   # the personal account own values win
       | .hasCompletedOnboarding = ($base.hasCompletedOnboarding // .hasCompletedOnboarding)
       | .projects = (($base.projects // {}) * ($p.projects // {}))
       | .mcpServers = (($base.mcpServers // {}) + ($p.mcpServers // {}))' "$dst" > "$dst.tmp" && mv "$dst.tmp" "$dst"
     chmod 600 "$dst"
-    echo "  estado  arranque y carpetas de confianza copiados; MCP: $(jq -r '.mcpServers // {} | keys | join(", ")' "$dst")"
+    echo "  state   startup and trusted folders copied; MCP: $(jq -r '.mcpServers // {} | keys | join(", ")' "$dst")"
   fi
 }
 
-# auth_txt trabajo|personal — estado del login de esa cuenta (texto). stdin desde /dev/null:
-# `timeout` deja a Claude en otro grupo de procesos y, si toca la terminal, se queda detenido.
+# auth_txt trabajo|personal — login status of that account (text). stdin from /dev/null:
+# `timeout` puts Claude in another process group and, if it touches the terminal, it stays stopped.
 auth_txt() {
   if [[ "$1" == personal ]]; then CLAUDE_CONFIG_DIR="$P" timeout -k 2 15 claude auth status --text </dev/null 2>&1
   else env -u CLAUDE_CONFIG_DIR timeout -k 2 15 claude auth status --text </dev/null 2>&1; fi
 }
 
-# org_de trabajo|personal — nombre de la organización con que está logueada esa cuenta.
+# org_de trabajo|personal — name of the organization that account is signed in to.
 org_de() { { auth_txt "$1" || true; } | sed -n 's/^Organization: //p'; }
 
-# claude_corre <pane> — ¿hay un Claude corriendo en el panel? Dos señales, basta una:
-#   1) el comando en primer plano del panel no es una shell (el binario nativo de Claude se llama
-#      por su versión, p. ej. "2.1.325", no "claude": por eso fallaba el cambio de cuenta);
-#   2) entre los descendientes del panel hay un proceso claude (o node ejecutando Claude).
+# claude_corre <pane> — is a Claude running in the pane? Two signals, either one is enough:
+#   1) the pane's foreground command is not a shell (the native Claude binary is named after
+#      its version, e.g. "2.1.325", not "claude": that is why the account switch used to fail);
+#   2) among the pane's descendants there is a claude process (or node running Claude).
 claude_corre() {
   local raiz cur
   cur="$(tmux display -p -t "$1" '#{pane_current_command}')"
@@ -93,28 +93,35 @@ pestana() {
   win="$(tmux display -p -t "$pane" '#{window_id}')"
   actual="$(tmux show -wqv -t "$win" @ccuenta)"
   [[ -n "$actual" ]] || actual="$(cat "$CONF/activa" 2>/dev/null || echo trabajo)"
-  [[ "$actual" == personal ]] || actual=trabajo   # cualquier otro valor guardado es la cuenta de trabajo
+  [[ "$actual" == personal ]] || actual=trabajo   # any other stored value means the work account
   [[ "$actual" == personal ]] && nueva=trabajo || nueva=personal
   if [[ "$nueva" == personal ]] && [[ ! -f "$P/.credentials.json" ]]; then
-    msg "La cuenta personal no tiene sesión: Menú → Claude → Iniciar sesión en cuenta personal"; exit 1
+    msg "The personal account is not signed in: Menu → Claude → Log in to the personal account"; exit 1
   fi
-  # Salvaguarda: si las dos cuentas están en la misma organización, cambiar gastaría el uso equivocado.
+  # Safeguard: if both accounts are in the same organization, switching would spend the wrong usage.
   om="$(org_de trabajo)"; op="$(org_de personal)"
   if [[ -n "$om" && "$om" == "$op" ]]; then
-    msg "Las dos cuentas están en la misma organización ($om): revisa con claude-cuenta estado"; exit 1
+    msg "Both accounts are in the same organization ($om): check with claude-cuenta estado"; exit 1
   fi
-  [[ "$nueva" == personal && -z "$op" ]] && { msg "La cuenta personal no responde con sesión: claude-cuenta estado"; exit 1; }
-  # La personal necesita el estado de arranque; si falta, Claude mostraría la pantalla de login.
+  [[ "$nueva" == personal && -z "$op" ]] && { msg "The personal account does not report a session: claude-cuenta estado"; exit 1; }
+  # The personal account needs the startup state; without it, Claude would show the login screen.
   [[ "$nueva" == personal ]] && ! jq -e '.hasCompletedOnboarding' "$P/.claude.json" >/dev/null 2>&1 && setup >/dev/null
-  # Si la pestaña está en modo solo, conserva ese modo al cambiar de cuenta.
+  # If the tab is in solo mode, keep that mode when switching accounts.
   [[ -n "$(tmux show -wqv -t "$win" @csolo)" ]] && extra=" --permission-mode auto --settings '$HOME/.config/claude-solo/settings.json'"
   if claude_corre "$pane"; then
+    # Ctrl+C first: it clears whatever is typed in the input box; otherwise «<text>/exit» is sent as a message and
+    # Claude never closes. If /exit still does not close it in 10 s, Ctrl+C twice (Claude's own way out).
     tmux send-keys -t "$pane" Escape; sleep 0.5
-    tmux send-keys -t "$pane" -l "/exit"; tmux send-keys -t "$pane" Enter
-    for (( i = 0; i < 40; i++ )); do claude_corre "$pane" || break; sleep 0.5; done
-    (( i < 40 )) || { msg "Claude no cerró; ciérralo (/exit) y vuelve a intentar"; exit 1; }
+    tmux send-keys -t "$pane" C-c; sleep 0.4
+    claude_corre "$pane" && { tmux send-keys -t "$pane" -l "/exit"; tmux send-keys -t "$pane" Enter; }
+    for (( i = 0; i < 40; i++ )); do
+      claude_corre "$pane" || break
+      (( i == 20 )) && { tmux send-keys -t "$pane" C-c; sleep 0.3; tmux send-keys -t "$pane" C-c; }
+      sleep 0.5
+    done
+    (( i < 40 )) || { msg "Claude did not close; close it (/exit) and try again"; exit 1; }
   fi
-  # export/unset en la shell del panel: las reanudaciones posteriores usan la misma cuenta.
+  # export/unset in the pane's shell: later resumes use the same account.
   if [[ "$nueva" == personal ]]; then cmd="export CLAUDE_CONFIG_DIR='$P'; claude -c$extra"
   else cmd="unset CLAUDE_CONFIG_DIR; claude -c$extra"; fi
   tmux send-keys -t "$pane" -l "$cmd"; tmux send-keys -t "$pane" Enter
@@ -122,21 +129,21 @@ pestana() {
   nombre="$(tmux display -p -t "$win" '#W')"; nombre="${nombre%·P}"
   [[ "$nueva" == personal ]] && nombre="$nombre·P"
   tmux rename-window -t "$win" "$nombre"
-  msg "$(tmux display -p -t "$win" '#W'): cuenta $nueva ($( [[ "$nueva" == personal ]] && echo "$op" || echo "$om" )), misma conversación"
+  msg "$(tmux display -p -t "$win" '#W'): account $nueva ($( [[ "$nueva" == personal ]] && echo "$op" || echo "$om" )), same conversation"
 }
 
 usar() {
-  local c="${1:?trabajo o personal}"
-  [[ "$c" == trabajo || "$c" == personal ]] || { echo "uso: claude-cuenta usar trabajo|personal" >&2; exit 2; }
+  local c="${1:?trabajo or personal}"
+  [[ "$c" == trabajo || "$c" == personal ]] || { echo "usage: claude-cuenta usar trabajo|personal" >&2; exit 2; }
   echo "$c" > "$CONF/activa"
-  if tmux has-session 2>/dev/null; then   # aplica al servidor tmux aunque se llame desde fuera
+  if tmux has-session 2>/dev/null; then   # applies to the tmux server even when called from outside
     if [[ "$c" == personal ]]; then tmux set-environment -g CLAUDE_CONFIG_DIR "$P"; else tmux set-environment -gu CLAUDE_CONFIG_DIR; fi
     tmux set -g @ccuenta_def "$c"
   fi
-  msg "Pestañas nuevas: cuenta $c"
+  msg "New tabs: account $c"
 }
 
-# raiz_de <carpeta> — raíz del proyecto: el repo principal (también desde un worktree) o la carpeta si no es repo.
+# raiz_de <folder> — project root: the main repo (also from a worktree) or the folder if it is not a repo.
 raiz_de() {
   local d c; d="$(realpath -e "${1:-.}")" || return 1
   c="$(git -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
@@ -145,51 +152,51 @@ raiz_de() {
 
 proyecto() {
   local c="${1:-}" d="${2:-.}" r f="$CONF/proyectos.conf" tmp
-  [[ "$c" == trabajo || "$c" == personal || "$c" == quitar ]] || { echo "uso: claude-cuenta proyecto trabajo|personal|quitar [carpeta | --pane ID]" >&2; exit 2; }
-  if [[ "$d" == --pane ]]; then d="$(tmux display -p -t "${3:?panel}" '#{pane_current_path}')"; fi
-  r="$(raiz_de "$d")" || { msg "No encuentro la carpeta: $d"; exit 1; }
-  [[ "$r" == *$'\n'* ]] && { msg "Ruta no válida"; exit 1; }
+  [[ "$c" == trabajo || "$c" == personal || "$c" == quitar ]] || { echo "usage: claude-cuenta proyecto trabajo|personal|quitar [folder | --pane ID]" >&2; exit 2; }
+  if [[ "$d" == --pane ]]; then d="$(tmux display -p -t "${3:?pane}" '#{pane_current_path}')"; fi
+  r="$(raiz_de "$d")" || { msg "Folder not found: $d"; exit 1; }
+  [[ "$r" == *$'\n'* ]] && { msg "Invalid path"; exit 1; }
   touch "$f"; tmp="$(mktemp)"
   awk -v r="$r" '{ c = $1; p = $0; sub(/^[^ \t]+[ \t]+/, "", p); if (p != r) print }' "$f" > "$tmp"
   [[ "$c" == quitar ]] || printf '%s %s\n' "$c" "$r" >> "$tmp"
   mv "$tmp" "$f"; chmod 600 "$f"
-  if [[ "$c" == quitar ]]; then msg "$(basename "$r"): sin cuenta fija (usa la de pestañas nuevas)"
-  else msg "$(basename "$r"): pestañas nuevas siempre con la cuenta $c"; fi
+  if [[ "$c" == quitar ]]; then msg "$(basename "$r"): no pinned account (uses the one for new tabs)"
+  else msg "$(basename "$r"): new tabs always use the $c account"; fi
 }
 
 proyectos() {
   local f="$CONF/proyectos.conf"
   if [[ -s "$f" ]]; then grep -vE '^[[:space:]]*(#|$)' "$f" | awk '{ c = ($1 == "personal") ? "personal" : "trabajo"; sub(/^[^ \t]+[ \t]+/, ""); printf "  %-9s %s\n", c, $0 }'
-  else echo "  (ningún proyecto con cuenta fija)"; fi
+  else echo "  (no project with a pinned account)"; fi
 }
 
 estado() {
-  echo "Pestañas nuevas: $([[ "$(cat "$CONF/activa" 2>/dev/null)" == personal ]] && echo personal || echo trabajo)"
+  echo "New tabs: $([[ "$(cat "$CONF/activa" 2>/dev/null)" == personal ]] && echo personal || echo trabajo)"
   local c t rc
   for c in trabajo personal; do
     printf '%-9s ' "$c:"
-    if [[ "$c" == personal && ! -d "$P" ]]; then echo "sin preparar (claude-cuenta setup)"; continue; fi
+    if [[ "$c" == personal && ! -d "$P" ]]; then echo "not prepared (claude-cuenta setup)"; continue; fi
     t="$(auth_txt "$c")" && rc=0 || rc=$?
-    if (( rc == 124 || rc == 137 )); then printf 'sin respuesta en 15 s'
+    if (( rc == 124 || rc == 137 )); then printf 'no answer in 15 s'
     elif grep -qi '^Organization:' <<<"$t"; then grep -iE '^(Organization|Email):' <<<"$t" | tr '\n' ' '
     else printf '%s' "$(head -1 <<<"$t")"; fi
     echo
   done
-  echo "Proyectos con cuenta fija:"; proyectos
+  echo "Projects with a pinned account:"; proyectos
 }
 
 case "${1:-estado}" in
   setup)  setup ;;
-  login)  [[ "${2:-}" == personal ]] || { echo "uso: claude-cuenta login personal" >&2; exit 2; }
+  login)  [[ "${2:-}" == personal ]] || { echo "usage: claude-cuenta login personal" >&2; exit 2; }
           [[ -d "$P" ]] || setup
-          echo "Antes: en el navegador, cambia claude.ai a tu organización personal."
-          echo "Si el navegador no abre: tecla c copia la URL; si muestra un código, pégalo aquí con Ctrl+Shift+V."
-          # wslview abre el navegador de Windows desde WSL (sin él, Claude no puede abrirlo solo).
+          echo "First: in the browser, switch claude.ai to your personal organization."
+          echo "If the browser does not open: the c key copies the URL; if it shows a code, paste it here with Ctrl+Shift+V."
+          # wslview opens the Windows browser from WSL (without it, Claude cannot open it on its own).
           if [[ -z "${BROWSER:-}" ]] && command -v wslview >/dev/null; then export BROWSER=wslview; fi
           CLAUDE_CONFIG_DIR="$P" claude auth login
           echo; estado ;;
-  # Cierra SOLO la sesión personal (un /logout o claude auth logout normal cerraría la de trabajo).
-  logout) [[ "${2:-}" == personal ]] || { echo "uso: claude-cuenta logout personal" >&2; exit 2; }
+  # Signs out of the personal session ONLY (a normal /logout or claude auth logout would close the work one).
+  logout) [[ "${2:-}" == personal ]] || { echo "usage: claude-cuenta logout personal" >&2; exit 2; }
           CLAUDE_CONFIG_DIR="$P" claude auth logout ;;
   pestaña|pestana) shift; pestana "$@" ;;
   usar)   shift; usar "$@" ;;

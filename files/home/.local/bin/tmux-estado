@@ -1,32 +1,32 @@
 #!/usr/bin/env bash
 #
-# tmux-estado — pinta el estado de Claude de cada pestaña con su tiempo: lo que ves en la barra, el tablero
-# (Ctrl+b D), el resumen (Ctrl+b i), los menús y Telegram. Los hooks (tmux-state.sh) dicen QUÉ pasa y DESDE
-# CUÁNDO; este script lo convierte en texto y lo refresca con la barra (tmux-fondo lo llama en cada refresco).
+# tmux-estado — paints each tab's Claude state with its time: what you see in the status bar, the dashboard
+# (Ctrl+b D), the summary (Ctrl+b i), the menus and Telegram. The hooks (tmux-state.sh) say WHAT is happening and
+# SINCE WHEN; this script turns it into text and refreshes it with the bar (tmux-fondo calls it on every refresh).
 #
-#   🧠 pensando 42s · 🔧 Bash 2m · ✋ aprobar Bash 5m · ❓ te pregunta 1m · 📦 compactando · 🐝 3 agentes 4m
-#   ✔ listo hace 12m · ⏳ sin avance 11m · ⛔ interrumpido · ✖ error API
+#   🧠 thinking 42s · 🔧 Bash 2m · ✋ approve Bash 5m · ❓ asking you 1m · 📦 compacting · 🐝 3 agents 4m
+#   ✔ done 12m ago · ⏳ stalled 11m · ⛔ interrupted · ✖ API error
 #
-# Opciones de ventana que LEE (las escribe tmux-state.sh):
+# Window options it READS (written by tmux-state.sh):
 #   @cfase   pensando|herramienta|permiso|pregunta|tetoca|compactando|listo|error|interrumpido
-#   @cdesde  epoch del inicio de la fase · @cdet detalle («Bash: npm test») · @cturno epoch del prompt
-#   @csub    subagentes activos · @cts epoch del último evento · @cpane panel de Claude
-# Y ESCRIBE: @cs (texto con tiempo), @csc (color), @cturno_txt (duración del turno), @cfase=interrumpido si en
-# pantalla aparece «Interrupted» tras 20 s sin eventos (Esc no dispara ningún hook).
-# Sin avance: @cwatch_stall minutos (10) sin eventos mientras piensa o ejecuta.
-# Uso: tmux-estado --pintar <ventana>   ·   tmux-estado --todas   ·   tmux-estado --dur <segundos>
+#   @cdesde  epoch of the phase start · @cdet detail («Bash: npm test») · @cturno epoch of the prompt
+#   @csub    active subagents · @cts epoch of the last event · @cpane Claude's pane
+# And WRITES: @cs (text with time), @csc (colour), @cturno_txt (turn duration), @cfase=interrumpido if
+# «Interrupted» shows on screen after 20 s without events (Esc fires no hook).
+# Stalled: @cwatch_stall minutes (10) without events while thinking or running a tool.
+# Usage: tmux-estado --pintar <window>   ·   tmux-estado --todas   ·   tmux-estado --dur <seconds>
 set -uo pipefail
 
-dur() {   # segundos → 42s · 7m · 1h05
+dur() {   # seconds → 42s · 7m · 1h05
   local s="${1:-0}"; (( s < 0 )) && s=0
   if (( s < 60 )); then printf '%ss' "$s"; elif (( s < 3600 )); then printf '%sm' $((s / 60)); else printf '%sh%02d' $((s / 3600)) $((s % 3600 / 60)); fi
 }
 tcolor() { local v; v="$(tmux show -gqv "@t_$1" 2>/dev/null)"; printf '%s' "${v:-$2}"; }
 
-pintar() {   # ventana
+pintar() {   # window
   local w="$1" fase desde det sub cts turno pane ahora e txt col stall cs0 csc0 tt0
-  # Separador TAB con «-» en los vacíos: tmux 3.4 escapa los caracteres de control (\x1f) en «display -p» y
-  # «read» junta tabuladores seguidos (un campo vacío corría los demás).
+  # TAB separator with «-» in the empty ones: tmux 3.4 escapes control characters (\x1f) in «display -p» and
+  # «read» collapses consecutive tabs (an empty field shifted the rest).
   local o fmt=""
   for o in @cfase @cdesde @cdet @csub @cts @cturno @cpane @cs @csc @cturno_txt; do fmt+="#{?#{${o}},#{${o}},-}"$'\t'; done
   IFS=$'\t' read -r fase desde det sub cts turno pane cs0 csc0 tt0 < <(tmux display -p -t "$w" "$fmt" 2>/dev/null) || return 0
@@ -35,13 +35,13 @@ pintar() {   # ventana
   ahora=$(date +%s); e=$(( ahora - ${desde:-$ahora} ))
   stall="$(tmux show -gqv @cwatch_stall 2>/dev/null)"; stall=$(( ${stall:-10} * 60 ))
 
-  # Autocorrección: no todo dispara un hook (Esc, permiso denegado, salir de Claude, un evento perdido), así que
-  # si lleva 15 s sin eventos se contrasta con lo que hay en pantalla y el estado no se queda pegado.
+  # Self-correction: not everything fires a hook (Esc, permission denied, leaving Claude, a lost event), so
+  # after 15 s without events it is checked against what is on screen and the state does not get stuck.
   if [[ -n "$pane" ]] && { [[ -z "$cts" ]] || (( ahora - cts > 15 )); }; then
     local cmd vis trabaja=0 dialogo=0 nueva=""
     cmd="$(tmux display -p -t "$pane" '#{pane_current_command}' 2>/dev/null)"
     if [[ -z "$cmd" || "$cmd" =~ ^(bash|zsh|fish|sh|dash)$ ]]; then
-      # Claude ya no corre en ese panel (salió, se cerró): fuera el estado.
+      # Claude no longer runs in that pane (it exited or closed): clear the state.
       for o in @cs @csc @cfase @cdesde @cdet @cturno @cturno_txt @csub; do tmux set -wu -t "$w" "$o" 2>/dev/null; done
       return 0
     fi
@@ -64,26 +64,26 @@ pintar() {   # ventana
   fi
 
   case "$fase" in
-    permiso)      txt="✋ aprobar${det:+ ${det%%:*}} $(dur "$e")"; col="$(tcolor alert colour196)" ;;
-    pregunta)     txt="❓ te pregunta $(dur "$e")"; col="$(tcolor alert colour196)" ;;
-    tetoca)       txt="👉 te toca $(dur "$e")"; col="$(tcolor alert colour196)" ;;
-    error)        txt="✖ error API"; col="$(tcolor alert colour196)" ;;
-    compactando)  txt="📦 compactando $(dur "$e")"; col="$(tcolor think colour39)" ;;
-    interrumpido) txt="⛔ interrumpido"; (( e >= 60 )) && txt+=" hace $(dur "$e")"; col="$(tcolor tool colour214)" ;;
-    listo)        txt="✔ listo"; (( e >= 60 )) && txt+=" hace $(dur "$e")"; col="$(tcolor ok colour82)" ;;
+    permiso)      txt="✋ approve${det:+ ${det%%:*}} $(dur "$e")"; col="$(tcolor alert colour196)" ;;
+    pregunta)     txt="❓ asking you $(dur "$e")"; col="$(tcolor alert colour196)" ;;
+    tetoca)       txt="👉 waiting for you $(dur "$e")"; col="$(tcolor alert colour196)" ;;
+    error)        txt="✖ API error"; col="$(tcolor alert colour196)" ;;
+    compactando)  txt="📦 compacting $(dur "$e")"; col="$(tcolor think colour39)" ;;
+    interrumpido) txt="⛔ interrupted"; (( e >= 60 )) && txt+=" $(dur "$e") ago"; col="$(tcolor tool colour214)" ;;
+    listo)        txt="✔ done"; (( e >= 60 )) && txt+=" $(dur "$e") ago"; col="$(tcolor ok colour82)" ;;
     pensando|herramienta)
       if [[ -n "$cts" ]] && (( ahora - cts > stall )); then
-        txt="⏳ sin avance $(dur $(( ahora - cts )))"; col="$(tcolor tool colour214)"
+        txt="⏳ stalled $(dur $(( ahora - cts )))"; col="$(tcolor tool colour214)"
       elif [[ -n "$sub" && "$sub" != 0 ]]; then
-        txt="🐝 $sub agente$([[ "$sub" == 1 ]] || echo s) $(dur $(( ahora - ${turno:-$desde} )))"; col="$(tcolor agent colour177)"
+        txt="🐝 $sub agent$([[ "$sub" == 1 ]] || echo s) $(dur $(( ahora - ${turno:-$desde} )))"; col="$(tcolor agent colour177)"
       elif [[ "$fase" == herramienta ]]; then
         txt="🔧 $(cut -c1-14 <<<"${det%%:*}") $(dur "$e")"; col="$(tcolor tool colour214)"
       else
-        txt="🧠 pensando $(dur "$e")"; col="$(tcolor think colour39)"
+        txt="🧠 thinking $(dur "$e")"; col="$(tcolor think colour39)"
       fi ;;
     *) return 0 ;;
   esac
-  # Solo se escribe lo que cambió: cada escritura redibuja la barra (y hace parpadear un menú abierto).
+  # Only what changed is written: every write redraws the bar (and makes an open menu flicker).
   [[ "$txt" == "$cs0" ]] || tmux set -w -t "$w" @cs "$txt" 2>/dev/null
   [[ "$col" == "$csc0" ]] || tmux set -w -t "$w" @csc "$col" 2>/dev/null
   if [[ -n "$turno" ]]; then
@@ -93,7 +93,7 @@ pintar() {   # ventana
 }
 
 case "${1:-}" in
-  --pintar) pintar "${2:?ventana}" ;;
+  --pintar) pintar "${2:?window}" ;;
   --todas)  while read -r w; do pintar "$w"; done < <(tmux list-windows -a -F '#{window_id}' 2>/dev/null | sort -u) ;;
   --dur)    dur "${2:-0}"; echo ;;
   *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;

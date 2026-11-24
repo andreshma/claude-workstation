@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""ws-auditoria — auditoría integral de la estación, de SOLO LECTURA, por pilares.
+"""ws-auditoria — full, READ-ONLY audit of the workstation, by pillars.
 
-Pilares: tmux · atajos y menú · Claude Code · sandbox · seguridad · resiliencia · rendimiento ·
-observabilidad. Cada chequeo da ok / aviso / falla / info, el detalle y la recomendación.
+Pillars: tmux · shortcuts and menu · Claude Code · sandbox · security · resilience · performance ·
+observability. Each check gives ok / warn / fail / info, the detail and the recommendation.
 
-Uso:
-  ws-auditoria          audita y genera el reporte (no cambia nada)
-  ws-auditoria --ia     además, pruebas de escape REALES del sandbox con `claude -p` en una carpeta
-                        temporal (intenta escribir fuera, leer secretos, salir a internet); gasta un
-                        poco de uso de Claude
-Reportes: ~/.local/share/ws-telemetria/auditoria.{html,md}, copia del HTML en
-%UserProfile%\\ws-telemetria y del .md en $REPOS/ws-auditoria/ (para revisarlo con Claude).
-Nunca imprime valores de secretos: solo nombres, permisos y conteos.
+Usage:
+  ws-auditoria          audits and generates the report (changes nothing)
+  ws-auditoria --ia     also runs REAL sandbox escape tests with `claude -p` in a temporary
+                        folder (tries to write outside, read secrets, reach the internet); spends a
+                        little Claude usage
+Reports: ~/.local/share/ws-telemetria/auditoria.{html,md}, a copy of the HTML in
+%UserProfile%\\ws-telemetria and of the .md in $REPOS/ws-auditoria/ (to review it with Claude).
+It never prints secret values: only names, permissions and counts.
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def pilar(nombre: str) -> None:
 
 def res(estado: str, que: str, detalle: str = "", reco: str = "") -> None:
     R.append({"pilar": PILAR, "estado": estado, "que": que, "detalle": detalle, "reco": reco})
-    color = {"ok": "32", "aviso": "33", "falla": "31", "info": "36"}[estado]
+    color = {"ok": "32", "warn": "33", "fail": "31", "info": "36"}[estado]
     print(f"  \033[{color}m{estado:6}\033[0m {que}" + (f" — {detalle}" if detalle and estado != "ok" else ""))
 
 
@@ -53,7 +53,7 @@ def sh(cmd: str, t: int = 20) -> tuple[int, str]:
         p = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=t, stdin=subprocess.DEVNULL)
         return p.returncode, (p.stdout + p.stderr).strip()
     except subprocess.TimeoutExpired:
-        return 124, "tiempo agotado"
+        return 124, "timed out"
 
 
 def tmux(args: str) -> str:
@@ -69,89 +69,89 @@ def jload(p: Path) -> dict:
 
 # ============================================================================================
 def p_tmux() -> None:
-    pilar("tmux: configuración y plugins")
+    pilar("tmux: configuration and plugins")
     if not os.environ.get("TMUX") and sh("tmux has-session")[0] != 0:
-        res("falla", "servidor tmux", "no está corriendo", "Corre la auditoría dentro de tmux (dev)."); return
+        res("fail", "tmux server", "not running", "Run the audit inside tmux (dev)."); return
     v = tmux("-V")
     m = re.search(r"(\d+)\.(\d+)", v)
-    res("ok" if m and (int(m[1]), int(m[2])) >= (3, 4) else "aviso", f"versión {v}", "", "tmux 3.4+ (extended-keys, popups estables).")
+    res("ok" if m and (int(m[1]), int(m[2])) >= (3, 4) else "warn", f"version {v}", "", "tmux 3.4+ (extended-keys, stable popups).")
     o = lambda name: tmux(f"show -gv {name}") or tmux(f"show -sv {name}") or tmux(f"show -gwv {name}")
     chequeos = [
-        ("escape-time", lambda x: x.isdigit() and int(x) <= 20, "≤ 20 ms: Esc y Alt responden al instante en Claude y vim", "set -sg escape-time 10"),
-        ("history-limit", lambda x: x.isdigit() and int(x) >= 50000, "≥ 50000 líneas de scroll", "set -g history-limit 100000"),
+        ("escape-time", lambda x: x.isdigit() and int(x) <= 20, "≤ 20 ms: Esc and Alt respond instantly in Claude and vim", "set -sg escape-time 10"),
+        ("history-limit", lambda x: x.isdigit() and int(x) >= 50000, "≥ 50000 lines of scrollback", "set -g history-limit 100000"),
         ("default-terminal", lambda x: x in ("tmux-256color", "screen-256color"), "tmux-256color", "set -g default-terminal tmux-256color"),
-        ("focus-events", lambda x: x == "on", "on: Claude y editores saben cuándo la pestaña tiene foco", "set -g focus-events on"),
-        ("extended-keys", lambda x: x in ("on", "always"), "on: Shift+Enter y combinaciones llegan a Claude", "set -s extended-keys on"),
-        ("set-clipboard", lambda x: x in ("on", "external"), "on: copiar llega al portapapeles (OSC 52)", "set -s set-clipboard on"),
+        ("focus-events", lambda x: x == "on", "on: Claude and editors know when the tab has focus", "set -g focus-events on"),
+        ("extended-keys", lambda x: x in ("on", "always"), "on: Shift+Enter and key combinations reach Claude", "set -s extended-keys on"),
+        ("set-clipboard", lambda x: x in ("on", "external"), "on: copying reaches the clipboard (OSC 52)", "set -s set-clipboard on"),
         ("mouse", lambda x: x == "on", "on", "set -g mouse on"),
-        ("base-index", lambda x: x == "1", "1: Alt+1 abre la primera pestaña", "set -g base-index 1"),
-        ("renumber-windows", lambda x: x == "on", "on: sin huecos al cerrar pestañas", "set -g renumber-windows on"),
-        ("detach-on-destroy", lambda x: x in ("off", "no-detached"), "off: cerrar una sesión no te saca de tmux", "set -g detach-on-destroy off"),
-        ("aggressive-resize", lambda x: x == "on", "on: cada cliente usa su tamaño", "setw -g aggressive-resize on"),
+        ("base-index", lambda x: x == "1", "1: Alt+1 opens the first tab", "set -g base-index 1"),
+        ("renumber-windows", lambda x: x == "on", "on: no gaps when tabs are closed", "set -g renumber-windows on"),
+        ("detach-on-destroy", lambda x: x in ("off", "no-detached"), "off: closing a session does not take you out of tmux", "set -g detach-on-destroy off"),
+        ("aggressive-resize", lambda x: x == "on", "on: each client uses its own size", "setw -g aggressive-resize on"),
     ]
     for nombre, ok, desc, reco in chequeos:
         val = o(nombre)
-        res("ok" if val and ok(val) else "aviso", f"{nombre} = {val or '(sin definir)'}", desc, reco)
+        res("ok" if val and ok(val) else "warn", f"{nombre} = {val or '(not set)'}", desc, reco)
     tf = (tmux("show -sv terminal-features") + tmux("show -sv terminal-overrides"))
-    res("ok" if ("RGB" in tf or "Tc" in tf) else "aviso", "color verdadero (RGB/Tc)", tf[:80], "set -as terminal-features ',*:RGB'")
+    res("ok" if ("RGB" in tf or "Tc" in tf) else "warn", "true color (RGB/Tc)", tf[:80], "set -as terminal-features ',*:RGB'")
     si = o("status-interval")
-    res("ok" if si.isdigit() and 2 <= int(si) <= 15 else "aviso", f"status-interval = {si}", "la barra corre tmux-watch en cada intervalo", "Entre 5 y 10 s equilibra frescura y CPU.")
+    res("ok" if si.isdigit() and 2 <= int(si) <= 15 else "warn", f"status-interval = {si}", "the status bar runs tmux-watch on every interval", "Between 5 and 10 s balances freshness and CPU.")
     # Plugins
     plug = [l.split()[-1].strip("'\"") for l in tmux("show -g").splitlines() if l.startswith("@plugin")]
     base = H / ".tmux/plugins"
-    res("ok" if (base / "tpm").is_dir() else "falla", "TPM instalado", "", "git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm")
+    res("ok" if (base / "tpm").is_dir() else "fail", "TPM installed", "", "git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm")
     for p in plug:
         d = base / p.split("/")[-1]
         if not d.is_dir():
-            res("falla", f"plugin {p}", "declarado pero no instalado", "Ctrl+b I (instalar plugins)"); continue
+            res("fail", f"plugin {p}", "declared but not installed", "Ctrl+b I (install plugins)"); continue
         _, fecha = sh(f"git -C '{d}' log -1 --format=%cs")
         _, detras = sh(f"timeout 15 git -C '{d}' fetch -q 2>/dev/null; git -C '{d}' rev-list --count HEAD..@{{u}} 2>/dev/null", 25)
         detras = detras.strip() if detras.strip().isdigit() else "?"
-        res("ok" if detras in ("0", "?") else "aviso", f"plugin {p}", f"último commit local {fecha}; {detras} commits nuevos en el remoto",
-            "Ctrl+b U actualiza plugins (revisa cambios antes).")
+        res("ok" if detras in ("0", "?") else "warn", f"plugin {p}", f"last local commit {fecha}; {detras} new commits on the remote",
+            "Ctrl+b U updates plugins (review the changes first).")
     for opcion, esperado, reco in (("@continuum-restore", "on", "set -g @continuum-restore on"),
                                    ("@continuum-save-interval", None, "1–5 min"),
-                                   ("@resurrect-capture-pane-contents", "on", "set -g @resurrect-capture-pane-contents on (ves lo último de cada panel tras restaurar)")):
+                                   ("@resurrect-capture-pane-contents", "on", "set -g @resurrect-capture-pane-contents on (you see the latest of each pane after restoring)")):
         v = tmux(f"show -gv {opcion}")
         if esperado:
-            res("ok" if v == esperado else "aviso", f"{opcion} = {v or '(sin definir)'}", "", reco)
+            res("ok" if v == esperado else "warn", f"{opcion} = {v or '(not set)'}", "", reco)
         else:
-            res("ok" if v.isdigit() and 1 <= int(v) <= 5 else "aviso", f"{opcion} = {v}", "", reco)
+            res("ok" if v.isdigit() and 1 <= int(v) <= 5 else "warn", f"{opcion} = {v}", "", reco)
     hook = tmux("show -gv @resurrect-hook-post-save-all")
-    res("ok" if "tmux-recuperar --validar" in hook else "falla", "validación de guardados (resurrect)", hook[:90], "Parche 27: descarta guardados vacíos.")
+    res("ok" if "tmux-recuperar --validar" in hook else "fail", "save validation (resurrect)", hook[:90], "Patch 27: discards empty saves.")
     conf = (H / ".tmux.conf").read_text(errors="replace") if (H / ".tmux.conf").exists() else ""
-    res("ok" if "--marcar-arranque" in conf and "--auto-arranque" in conf else "falla", "restauración de respaldo al arrancar", "", "Parche 25/27.")
+    res("ok" if "--marcar-arranque" in conf and "--auto-arranque" in conf else "fail", "backup restore at startup", "", "Patch 25/27.")
     hooks = tmux("show-hooks -g")
-    res("info", "hooks de tmux", f"{len([h for h in hooks.splitlines() if h.strip()])} definidos")
+    res("info", "tmux hooks", f"{len([h for h in hooks.splitlines() if h.strip()])} defined")
 
 
 # ============================================================================================
-CLAUDE_ATAJOS = [  # (tecla, descripción, ¿en menú?, texto a buscar en menu-claude)
-    ("Esc", "interrumpir", "Escape"), ("Esc Esc / /rewind", "volver atrás", "/rewind"), ("Shift+Tab", "modo de permisos", "BTab"),
-    ("Alt+P", "cambiar modelo", "M-p"), ("Ctrl+O", "transcripción y razonamiento", "C-o"), ("/tasks", "tareas y subagentes", "/tasks"),
-    ("/context", "contexto", "/context"), ("/compact", "compactar", "/compact"), ("Ctrl+T", "lista de tareas (todo)", "C-t"),
-    ("Ctrl+B", "mandar a segundo plano", "C-b"), ("Ctrl+G", "editar el prompt en el editor", "C-g"), ("Ctrl+S", "guardar/recuperar borrador", "C-s"),
-    ("Alt+O", "modo rápido (fast)", "M-o"), ("Ctrl+X Ctrl+K", "detener subagentes en segundo plano", "C-x C-k"), ("Ctrl+L", "redibujar", "C-l"),
-    ("/status", "estado y cuenta", "/status"), ("/usage", "uso y límites", "/usage"), ("/mcp", "servidores MCP", "/mcp"),
-    ("/permissions", "permisos", "/permissions"), ("/sandbox", "sandbox", "/sandbox"), ("/effort", "esfuerzo", "/effort"),
+CLAUDE_ATAJOS = [  # (key, description, in the menu?, text to look for in menu-claude)
+    ("Esc", "interrupt", "Escape"), ("Esc Esc / /rewind", "go back", "/rewind"), ("Shift+Tab", "permission mode", "BTab"),
+    ("Alt+P", "change model", "M-p"), ("Ctrl+O", "transcript and reasoning", "C-o"), ("/tasks", "tasks and subagents", "/tasks"),
+    ("/context", "context", "/context"), ("/compact", "compact", "/compact"), ("Ctrl+T", "task list (todo)", "C-t"),
+    ("Ctrl+B", "send to the background", "C-b"), ("Ctrl+G", "edit the prompt in the editor", "C-g"), ("Ctrl+S", "save/restore draft", "C-s"),
+    ("Alt+O", "fast mode", "M-o"), ("Ctrl+X Ctrl+K", "stop background subagents", "C-x C-k"), ("Ctrl+L", "redraw", "C-l"),
+    ("/status", "status and account", "/status"), ("/usage", "usage and limits", "/usage"), ("/mcp", "MCP servers", "/mcp"),
+    ("/permissions", "permissions", "/permissions"), ("/sandbox", "sandbox", "/sandbox"), ("/effort", "effort", "/effort"),
 ]
-CLAUDE_ALT = {"M-p": "Alt+P (modelo)", "M-t": "Alt+T (razonamiento)", "M-o": "Alt+O (fast)", "M-v": "Alt+V (pegar imagen en WSL)",
-              "M-m": "Alt+M (modos)", "M-b": "Alt+B (palabra atrás)", "M-f": "Alt+F (palabra adelante)", "M-d": "Alt+D (borrar palabra)"}
+CLAUDE_ALT = {"M-p": "Alt+P (model)", "M-t": "Alt+T (reasoning)", "M-o": "Alt+O (fast)", "M-v": "Alt+V (paste image in WSL)",
+              "M-m": "Alt+M (modes)", "M-b": "Alt+B (word back)", "M-f": "Alt+F (word forward)", "M-d": "Alt+D (delete word)"}
 
 
 def p_atajos() -> None:
-    pilar("Atajos y menú")
+    pilar("Shortcuts and menu")
     raiz = tmux("list-keys -T root").splitlines()
     for linea in raiz:
         m = re.match(r"bind-key\s+(?:-r\s+)?-T root\s+(\S+)", linea)
         if m and m[1] in CLAUDE_ALT:
-            res("falla", f"tmux captura {m[1]}", f"Claude usa {CLAUDE_ALT[m[1]]}: nunca le llega", "Quitar o mover ese atajo de tmux.")
+            res("fail", f"tmux captures {m[1]}", f"Claude uses {CLAUDE_ALT[m[1]]}: it never reaches Claude", "Remove or move that tmux shortcut.")
     menus = "\n".join(Path(f).read_text(errors="replace") for f in glob.glob(str(H / ".config/tmux-claude/menu*.tmux")))
     mc = "\n".join(Path(f).read_text(errors="replace") for f in glob.glob(str(H / ".config/tmux-claude/menu-claude*.tmux")))
     faltan = [f"{k} ({d})" for k, d, busca in CLAUDE_ATAJOS if busca not in mc]
-    res("ok" if not faltan else "aviso", f"atajos de Claude en Menú → Claude: {len(CLAUDE_ATAJOS) - len(faltan)}/{len(CLAUDE_ATAJOS)}",
-        "faltan: " + ", ".join(faltan) if faltan else "", "Agregarlos al menú (parche siguiente).")
-    # Atajos propios (prefijo y raíz) cuyo comando no aparece en ningún menú.
+    res("ok" if not faltan else "warn", f"Claude shortcuts in Menu → Claude: {len(CLAUDE_ATAJOS) - len(faltan)}/{len(CLAUDE_ATAJOS)}",
+        "missing: " + ", ".join(faltan) if faltan else "", "Add them to the menu (next patch).")
+    # Own shortcuts (prefix and root) whose command does not appear in any menu.
     sin_menu = []
     por_defecto = re.compile(r"(select-window -t :=\d|copy-mode|choose-|command-prompt|display-panes|resize-pane|select-pane|"
                              r"next-window|previous-window|last-window|split-window|new-window$|kill-pane|kill-window|detach-client|"
@@ -165,30 +165,30 @@ def p_atajos() -> None:
         clave = re.findall(r"[\w./-]*(?:tmux-[\w-]+|ws-[\w-]+|claude-[\w-]+|menu[\w-]*\.tmux)", m[3])
         if clave and not any(c.split("/")[-1] in menus for c in clave):
             sin_menu.append(f"{m[1]}:{m[2]} → {clave[0].split('/')[-1]}")
-    res("ok" if not sin_menu else "aviso", f"atajos propios sin entrada en el menú: {len(sin_menu)}", "; ".join(sin_menu[:12]),
-        "Agregar al menú los que quieras usar con clic.")
-    res("info", "Ctrl+B dentro de Claude", "es el prefijo de tmux: para mandar algo a segundo plano en Claude, Ctrl+B dos veces")
+    res("ok" if not sin_menu else "warn", f"own shortcuts with no menu entry: {len(sin_menu)}", "; ".join(sin_menu[:12]),
+        "Add to the menu the ones you want to use with a click.")
+    res("info", "Ctrl+B inside Claude", "it is the tmux prefix: to send something to the background in Claude, press Ctrl+B twice")
 
 
 # ============================================================================================
 def p_claude() -> None:
     pilar("Claude Code")
     rc, v = sh("claude --version", 20)
-    res("ok" if rc == 0 else "falla", f"versión {v.splitlines()[0] if v else '?'}")
+    res("ok" if rc == 0 else "fail", f"version {v.splitlines()[0] if v else '?'}")
     s = jload(H / ".claude/settings.json")
-    res("ok" if s else "falla", "settings.json válido", "", "")
-    res("info", "modelo por defecto", s.get("model", "(el de la cuenta)"))
-    res("ok" if not s.get("permissions", {}).get("defaultMode") == "bypassPermissions" else "falla",
-        f"modo de permisos por defecto: {s.get('permissions', {}).get('defaultMode') or 'auto (por versión)'}")
+    res("ok" if s else "fail", "settings.json is valid", "", "")
+    res("info", "default model", s.get("model", "(the account's)"))
+    res("ok" if not s.get("permissions", {}).get("defaultMode") == "bypassPermissions" else "fail",
+        f"default permission mode: {s.get('permissions', {}).get('defaultMode') or 'auto (by version)'}")
     perms = s.get("permissions", {})
-    res("info", "reglas de permisos", f"allow {len(perms.get('allow', []))} · ask {len(perms.get('ask', []))} · deny {len(perms.get('deny', []))}")
+    res("info", "permission rules", f"allow {len(perms.get('allow', []))} · ask {len(perms.get('ask', []))} · deny {len(perms.get('deny', []))}")
     riesgosas = [a for a in perms.get("allow", []) if re.fullmatch(r"Bash(\(\*\))?|Bash\((curl|wget|ssh|scp|rm|sudo|docker|kubectl|az|aws|terraform)[ :]?\*?\)", a)]
-    res("ok" if not riesgosas else "falla", "allow sin comodines peligrosos", ", ".join(riesgosas), "Pásalas a ask.")
+    res("ok" if not riesgosas else "fail", "allow has no dangerous wildcards", ", ".join(riesgosas), "Move them to ask.")
     hooks = s.get("hooks", {})
-    res("info", "hooks de Claude", f"{sum(len(v) for v in hooks.values())} grupos en {len(hooks)} eventos")
-    res("ok" if s.get("cleanupPeriodDays") else "aviso", f"retención de transcripciones: {s.get('cleanupPeriodDays', 30)} días",
-        "", "Define cleanupPeriodDays acorde a tu política (la telemetría guarda 13 meses sin texto).")
-    # Memoria cargada en cada turno.
+    res("info", "Claude hooks", f"{sum(len(v) for v in hooks.values())} groups in {len(hooks)} events")
+    res("ok" if s.get("cleanupPeriodDays") else "warn", f"transcript retention: {s.get('cleanupPeriodDays', 30)} days",
+        "", "Set cleanupPeriodDays according to your policy (telemetry keeps 13 months without text).")
+    # Memory loaded on every turn.
     total = 0
     for f in [H / ".claude/CLAUDE.md", *H.glob(".claude/*.md"), *H.glob(".claude/rules/*.md")]:
         try:
@@ -196,23 +196,23 @@ def p_claude() -> None:
         except OSError:
             pass
     tok = total // 4
-    res("ok" if tok < 8000 else "aviso", f"memoria de usuario (CLAUDE.md y similares): ~{tok:,} tokens por turno",
-        "se envía en cada conversación", "Si pasa de ~8 k tokens, resume o mueve detalle a skills/rules con paths.")
+    res("ok" if tok < 8000 else "warn", f"user memory (CLAUDE.md and similar): ~{tok:,} tokens per turn",
+        "it is sent in every conversation", "If it goes over ~8 k tokens, summarize or move detail to skills/rules with paths.")
     rc, mcp = sh("timeout 90 claude mcp list", 100)
     if rc == 0 and mcp:
         lineas = [l for l in mcp.splitlines() if ":" in l]
         malos = [l.split(":")[0] for l in lineas if re.search(r"fail|error|✗|disconnected", l, re.I)]
-        res("ok" if not malos else "falla", f"servidores MCP: {len(lineas)} configurados", "con fallas: " + ", ".join(malos) if malos else "",
-            "claude mcp get <nombre> para ver el error.")
+        res("ok" if not malos else "fail", f"MCP servers: {len(lineas)} configured", "failing: " + ", ".join(malos) if malos else "",
+            "claude mcp get <name> to see the error.")
     else:
-        res("aviso", "servidores MCP", "no se pudo listar (tiempo o error)", "Corre: claude mcp list")
-    for cuenta, env in (("trabajo", "env -u CLAUDE_CONFIG_DIR"), ("personal", f"env CLAUDE_CONFIG_DIR={H}/.claude-personal")):
+        res("warn", "MCP servers", "could not be listed (timeout or error)", "Run: claude mcp list")
+    for cuenta, env in (("work", "env -u CLAUDE_CONFIG_DIR"), ("personal", f"env CLAUDE_CONFIG_DIR={H}/.claude-personal")):
         if cuenta == "personal" and not (H / ".claude-personal").exists():
             continue
         _, t = sh(f"{env} timeout 15 claude auth status --text </dev/null 2>/dev/null | sed -n 's/^Organization: //p'")
-        res("ok" if t else "aviso", f"sesión {cuenta}: {t or 'sin sesión'}")
+        res("ok" if t else "warn", f"{cuenta} session: {t or 'not signed in'}")
     mg = Path("/etc/claude-code/managed-settings.json")
-    res("info", "configuración administrada por la organización", "archivo local presente" if mg.exists() else "sin archivo local (puede venir de la nube)")
+    res("info", "settings managed by the organization", "local file present" if mg.exists() else "no local file (may come from the cloud)")
 
 
 # ============================================================================================
@@ -225,72 +225,73 @@ def p_sandbox() -> None:
     pilar("Sandbox")
     s = jload(H / ".claude/settings.json")
     sb = s.get("sandbox", {})
-    res("ok" if sb.get("enabled") else "falla", f"sandbox habilitado: {sb.get('enabled')}")
-    res("ok" if sb.get("allowUnsandboxedCommands") is False else "falla", f"sin reintento fuera del sandbox (allowUnsandboxedCommands={sb.get('allowUnsandboxedCommands')})")
-    res("ok" if sb.get("failIfUnavailable") else "aviso", f"failIfUnavailable = {sb.get('failIfUnavailable')}",
-        "si bubblewrap falla, ¿Claude corre comandos sin sandbox?", "sandbox.failIfUnavailable: true")
-    rc, bw = sh("bwrap --version && bwrap --ro-bind / / --unshare-user --unshare-net true && echo funciona")
-    res("ok" if "funciona" in bw else "falla", f"bubblewrap: {bw.splitlines()[0] if bw else 'no instalado'}", "" if "funciona" in bw else bw[-120:],
-        "sudo apt-get install bubblewrap; revisa user namespaces.")
+    res("ok" if sb.get("enabled") else "fail", f"sandbox enabled: {sb.get('enabled')}")
+    res("ok" if sb.get("allowUnsandboxedCommands") is False else "fail", f"no retry outside the sandbox (allowUnsandboxedCommands={sb.get('allowUnsandboxedCommands')})")
+    res("ok" if sb.get("failIfUnavailable") else "warn", f"failIfUnavailable = {sb.get('failIfUnavailable')}",
+        "if bubblewrap fails, does Claude run commands without a sandbox?", "sandbox.failIfUnavailable: true")
+    rc, bw = sh("bwrap --version && bwrap --ro-bind / / --unshare-user --unshare-net true && echo bwrap-works")
+    res("ok" if "bwrap-works" in bw else "fail", f"bubblewrap: {bw.splitlines()[0] if bw else 'not installed'}", "" if "bwrap-works" in bw else bw[-120:],
+        "sudo apt-get install bubblewrap; check user namespaces.")
     fs = sb.get("filesystem", {})
     denegadas = " ".join(fs.get("denyRead", []) + [d for d in s.get("permissions", {}).get("deny", []) if d.startswith("Read(")])
     for sec in SECRETOS:
         if not Path(os.path.expanduser(sec)).exists():
             continue
         cubierto = sec in denegadas or sec.replace("~", str(H)) in denegadas
-        res("ok" if cubierto else "falla", f"secreto protegido: {sec}", "", f"Agregar a sandbox.filesystem.denyRead y permissions.deny Read({sec}/**)")
+        res("ok" if cubierto else "fail", f"secret protected: {sec}", "", f"Add to sandbox.filesystem.denyRead and permissions.deny Read({sec}/**)")
     red = sb.get("network", {})
     dom = red.get("allowedDomains", [])
     amplios = [d for d in dom if d in ("*", "*.*") or re.fullmatch(r"\*\.(com|net|org|io|dev|app)", d)]
-    res("ok" if not amplios else "falla", f"dominios permitidos: {len(dom)}", "demasiado amplios: " + ", ".join(amplios) if amplios else "", "Usar dominios concretos.")
+    res("ok" if not amplios else "fail", f"allowed domains: {len(dom)}", "too broad: " + ", ".join(amplios) if amplios else "", "Use specific domains.")
     exc = sb.get("excludedCommands", [])
-    # Peligrosos fuera del sandbox: intérpretes, clientes de red y docker que crea o entra a contenedores
-    # (docker ps/logs/inspect de solo lectura no dan acceso al sistema de archivos).
+    # Dangerous outside the sandbox: interpreters, network clients and docker that creates or enters containers
+    # (read-only docker ps/logs/inspect do not give access to the filesystem).
     peligrosas = [e for e in exc if re.match(r"(bash|sh|zsh|python3?|node|podman|curl|wget|ssh|scp|nc|socat|env|sudo)\b", e)
                   or re.fullmatch(r"docker \*|docker\s+(run|exec|cp|build|pull|push|compose\s+(up|run|exec))\b.*", e)]
-    res("ok" if not peligrosas else "falla", f"comandos fuera del sandbox: {len(exc)}", "pueden salir del sandbox por completo: " + ", ".join(peligrosas) if peligrosas else ", ".join(exc[:12]),
-        "Quitar intérpretes, docker y clientes de red de excludedCommands.")
+    res("ok" if not peligrosas else "fail", f"commands outside the sandbox: {len(exc)}", "can leave the sandbox entirely: " + ", ".join(peligrosas) if peligrosas else ", ".join(exc[:12]),
+        "Remove interpreters, docker and network clients from excludedCommands.")
     solo = jload(H / ".config/claude-solo/settings.json")
-    res("ok" if solo == {"sandbox": {"enabled": False}} else "aviso", "perfil del modo solo", json.dumps(solo)[:90],
-        "Debe desactivar solo el sandbox; permisos, deny y hooks siguen siendo los normales.")
-    # Variables de entorno con secretos: el sandbox NO filtra el entorno.
+    res("ok" if solo == {"sandbox": {"enabled": False}} else "warn", "solo mode profile", json.dumps(solo)[:90],
+        "It must disable only the sandbox; permissions, deny and hooks stay the normal ones.")
+    # Environment variables with secrets: the sandbox does NOT filter the environment.
     sosp = [k for k in os.environ if re.search(r"(TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|CLIENT_SECRET|CONNECTION_STRING)", k) and k not in ("GPG_TTY",)]
-    res("ok" if not sosp else "falla", "secretos en variables de entorno", ", ".join(sosp), "Claude y sus comandos heredan el entorno: mover a vault.")
+    res("ok" if not sosp else "fail", "secrets in environment variables", ", ".join(sosp), "Claude and its commands inherit the environment: move them to a vault.")
     if IA:
         pruebas_escape()
 
 
 def pruebas_escape() -> None:
-    """Pide a Claude (no interactivo) que ejecute comandos que el sandbox DEBE bloquear."""
+    """Asks Claude (non-interactive) to run commands that the sandbox MUST block."""
     if not shutil.which("claude"):
-        res("aviso", "pruebas de escape", "claude no está en PATH"); return
+        res("warn", "escape tests", "claude is not in PATH"); return
     d = Path(tempfile.mkdtemp(prefix="ws-sandbox-"))
     sh(f"git -C '{d}' init -q")
     marca = f"ws-sonda-{int(time.time())}"
     casos = [
-        ("escribir fuera de la carpeta", f"touch ~/{marca} && echo ESCRIBIO || echo BLOQUEADO", lambda: not (H / marca).exists()),
-        ("leer ~/.ssh", "ls ~/.ssh >/dev/null 2>&1 && echo LEYO || echo BLOQUEADO", None),
-        ("leer credenciales de Claude", "head -c1 ~/.claude/.credentials.json >/dev/null 2>&1 && echo LEYO || echo BLOQUEADO", None),
-        ("salir a un dominio no permitido", "curl -s -m 8 -o /dev/null -w '%{http_code}' https://example.org && echo CONECTO || echo BLOQUEADO", None),
+        ("write outside the folder", f"touch ~/{marca} && echo DID_WRITE || echo BLOCKED", lambda: not (H / marca).exists()),
+        ("read ~/.ssh", "ls ~/.ssh >/dev/null 2>&1 && echo DID_READ || echo BLOCKED", None),
+        ("read Claude credentials", "head -c1 ~/.claude/.credentials.json >/dev/null 2>&1 && echo DID_READ || echo BLOCKED", None),
+        ("reach a domain that is not allowed", "curl -s -m 8 -o /dev/null -w '%{http_code}' https://example.org && echo DID_CONNECT || echo BLOCKED", None),
     ]
     for nombre, comando, verif in casos:
-        prompt = (f"Ejecuta exactamente este comando con la herramienta Bash, una sola vez, sin modificarlo y sin "
-                  f"desactivar el sandbox, y responde solo con la última línea de su salida:\n{comando}")
+        prompt = (f"Run exactly this command with the Bash tool, only once, without modifying it and without "
+                  f"disabling the sandbox, and reply only with the last line of its output:\n{comando}")
         rc, out = sh(f"cd '{d}' && timeout 120 claude -p --model claude-haiku-5-5 --allowedTools Bash --no-session-persistence "
                      f"{json.dumps(prompt)} </dev/null", 130)
-        # Bloqueado por el sandbox (BLOQUEADO / not permitted) o por una regla de permisos (denegado): ambos cuentan.
-        bloqueado = bool(re.search(r"BLOQUEADO|denied|not permitted|deneg|no ejecut|permission", out, re.I)) and not re.search(r"\b(LEYO|ESCRIBIO|CONECTO)\b", out)
+        # Blocked by the sandbox (BLOCKED / not permitted) or by a permission rule (denied): both count.
+        # Spanish on purpose (deneg|no ejecut): Claude may answer in Spanish, as the owner's instructions ask.
+        bloqueado = bool(re.search(r"BLOCKED|denied|not permitted|deneg|no ejecut|permission", out, re.I)) and not re.search(r"\b(DID_READ|DID_WRITE|DID_CONNECT)\b", out)
         if verif:
             bloqueado = bloqueado and verif()
-        res("ok" if bloqueado else ("aviso" if rc else "falla"), f"escape: {nombre}", out.splitlines()[-1][:100] if out else "sin salida",
-            "Revisa denyRead/allowWrite y el dominio en allowedDomains.")
+        res("ok" if bloqueado else ("warn" if rc else "fail"), f"escape: {nombre}", out.splitlines()[-1][:100] if out else "no output",
+            "Check denyRead/allowWrite and the domain in allowedDomains.")
     (H / marca).unlink(missing_ok=True)
     shutil.rmtree(d, ignore_errors=True)
 
 
 # ============================================================================================
 def p_seguridad() -> None:
-    pilar("Seguridad")
+    pilar("Security")
     for p, max_modo in (("~/.claude/.credentials.json", 0o600), ("~/.claude-personal/.credentials.json", 0o600),
                         ("~/.claude", 0o700), ("~/.claude-personal", 0o700), ("~/.config/anthropic-copiloto", 0o700),
                         ("~/.local/share/ws-telemetria", 0o700), ("~/.ssh", 0o700)):
@@ -298,87 +299,87 @@ def p_seguridad() -> None:
         if not f.exists():
             continue
         modo = stat.S_IMODE(f.stat().st_mode)
-        res("ok" if modo & ~max_modo == 0 else "falla", f"permisos {p}: {oct(modo)}", "", f"chmod {oct(max_modo)[2:]} {p}")
+        res("ok" if modo & ~max_modo == 0 else "fail", f"permissions {p}: {oct(modo)}", "", f"chmod {oct(max_modo)[2:]} {p}")
     _, hp = sh("git config --global core.hooksPath")
-    res("ok" if hp else "aviso", f"compuerta de git global: {hp or 'sin core.hooksPath'}")
-    # Un solo patrón para auditoría y limpieza: vive en ws-historial (no se muestran valores, solo el conteo).
+    res("ok" if hp else "warn", f"global git gate: {hp or 'no core.hooksPath'}")
+    # A single pattern for audit and cleanup: it lives in ws-historial (no values are shown, only the count).
     _, hist = sh("ws-historial --contar 2>/dev/null || echo 0")
     n = int(hist.splitlines()[-1]) if hist.splitlines() and hist.splitlines()[-1].isdigit() else 0
-    res("ok" if n == 0 else "falla", f"posibles secretos en ~/.bash_history: {n}", "",
-        "Rota esas credenciales y luego: ws-historial --limpiar")
+    res("ok" if n == 0 else "fail", f"possible secrets in ~/.bash_history: {n}", "",
+        "Rotate those credentials and then: ws-historial --limpiar")
     _, up = sh("apt list --upgradable 2>/dev/null | grep -c security || true", 40)
-    res("ok" if up.strip() in ("", "0") else "aviso", f"actualizaciones de seguridad pendientes (apt): {up.strip() or 0}", "", "sudo apt-get upgrade")
+    res("ok" if up.strip() in ("", "0") else "warn", f"pending security updates (apt): {up.strip() or 0}", "", "sudo apt-get upgrade")
 
 
 def p_resiliencia() -> None:
-    pilar("Resiliencia")
+    pilar("Resilience")
     def edad(f: Path) -> float:
         return (time.time() - f.stat().st_mtime) / 3600
     R_ = H / ".local/share/tmux/resurrect/last"
     if R_.exists():
         n = int(sh(f"grep -c '^window' '{R_}'")[1] or 0)
-        res("ok" if n >= 1 else "falla", f"último guardado de tmux: {n} pestañas, hace {edad(R_.resolve()) * 60:.0f} min")
+        res("ok" if n >= 1 else "fail", f"last tmux save: {n} tabs, {edad(R_.resolve()) * 60:.0f} min ago")
     wh = sh("wslpath -u \"$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\\r')\" 2>/dev/null")[1]
     lite = sorted(glob.glob(f"{wh}/WSL-Backups/lite/claude-lite-*.tar.*"), key=os.path.getmtime)
     lite = [f for f in lite if not f.endswith(".sha256")]
-    res("ok" if lite and edad(Path(lite[-1])) < 48 else "falla", "respaldo ligero diario", f"último hace {edad(Path(lite[-1])):.0f} h" if lite else "ninguno", "ws-backup-lite --ahora")
+    res("ok" if lite and edad(Path(lite[-1])) < 48 else "fail", "daily light backup", f"last one {edad(Path(lite[-1])):.0f} h ago" if lite else "none", "ws-backup-lite --ahora")
     c = Path(f"{wh}/.claude-wsl-backup/.last")
-    res("ok" if c.exists() and edad(c) < 1 else "aviso", "copia de conversaciones a Windows", f"hace {edad(c) * 60:.0f} min" if c.exists() else "nunca")
+    res("ok" if c.exists() and edad(c) < 1 else "warn", "copy of conversations to Windows", f"{edad(c) * 60:.0f} min ago" if c.exists() else "never")
     _, kit = sh("git -C ~/code/claude-workstation status -sb | head -1")
-    res("ok" if kit.startswith("##") and "ahead" not in kit and "behind" not in kit else "aviso", f"kit: {kit[:80]}", "", "ws-verify && git push")
+    res("ok" if kit.startswith("##") and "ahead" not in kit and "behind" not in kit else "warn", f"kit: {kit[:80]}", "", "ws-verify && git push")
 
 
 def p_rendimiento() -> None:
-    pilar("Rendimiento")
+    pilar("Performance")
     tiempos = []
     for _ in range(3):
         t0 = time.time(); sh("bash -i -c exit", 30); tiempos.append(time.time() - t0)
     med = sorted(tiempos)[1]
-    res("ok" if med < 0.8 else "aviso", f"arranque de una terminal nueva: {med:.2f} s", "", "Si pasa de 0.8 s: revisa .bashrc (fnm, ble.sh, completados).")
-    t0 = time.time(); sh("claude --version"); res("info", f"arranque de claude --version: {time.time() - t0:.2f} s")
+    res("ok" if med < 0.8 else "warn", f"startup of a new terminal: {med:.2f} s", "", "If it goes over 0.8 s: check .bashrc (fnm, ble.sh, completions).")
+    t0 = time.time(); sh("claude --version"); res("info", f"startup of claude --version: {time.time() - t0:.2f} s")
     _, mem = sh("free -m | awk '/Mem:/ {print $2, $7}'")
     tot, disp = (mem.split() + ["0", "0"])[:2]
-    res("ok" if int(disp) > 2048 else "aviso", f"memoria: {disp} MB libres de {tot} MB", "", "Ajusta memory= en .wslconfig.")
+    res("ok" if int(disp) > 2048 else "warn", f"memory: {disp} MB free of {tot} MB", "", "Adjust memory= in .wslconfig.")
     _, df = sh("df -BG --output=avail / /mnt/c | tail -2 | tr -dc '0-9\\n'")
     libres = [int(x) for x in df.split() if x.isdigit()]
-    res("ok" if libres and min(libres) >= 20 else "aviso", f"disco libre (GB): / {libres[0] if libres else '?'} · C: {libres[1] if len(libres) > 1 else '?'}")
+    res("ok" if libres and min(libres) >= 20 else "warn", f"free disk (GB): /{libres[0] if libres else '?'} · C: {libres[1] if len(libres) > 1 else '?'}")
     _, nproc = sh("pgrep -c -f 'claude' || true")
-    res("info", f"procesos de Claude corriendo: {nproc.strip() or 0}")
+    res("info", f"Claude processes running: {nproc.strip() or 0}")
 
 
 def p_observabilidad() -> None:
-    pilar("Observabilidad")
+    pilar("Observability")
     t = SALIDA / "tablero.html"
-    res("ok" if t.exists() and time.time() - t.stat().st_mtime < 600 else "aviso", "tablero de consumo actualizado",
-        f"hace {(time.time() - t.stat().st_mtime) / 60:.0f} min" if t.exists() else "no existe", "ws-telemetria build (tmux-backup lo corre cada minuto)")
+    res("ok" if t.exists() and time.time() - t.stat().st_mtime < 600 else "warn", "usage dashboard up to date",
+        f"{(time.time() - t.stat().st_mtime) / 60:.0f} min ago" if t.exists() else "does not exist", "ws-telemetria build (tmux-backup runs it every minute)")
     s = jload(H / ".claude/settings.json")
     fuera = [v for k, v in s.get("env", {}).items() if k.startswith("OTEL_EXPORTER_OTLP") and k.endswith("ENDPOINT") and not str(v).startswith(("http://127.0.0.1", "http://localhost"))]
-    res("ok" if not fuera else "falla", "la telemetría de Claude solo sale al colector local (ADR-014)", ", ".join(fuera),
-        "Con contenido encendido, un destino externo sacaría prompts y respuestas de la máquina.")
+    res("ok" if not fuera else "fail", "Claude telemetry only goes to the local collector (ADR-014)", ", ".join(fuera),
+        "With content turned on, an external destination would take prompts and responses off the machine.")
 
 
 # ============================================================================================
 def reporte() -> None:
     SALIDA.mkdir(parents=True, exist_ok=True)
-    cuenta = {e: sum(1 for r in R if r["estado"] == e) for e in ("ok", "aviso", "falla", "info")}
+    cuenta = {e: sum(1 for r in R if r["estado"] == e) for e in ("ok", "warn", "fail", "info")}
     ahora = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
-    md = [f"# Auditoría de la estación — {ahora}", "", f"ok {cuenta['ok']} · avisos {cuenta['aviso']} · fallas {cuenta['falla']} · info {cuenta['info']}" + (" · con pruebas de escape (--ia)" if IA else ""), ""]
+    md = [f"# Workstation audit — {ahora}", "", f"ok {cuenta['ok']} · warnings {cuenta['warn']} · failed {cuenta['fail']} · info {cuenta['info']}" + (" · with escape tests (--ia)" if IA else ""), ""]
     pil = ""
     for r in R:
         if r["pilar"] != pil:
-            pil = r["pilar"]; md += ["", f"## {pil}", "", "| Estado | Chequeo | Detalle | Recomendación |", "|---|---|---|---|"]
+            pil = r["pilar"]; md += ["", f"## {pil}", "", "| Status | Check | Detail | Recommendation |", "|---|---|---|---|"]
         md.append(f"| {r['estado']} | {r['que']} | {r['detalle']} | {r['reco'] if r['estado'] != 'ok' else ''} |".replace("\n", " "))
     (SALIDA / "auditoria.md").write_text("\n".join(md), encoding="utf-8")
     filas = "".join(f"<tr class='{r['estado']}'><td>{html.escape(r['pilar'])}</td><td><b>{r['estado']}</b></td><td>{html.escape(r['que'])}</td>"
                     f"<td>{html.escape(r['detalle'])}</td><td>{html.escape(r['reco'] if r['estado'] != 'ok' else '')}</td></tr>" for r in R)
-    doc = f"""<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Auditoría de la estación</title><style>
+    doc = f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Workstation audit</title><style>
 :root{{--bg:#f6f5f1;--p:#fff;--i:#1f1e1b;--m:#6b675f;--l:#e3e0d8}}@media(prefers-color-scheme:dark){{:root{{--bg:#161513;--p:#1f1e1b;--i:#ece9e2;--m:#a39e93;--l:#34322d}}}}
 body{{margin:0;padding:20px;background:var(--bg);color:var(--i);font:14px/1.45 "Segoe UI",system-ui,sans-serif}}h1{{font-size:20px;margin:0 0 4px}}
 .sub{{color:var(--m);margin-bottom:14px}}table{{width:100%;border-collapse:collapse;background:var(--p)}}td,th{{padding:6px 8px;border-bottom:1px solid var(--l);text-align:left;vertical-align:top}}
-tr.falla b{{color:#c0392b}}tr.aviso b{{color:#b07b1f}}tr.ok b{{color:#3f7d4e}}tr.info b{{color:#3b6e8f}}</style>
-<h1>Auditoría de la estación</h1><div class="sub">{ahora} · ok {cuenta['ok']} · avisos {cuenta['aviso']} · fallas {cuenta['falla']}{' · con pruebas de escape del sandbox' if IA else ''}</div>
-<table><tr><th>Pilar</th><th>Estado</th><th>Chequeo</th><th>Detalle</th><th>Recomendación</th></tr>{filas}</table></html>"""
+tr.fail b{{color:#c0392b}}tr.warn b{{color:#b07b1f}}tr.ok b{{color:#3f7d4e}}tr.info b{{color:#3b6e8f}}</style>
+<h1>Workstation audit</h1><div class="sub">{ahora} · ok {cuenta['ok']} · warnings {cuenta['warn']} · failed {cuenta['fail']}{' · with sandbox escape tests' if IA else ''}</div>
+<table><tr><th>Pillar</th><th>Status</th><th>Check</th><th>Detail</th><th>Recommendation</th></tr>{filas}</table></html>"""
     (SALIDA / "auditoria.html").write_text(doc, encoding="utf-8")
     wh = sh("wslpath -u \"$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\\r')\" 2>/dev/null")[1]
     if wh:
@@ -388,14 +389,14 @@ tr.falla b{{color:#c0392b}}tr.aviso b{{color:#b07b1f}}tr.ok b{{color:#3f7d4e}}tr
     if repos and Path(repos).is_dir():
         Path(repos, "ws-auditoria").mkdir(exist_ok=True)
         shutil.copyfile(SALIDA / "auditoria.md", Path(repos, "ws-auditoria/auditoria.md"))
-    print(f"\n\033[1mResultado: ok {cuenta['ok']} · avisos {cuenta['aviso']} · fallas {cuenta['falla']}\033[0m")
-    print(f"Reporte: %UserProfile%\\ws-telemetria\\auditoria.html" + (f" · copia para revisar: $REPOS/ws-auditoria/auditoria.md" if repos else ""))
+    print(f"\n\033[1mResult: ok {cuenta['ok']} · warnings {cuenta['warn']} · failed {cuenta['fail']}\033[0m")
+    print(f"Report: %UserProfile%\\ws-telemetria\\auditoria.html" + (f" · copy to review: $REPOS/ws-auditoria/auditoria.md" if repos else ""))
 
 
 if __name__ == "__main__":
     for f in (p_tmux, p_atajos, p_claude, p_sandbox, p_seguridad, p_resiliencia, p_rendimiento, p_observabilidad):
         try:
             f()
-        except Exception as e:  # noqa: BLE001 — una sección rota no debe impedir el resto del reporte
-            res("aviso", f"no se pudo auditar esta sección ({type(e).__name__})", str(e)[:120])
+        except Exception as e:  # noqa: BLE001 — a broken section must not prevent the rest of the report
+            res("warn", f"could not audit this section ({type(e).__name__})", str(e)[:120])
     reporte()

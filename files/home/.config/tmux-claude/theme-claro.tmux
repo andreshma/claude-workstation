@@ -1,5 +1,5 @@
-# theme-claro.tmux — colores del tema claro. Lo aplica tmux-theme; no lo cargues a mano.
-# @t_* son los colores semánticos que usan la barra, los hooks y los scripts.
+# theme-claro.tmux — light theme colors. Applied by tmux-theme; do not load it by hand.
+# @t_* are the semantic colors used by the status bar, the hooks and the scripts.
 set -g @theme_actual claro
 set -g @t_ok colour28
 set -g @t_think colour25

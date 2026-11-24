@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""tmux-resumen <ventana> — resumen rápido de una pestaña: dónde estamos, qué estamos haciendo y dónde nos quedamos.
+"""tmux-resumen <window> — quick summary of a tab: where we are, what we are doing and where we left off.
 
-Se abre con doble clic en la pestaña, con Ctrl+b i o desde el menú (Sesión y pestaña → Resumen).
-Todo sale de datos locales: git, el estado que Claude publica en la pestaña y su transcripción.
-  [r]  resumen en 3 líneas con IA (Haiku, por el copiloto; texto sin secretos; se guarda en caché)
-  tmux-resumen --texto <ventana>  sin colores ni teclas (lo usa el resumen diario de ws-telegram)
-  [g]  ir a esa pestaña        cualquier otra tecla: cerrar
+Opened by double-clicking the tab, with Ctrl+b i or from the menu (Session and tab → Summary).
+Everything comes from local data: git, the state Claude publishes on the tab and its transcript.
+  [r]  3-line AI summary (Haiku, through the copilot; text without secrets; cached)
+  tmux-resumen --texto <window>  no colours or keys (used by the ws-telegram daily summary)
+  [g]  go to that tab          any other key: close
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import hashlib
 import json
 import os
 import re
-import subprocess  # nosec B404: solo tmux, git y ant con argumentos fijos
+import subprocess  # nosec B404: only tmux, git and ant with fixed arguments
 import sys
 import termios
 import time
@@ -38,7 +38,7 @@ def tmux(fmt: str, objetivo: str) -> str:
 
 
 def panel_claude(ventana: str) -> str:
-    """Panel con Claude (el binario nativo se llama como su versión); si no hay, el activo."""
+    """Pane with Claude (the native binary is named after its version); if there is none, the active one."""
     for linea in sh("tmux", "list-panes", "-t", ventana, "-F", "#{pane_id} #{pane_current_command}").splitlines():
         pid, _, cmd = linea.partition(" ")
         if re.fullmatch(r"(\d+\.){2}\d+|claude", cmd):
@@ -47,7 +47,7 @@ def panel_claude(ventana: str) -> str:
 
 
 def transcripcion(carpeta: str) -> Path | None:
-    """La conversación más reciente de esa carpeta (Claude nombra la carpeta con todo lo no alfanumérico cambiado por -)."""
+    """The most recent conversation of that folder (Claude names the folder with everything non-alphanumeric replaced by -)."""
     d = CLAUDE / "projects" / re.sub(r"[^A-Za-z0-9]", "-", carpeta)
     archivos = sorted(d.glob("*.jsonl"), key=lambda f: f.stat().st_mtime) if d.is_dir() else []
     return archivos[-1] if archivos else None
@@ -90,7 +90,7 @@ def hace(ts: str) -> str:
     except ValueError:
         return ""
     m = int((time.time() - t) // 60)
-    return f"hace {m} min" if m < 60 else f"hace {m // 60} h {m % 60} min" if m < 1440 else f"hace {m // 1440} días"
+    return f"{m} min ago" if m < 60 else f"{m // 60} h {m % 60} min ago" if m < 1440 else f"{m // 1440} days ago"
 
 
 def corto(t: str, n: int) -> str:
@@ -99,15 +99,15 @@ def corto(t: str, n: int) -> str:
 
 
 def resumen_ia(f: Path, datos: dict) -> str:
-    """3 líneas con Haiku vía el copiloto (ai-shell.sh): objetivo, qué se hizo, siguiente paso. Caché por versión del archivo."""
+    """3 lines with Haiku through the copilot (ai-shell.sh): goal, what was done, next step. Cached per file version."""
     st = f.stat()
     clave = hashlib.sha256(f"{f}:{st.st_mtime_ns}".encode()).hexdigest()[:20]
     c = CACHE / f"{clave}.txt"
     if c.exists():
         return c.read_text(encoding="utf-8")
-    partes = [f"Usuario: {corto(p, 400)}" for p in datos["prompts"][-6:]] + [f"Claude: {corto(r, 600)}" for r in datos["respuestas"][-6:]]
-    sistema = ("Resume esta conversación de trabajo de software en español, en exactamente 3 líneas que empiecen con "
-               "'Objetivo:', 'Hecho:' y 'Siguiente:'. Máximo 25 palabras por línea. Sin datos sensibles.")
+    partes = [f"User: {corto(p, 400)}" for p in datos["prompts"][-6:]] + [f"Claude: {corto(r, 600)}" for r in datos["respuestas"][-6:]]
+    sistema = ("Summarize this software work conversation in the language the user writes in, in exactly 3 lines starting "
+               "with 'Goal:', 'Done:' and 'Next:'. At most 25 words per line. No sensitive data.")
     script = ('source ~/.config/tmux-claude/ai-shell.sh 2>/dev/null; _ai_cargar_llave; '
               '_ai_redact | _ai_api "$1" 220 20')
     try:
@@ -117,7 +117,7 @@ def resumen_ia(f: Path, datos: dict) -> str:
     except (OSError, subprocess.SubprocessError):
         out = ""
     if not out:
-        return "No se pudo generar (¿copiloto configurado? ws-copiloto estado)."
+        return "Could not generate it (is the copilot configured? ws-copiloto estado)."
     CACHE.mkdir(parents=True, exist_ok=True); os.chmod(CACHE, 0o700)
     c.write_text(out, encoding="utf-8")
     return out
@@ -149,39 +149,39 @@ def main() -> int:
     est = {k: tmux(f"#{{{k}}}", ventana) for k in ("@cs", "@cmodel", "@cctx", "@ccost", "@cdet", "@cturno_txt")}
 
     print(f"\n {B}{nombre}{R0}   {D}{carpeta}{R0}")
-    print(f" {C}Rama{R0} {rama or '—'}   {C}Cambios sin commit{R0} {cambios}   {C}Último commit{R0} {commit or '—'}")
+    print(f" {C}Branch{R0} {rama or '—'}   {C}Uncommitted changes{R0} {cambios}   {C}Last commit{R0} {commit or '—'}")
     if est["@cmodel"]:
-        print(f" {C}Claude{R0} {est['@cs'] or '—'}{(' · ' + est['@cdet']) if est['@cdet'] else ''}{(' · turno ' + est['@cturno_txt']) if est['@cturno_txt'] else ''} · {est['@cmodel']} · contexto {est['@cctx'] or '—'}% · ${est['@ccost'] or '0'}")
+        print(f" {C}Claude{R0} {est['@cs'] or '—'}{(' · ' + est['@cdet']) if est['@cdet'] else ''}{(' · turn ' + est['@cturno_txt']) if est['@cturno_txt'] else ''} · {est['@cmodel']} · context {est['@cctx'] or '—'}% · ${est['@ccost'] or '0'}")
     f = transcripcion(carpeta)
     if not f:
-        print(f"\n {D}Sin conversación de Claude en esta carpeta.{R0}")
+        print(f"\n {D}No Claude conversation in this folder.{R0}")
         datos = None
     else:
         datos = leer(f)
-        print(f" {C}Conversación{R0} {datos['turnos']} turnos · último mensaje {hace(datos['ultimo'])}")
+        print(f" {C}Conversation{R0} {datos['turnos']} turns · last message {hace(datos['ultimo'])}")
         pend = [t for t in datos["tareas"] if t.get("status") != "completed"]
         if datos["tareas"]:
             hechas = len(datos["tareas"]) - len(pend)
-            print(f"\n {B}Qué estamos haciendo{R0}  {D}(tareas de Claude: {hechas}/{len(datos['tareas'])} hechas){R0}")
+            print(f"\n {B}What we are doing{R0}  {D}(Claude's tasks: {hechas}/{len(datos['tareas'])} done){R0}")
             for t in pend[:6]:
                 marca = f"{Y}▶{R0}" if t.get("status") == "in_progress" else "·"
                 print(f"   {marca} {corto(t.get('content') or t.get('activeForm') or '', 90)}")
         elif datos["prompts"]:
-            print(f"\n {B}Qué estamos haciendo{R0}  {D}(primer pedido de la conversación){R0}\n   {corto(datos['prompts'][0], 180)}")
-        print(f"\n {B}Dónde nos quedamos{R0}")
+            print(f"\n {B}What we are doing{R0}  {D}(first request of the conversation){R0}\n   {corto(datos['prompts'][0], 180)}")
+        print(f"\n {B}Where we left off{R0}")
         if datos["prompts"]:
-            print(f"   {G}Tú:{R0} {corto(datos['prompts'][-1], 200)}")
+            print(f"   {G}You:{R0} {corto(datos['prompts'][-1], 200)}")
         if datos["respuestas"]:
             print(f"   {G}Claude:{R0} {corto(datos['respuestas'][-1][-400:], 300)}")
     if texto:
         return 0
-    print(f"\n {D}[r] resumen con IA   [g] ir a la pestaña   otra tecla: cerrar{R0}", end="", flush=True)
+    print(f"\n {D}[r] AI summary   [g] go to the tab   any other key: close{R0}", end="", flush=True)
     k = tecla()
     if k == "r" and f and datos:
-        print(f"\n\n {B}Resumen{R0}  {D}(Haiku){R0}")
+        print(f"\n\n {B}Summary{R0}  {D}(Haiku){R0}")
         for linea in resumen_ia(f, datos).splitlines():
             print(f"   {linea}")
-        print(f"\n {D}[g] ir a la pestaña   otra tecla: cerrar{R0}", end="", flush=True)
+        print(f"\n {D}[g] go to the tab   any other key: close{R0}", end="", flush=True)
         k = tecla()
     if k == "g":
         sh("tmux", "select-window", "-t", ventana)

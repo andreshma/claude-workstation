@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 #
-# tmux-plantilla — abre una carpeta con un acomodo de paneles ya armado (Claude + pruebas en vivo + logs + git…),
-# o guarda la pestaña actual como plantilla. Menú → T (abrir) · Menú → Sesión → G (guardar).
+# tmux-plantilla — opens a folder with a ready-made pane layout (Claude + live tests + logs + git…),
+# or saves the current tab as a template. Menu → T (open) · Menu → Session → G (save).
 #
-# Plantillas: ~/.config/tmux-claude/plantillas/<nombre>.conf, una instrucción por línea:
-#   # descripción (la primera línea de comentario se muestra al elegir)
-#   claude                      el panel principal arranca Claude
-#   derecha 35% <comando>       panel a la derecha con ese % de ancho
-#   abajo 30% <comando>         panel abajo con ese % de alto
-#   ventana <nombre> <comando>  pestaña extra en la misma carpeta (p. ej. ventana git lazygit)
-#   acomodo <layout>            acomodo exacto de tmux (lo escribe «guardar»)
-# Los comandos se escriben en el panel y se ejecutan con Enter: si fallan, el panel queda en la terminal.
-# Uso: tmux-plantilla [nombre] [carpeta]   (sin nombre: selector con fzf; sin carpeta: la del panel actual)
-#      tmux-plantilla --guardar <nombre> <ventana>     guarda la pestaña como plantilla
-#      tmux-plantilla --lista                          nombres y descripciones
+# Templates: ~/.config/tmux-claude/plantillas/<name>.conf, one instruction per line:
+#   # description (the first comment line is shown when picking)
+#   claude                      the main pane starts Claude
+#   derecha 35% <command>       pane on the right with that % of width
+#   abajo 30% <command>         pane below with that % of height
+#   ventana <name> <command>    extra tab in the same folder (e.g. ventana git lazygit)
+#   acomodo <layout>            exact tmux layout (written by «--guardar»)
+# The commands are typed into the pane and run with Enter: if they fail, the pane stays at the shell.
+# Usage: tmux-plantilla [name] [folder]    (no name: fzf picker; no folder: the current pane's)
+#      tmux-plantilla --guardar <name> <window>        saves the tab as a template
+#      tmux-plantilla --lista                          names and descriptions
 set -uo pipefail
 D="$HOME/.config/tmux-claude/plantillas"; mkdir -p "$D"
 TAB=$'\t'
@@ -24,15 +24,15 @@ lista() { local f; for f in "$D"/*.conf; do [[ -f "$f" ]] || continue
 if [[ "${1:-}" == --lista ]]; then lista; exit 0; fi
 
 if [[ "${1:-}" == --guardar ]]; then
-  # El menú manda: --guardar <nombre tal como lo escribiste> <id de ventana>. Un nombre con espacios llega partido en
-  # varias palabras: la ventana es siempre el último argumento con forma de id (@N) y el resto es el nombre.
+  # The menu sends: --guardar <name as you typed it> <window id>. A name with spaces arrives split into several
+  # words: the window is always the last argument shaped like an id (@N) and the rest is the name.
   shift; w=""
   if (( $# )) && [[ "${!#}" == @* ]]; then w="${!#}"; set -- "${@:1:$#-1}"; fi
   nom="$*"; w="${w:-$(tmux display -p '#{window_id}')}"
-  [[ "$nom" =~ ^[A-Za-z0-9_-]+$ ]] || { tmux display -d 5000 "Plantilla: el nombre solo lleva letras, números, - y _ (sin espacios)"; exit 1; }
+  [[ "$nom" =~ ^[A-Za-z0-9_-]+$ ]] || { tmux display -d 5000 "Template: the name takes only letters, digits, - and _ (no spaces)"; exit 1; }
   f="$D/$nom.conf"; [[ -f "$f" ]] && cp "$f" "$f.bak.$(date +%Y%m%d-%H%M%S)"
   {
-    echo "# $nom (guardada de «$(tmux display -p -t "$w" '#{window_name}')» el $(date +%F))"
+    echo "# $nom (saved from «$(tmux display -p -t "$w" '#{window_name}')» on $(date +%F))"
     first=1
     while IFS="$TAB" read -r pid pc; do
       args="$(ps -o args= --ppid "$pid" 2>/dev/null | head -1)"; [[ -n "$args" ]] || args="$pc"
@@ -42,16 +42,16 @@ if [[ "${1:-}" == --guardar ]]; then
     done < <(tmux list-panes -t "$w" -F "#{pane_pid}${TAB}#{pane_current_command}")
     echo "acomodo $(tmux display -p -t "$w" '#{window_layout}')"
   } > "$f"
-  echo "Plantilla guardada: $f"; cat "$f"; exit 0
+  echo "Template saved: $f"; cat "$f"; exit 0
 fi
 
 nom="${1:-}"; dir="${2:-$(tmux display -p '#{pane_current_path}' 2>/dev/null || pwd)}"
 if [[ -z "$nom" ]]; then
-  sel="$(lista | fzf --delimiter="$TAB" --with-nth=1,2 --reverse --prompt 'plantilla> ' --header "Abrir $(basename "$dir") con…" \
+  sel="$(lista | fzf --delimiter="$TAB" --with-nth=1,2 --reverse --prompt 'template> ' --header "Open $(basename "$dir") with…" \
          --preview "cat '$D'/{1}.conf")" || exit 0
   nom="${sel%%"$TAB"*}"
 fi
-f="$D/$nom.conf"; [[ -f "$f" ]] || { echo "No existe la plantilla $nom"; exit 1; }
+f="$D/$nom.conf"; [[ -f "$f" ]] || { echo "Template $nom does not exist"; exit 1; }
 
 w="$(tmux new-window -P -F '#{window_id}' -c "$dir" -n "$(basename "$dir")")"
 principal="$(tmux display -p -t "$w" '#{pane_id}')"
@@ -72,7 +72,7 @@ while IFS= read -r l || [[ -n "$l" ]]; do
       read -r vn cmd <<<"$resto"
       v="$(tmux new-window -d -P -F '#{pane_id}' -c "$dir" -n "$vn")"; correr "$v" "$cmd" ;;
     acomodo) acomodo="$resto" ;;
-    *) tmux display "Plantilla $nom: no entiendo «$inst»" ;;
+    *) tmux display "Template $nom: unknown instruction «$inst»" ;;
   esac
 done < "$f"
 [[ -n "$acomodo" ]] && tmux select-layout -t "$w" "$acomodo" 2>/dev/null

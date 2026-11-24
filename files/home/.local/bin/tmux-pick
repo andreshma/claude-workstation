@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 #
-# tmux-pick — salta a una pestaña escribiendo parte de su nombre (fzf), con vista previa.
-# Orden: primero las que esperan tu aprobación o tienen error (⚠), luego las que tienen
-# alerta (!), luego las inactivas (⏳) y al final por actividad más reciente.
-# Muestra número, nombre, estado de Claude y contexto. Lo abren Alt+s, Ctrl+b f y el menú.
+# tmux-pick — jump to a tab by typing part of its name (fzf), with a preview.
+# Order: first the ones waiting for your approval or with an error (⚠), then the ones with
+# an alert (!), then the stalled ones (⏳) and last by most recent activity.
+# Shows number, name, Claude state and context. Opened by Alt+s, Ctrl+b f and the menu.
 set -uo pipefail
 TAB=$'\t'
 fmt="#{session_name}:#{window_index}${TAB}#{window_index}${TAB}#{window_name}${TAB}#{?#{@cs},#{@cs},-}"
 fmt+="${TAB}#{?#{@cctx},#{@cctx}%,}${TAB}#{window_bell_flag}${TAB}#{@cstall}${TAB}#{@cmain}${TAB}#{window_activity}"
 
+# The @cmain values compared below are stored identifiers written by tmux-state.sh.
 list="$(tmux list-windows -a -F "$fmt" | awk -F "$TAB" -v OFS="$TAB" '{
     p = 3; m = " "
     if ($8 == "te necesita" || $8 == "te toca" || $8 == "error API") { p = 0; m = "⚠" }
@@ -17,8 +18,8 @@ list="$(tmux list-windows -a -F "$fmt" | awk -F "$TAB" -v OFS="$TAB" '{
     print p, $9, $1, sprintf("%s %3s  %-30s %-16s %5s", m, $2, substr($3, 1, 30), substr($4, 1, 16), $5)
   }' | sort -t "$TAB" -k1,1n -k2,2nr | cut -f3-)"
 
-sel="$(fzf --reverse --delimiter="$TAB" --with-nth=2 --prompt='pestaña> ' \
-  --header='Escribe parte del nombre · Enter: ir · Esc: cancelar' \
+sel="$(fzf --reverse --delimiter="$TAB" --with-nth=2 --prompt='tab> ' \
+  --header='Type part of the name · Enter: go · Esc: cancel' \
   --preview 'tmux capture-pane -ep -t {1} | tail -n 60' --preview-window='right,55%' <<<"$list")" || exit 0
 t="${sel%%"$TAB"*}"
 tmux switch-client -t "${t%%:*}" \; select-window -t "$t"

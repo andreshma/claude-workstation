@@ -466,7 +466,7 @@
               "C:\\Users\\@WIN_USER@\\source\\repos\\mempalace-ops\\mempalace-health.ps1"
             ],
             "timeout": 25,
-            "statusMessage": "Verificando salud de MemPalace..."
+            "statusMessage": "Checking MemPalace health..."
           }
         ]
       },
@@ -501,7 +501,7 @@
               "C:\\Users\\@WIN_USER@\\source\\repos\\recall\\start-recall.ps1"
             ],
             "timeout": 10,
-            "statusMessage": "Arrancando recall..."
+            "statusMessage": "Starting recall..."
           }
         ]
       },

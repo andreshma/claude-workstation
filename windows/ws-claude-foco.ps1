@@ -1,21 +1,21 @@
 <#
 .SYNOPSIS
-  Manejador del protocolo ws-claude:// — al hacer clic en un aviso de Claude, trae Windows Terminal al
-  frente y lleva tmux a la pestaña y al panel que lo lanzó.
+  Handler for the ws-claude:// protocol — when you click a Claude notification, it brings Windows Terminal
+  to the front and takes tmux to the tab and pane that raised it.
 .DESCRIPTION
-  Registrado en HKCU\Software\Classes\ws-claude (sin permisos de administrador) por el parche 31.
-  Cualquier página web puede pedir abrir ws-claude://… (el navegador pregunta antes); por eso solo se
-  acepta ws-claude://foco/<número> y lo único que se hace es cambiar de ventana y de panel.
-  __DISTRO__ y __FOCO__ los reemplaza el instalador.
+  Registered in HKCU\Software\Classes\ws-claude (no administrator rights) by patch 31.
+  Any web page can ask to open ws-claude://… (the browser asks first); that is why only
+  ws-claude://foco/<number> is accepted and all it does is switch window and pane.
+  __DISTRO__ and __FOCO__ are replaced by the installer.
 .PARAMETER Uri
-  La URI completa que pasa Windows, p. ej. ws-claude://foco/12
+  The full URI passed by Windows, e.g. ws-claude://foco/12
 #>
 param([string]$Uri)
 
 if ($Uri -notmatch '^ws-claude://foco/(\d{1,6})/?$') { exit 1 }
 $n = $Matches[1]
 
-# Primero la ventana (Windows solo deja pasar al frente poco después del clic).
+# The window first (Windows only allows coming to the front shortly after the click).
 $wt = Get-Process WindowsTerminal -ErrorAction SilentlyContinue |
       Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
 if ($wt) {
@@ -28,7 +28,7 @@ if ($wt) {
         if ([WsClaude.Win]::IsIconic($wt.MainWindowHandle)) { [void][WsClaude.Win]::ShowWindowAsync($wt.MainWindowHandle, 9) }
         [void][WsClaude.Win]::SetForegroundWindow($wt.MainWindowHandle)
     } catch {
-        # Sin Add-Type (p. ej. modo de lenguaje restringido): AppActivate no restaura minimizadas, pero sí enfoca.
+        # Without Add-Type (e.g. constrained language mode): AppActivate does not restore minimized windows, but it does focus.
         [void](New-Object -ComObject WScript.Shell).AppActivate($wt.Id)
     }
 }

@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 #
-# tmux-saver — protector de pantalla (lock-command de tmux). Se activa tras unos minutos sin tocar la terminal y
-# se quita con cualquier tecla; tus pestañas y tus Claude siguen trabajando detrás. No aparece en modo presentación
-# ni si hay un diálogo de permiso abierto.
+# tmux-saver — screensaver (tmux lock-command). It starts after a few minutes without touching the terminal and
+# any key dismisses it; your tabs and your Claudes keep working behind it. It does not appear in presentation mode
+# or while a permission dialog is open.
 #
-# Las escenas las dibuja tmux-arte (arte ASCII animado, todo de diseño propio); este script elige cuál y guarda
-# tus preferencias. Las del motor de sombreado necesitan python3-numpy; sin él salen las demás.
+# The scenes are drawn by tmux-arte (animated ASCII art, all original designs); this script picks which one and
+# saves your preferences. The shading-engine scenes need python3-numpy; without it the others are shown.
 #
-# Uso: tmux-saver                       escena según preferencias (aleatoria por defecto)
-#      tmux-saver --escena <nombre>      una escena concreta (tmux-arte --todas las lista) o «galeria»
-#                                        galeria: tus imágenes y GIF animados pasados a caracteres con chafa
-#                                          (sudo apt install chafa). Ponlos en ~/.config/tmux-claude/galeria
-#                                          (o apunta WS_GALERIA a otra carpeta). WS_GALERIA_SEG = segundos por
-#                                          imagen (25); WS_GALERIA_SIMBOLOS=ascii para usar solo letras y signos.
-#      tmux-saver --siguiente-escena     cambia la escena guardada (lo usa el menú)
-#      tmux-saver --fijar <nombre>       deja esa escena guardada («aleatoria» = cada vez una distinta)
-#      tmux-saver --toggle               enciende / apaga el protector (lo usa el menú)
-#      tmux-saver --test <escena> <n>    dibuja n cuadros sin esperar teclas (pruebas)
+# Usage: tmux-saver                     scene from your preferences (random by default)
+#        tmux-saver --escena <name>      a specific scene (tmux-arte --todas lists them) or «galeria»
+#                                        galeria: your images and animated GIFs turned into characters with chafa
+#                                          (sudo apt install chafa). Put them in ~/.config/tmux-claude/galeria
+#                                          (or point WS_GALERIA at another folder). WS_GALERIA_SEG = seconds per
+#                                          image (25); WS_GALERIA_SIMBOLOS=ascii to use only letters and signs.
+#        tmux-saver --siguiente-escena   switches the saved scene to the next one (used by the menu)
+#        tmux-saver --fijar <name>       saves that scene («aleatoria» = a different one each time)
+#        tmux-saver --toggle             turns the screensaver on / off (used by the menu)
+#        tmux-saver --test <scene> <n>   draws n frames without waiting for keys (tests)
 set -uo pipefail
 export LC_ALL=C.UTF-8
 cfg="$HOME/.config/tmux-claude/apariencia"
@@ -28,18 +28,18 @@ case "${1:-}" in
   --toggle)
     if [[ "$(get protector)" == off ]]; then put protector on; else put protector off; fi
     "$HOME/.local/bin/tmux-theme" apply
-    tmux display "Protector de pantalla: $([[ "$(get protector)" == off ]] && echo apagado || echo encendido)"
+    tmux display "Screensaver: $([[ "$(get protector)" == off ]] && echo off || echo on)"
     exit 0 ;;
   --fijar)
     e="${2:-aleatoria}"
-    [[ " ${ESCENAS[*]} " == *" $e "* ]] || { echo "tmux-saver: no conozco la escena «$e» (hay: ${ESCENAS[*]})" >&2; exit 2; }
+    [[ " ${ESCENAS[*]} " == *" $e "* ]] || { echo "tmux-saver: unknown scene «$e» (available: ${ESCENAS[*]})" >&2; exit 2; }
     put escena "$e"
     if [[ "$e" == aleatoria ]]; then tmux set -gu @saver_scene 2>/dev/null; else tmux set -g @saver_scene "$e" 2>/dev/null; fi
-    echo "Escena del protector: $e"; exit 0 ;;
+    echo "Screensaver scene: $e"; exit 0 ;;
   --siguiente-escena)
     cur="$(get escena)"; cur="${cur:-aleatoria}"; next=aleatoria
     for i in "${!ESCENAS[@]}"; do [[ "${ESCENAS[$i]}" == "$cur" ]] && next="${ESCENAS[$(( (i + 1) % ${#ESCENAS[@]} ))]}"; done
-    put escena "$next"; tmux set -g @saver_scene "$next"; tmux display "Escena del protector: $next"; exit 0 ;;
+    put escena "$next"; tmux set -g @saver_scene "$next"; tmux display "Screensaver scene: $next"; exit 0 ;;
 esac
 
 TEST=0; FRAMES=0; scene=""
@@ -48,14 +48,14 @@ case "${1:-}" in
   --test)   TEST=1; scene="${2:-aurora}"; FRAMES="${3:-5}" ;;
   *)
     [[ "$(tmux show -gqv @present 2>/dev/null)" == on ]] && exit 0
-    # Solo un diálogo de permiso abierto frena el protector. «te toca» (Claude terminó con una pregunta) no: es el
-    # estado normal de casi cualquier pestaña en reposo y con él el protector no aparecía nunca.
+    # Only an open permission dialog holds the screensaver back. «te toca» (Claude ended with a question) does
+    # not: it is the normal state of almost any idle tab, and with it the screensaver never appeared.
     tmux list-windows -a -F '#{@cmain}' 2>/dev/null | grep -qx 'te necesita' && exit 0
     scene="$(get escena)" ;;
 esac
 scene="${scene:-aleatoria}"
 
-# ── Galería: imágenes y GIF con chafa ─────────────────────────────────────────
+# ── Gallery: images and GIFs with chafa ───────────────────────────────────────
 GAL="${WS_GALERIA:-$HOME/.config/tmux-claude/galeria}"
 galeria_archivos() {
   command -v chafa >/dev/null || return 0
@@ -79,14 +79,14 @@ galeria() {
     done
   done
 }
-if [[ "$scene" == galeria ]]; then galeria || scene=aleatoria; fi   # sin chafa o sin imágenes: una escena de arte
+if [[ "$scene" == galeria ]]; then galeria || scene=aleatoria; fi   # no chafa or no images: an art scene
 ARTE="$HOME/.local/bin/tmux-arte"
-# Una escena guardada que ya no existe (las de pixel art se retiraron) pasa a aleatoria.
+# A saved scene that no longer exists (the pixel art ones were retired) falls back to aleatoria.
 [[ " ${ESCENAS[*]} " == *" $scene "* ]] || scene=aleatoria
 if [[ "$scene" == aleatoria ]]; then
-  # tmux-arte --lista solo nombra las que puede dibujar (las del motor de sombreado piden numpy).
+  # tmux-arte --lista only names the ones it can draw (the shading-engine ones need numpy).
   mapfile -t pool < <("$ARTE" --lista 2>/dev/null); (( ${#pool[@]} )) || pool=(aurora)
-  [[ -n "$(galeria_archivos | head -1)" ]] && pool+=(galeria)   # si hay imágenes y chafa, la galería también entra
+  [[ -n "$(galeria_archivos | head -1)" ]] && pool+=(galeria)   # with images and chafa, the gallery joins the pool too
   scene="${pool[RANDOM % ${#pool[@]}]}"
 fi
 [[ "$scene" == galeria ]] && { galeria || scene=aurora; }

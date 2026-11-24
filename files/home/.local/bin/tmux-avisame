@@ -1,43 +1,43 @@
 #!/usr/bin/env bash
 #
-# tmux-avisame — «avísame cuando termine»: marca un panel con un comando largo (build, terraform, pruebas,
-# despliegue) y al terminar te llega un aviso de Windows y por Telegram con el resultado. Ctrl+b N (otra vez: cancela).
+# tmux-avisame — “notify me when it finishes”: mark a pane running a long command (build, terraform, tests,
+# deploy) and when it ends you get a Windows and Telegram notification with the result. Ctrl+b N (again: cancels).
 #
-# Si el panel está en la terminal sin nada corriendo, espera al próximo comando que lances ahí.
-# Fin = el panel vuelve a la terminal (bash/zsh/fish) o se cierra. Resultado: ❌ si las últimas líneas tienen
-# error/failed/fatal/exception/exit code ≠ 0, ✅ si no. Va con las últimas 8 líneas, redactadas.
-# Uso: tmux-avisame <panel>  ·  tmux-avisame --vigilar <panel>  (interno, en segundo plano)
-# Límite: 12 h. Variables para pruebas: WS_AVISAME_PAUSA (s entre revisiones, 2).
+# If the pane is at the shell with nothing running, it waits for the next command you launch there.
+# End = the pane returns to the shell (bash/zsh/fish) or closes. Result: ❌ if the last lines contain
+# error/failed/fatal/exception/exit code ≠ 0, ✅ otherwise. It carries the last 8 lines, redacted.
+# Usage: tmux-avisame <pane>  ·  tmux-avisame --vigilar <pane>  (internal, in the background)
+# Limit: 12 h. Variables for tests: WS_AVISAME_PAUSA (s between checks, 2).
 set -uo pipefail
 PAUSA="${WS_AVISAME_PAUSA:-2}"
 SHELLS='^(bash|zsh|fish|sh|dash|-bash)$'
 
 if [[ "${1:-}" != --vigilar ]]; then
-  p="${1:?panel}"
+  p="${1:?pane}"
   if [[ -n "$(tmux show -pqv -t "$p" @avisame 2>/dev/null)" ]]; then
-    tmux set -pu -t "$p" @avisame; tmux display "🔕 Ya no te aviso de este panel"; exit 0
+    tmux set -pu -t "$p" @avisame; tmux display "🔕 No longer notifying you about this pane"; exit 0
   fi
   tmux set -p -t "$p" @avisame "$(date +%s)"
   tmux run-shell -b "'$0' --vigilar '$p'"
   c="$(tmux display -p -t "$p" '#{pane_current_command}')"
-  if [[ "$c" =~ $SHELLS ]]; then tmux display -d 3000 "🔔 Te aviso cuando termine el próximo comando de este panel"
-  else tmux display -d 3000 "🔔 Te aviso cuando termine «$c»"; fi
+  if [[ "$c" =~ $SHELLS ]]; then tmux display -d 3000 "🔔 I will notify you when the next command in this pane finishes"
+  else tmux display -d 3000 "🔔 I will notify you when «$c» finishes"; fi
   exit 0
 fi
 
-p="${2:?panel}"; marca="$(tmux show -pqv -t "$p" @avisame)"; inicio=$(date +%s); cmd=""
+p="${2:?pane}"; marca="$(tmux show -pqv -t "$p" @avisame)"; inicio=$(date +%s); cmd=""
 vivo() { [[ "$(tmux show -pqv -t "$p" @avisame 2>/dev/null)" == "$marca" ]]; }
 actual() { tmux display -p -t "$p" '#{pane_current_command}' 2>/dev/null; }
 c="$(actual)"
-while vivo && [[ "$c" =~ $SHELLS ]] && (( $(date +%s) - inicio < 43200 )); do sleep "$PAUSA"; c="$(actual)"; done   # espera a que empiece
+while vivo && [[ "$c" =~ $SHELLS ]] && (( $(date +%s) - inicio < 43200 )); do sleep "$PAUSA"; c="$(actual)"; done   # wait for it to start
 vivo || exit 0
 cmd="$c"; t0=$(date +%s)
 while vivo && [[ -n "$c" && ! "$c" =~ $SHELLS ]] && (( $(date +%s) - inicio < 43200 )); do sleep "$PAUSA"; c="$(actual)"; done
 vivo || [[ -z "$c" ]] || exit 0
 dur=$(( $(date +%s) - t0 )); dtxt="$((dur / 60)) min $((dur % 60)) s"
-nombre="$(tmux display -p -t "$p" '#{window_index} #{window_name}' 2>/dev/null || echo 'panel cerrado')"
+nombre="$(tmux display -p -t "$p" '#{window_index} #{window_name}' 2>/dev/null || echo 'pane closed')"
 cola="$(tmux capture-pane -p -J -t "$p" -S -40 2>/dev/null | sed -e 's/[[:space:]]*$//' | grep -v '^$' | tail -8)"
 if grep -qiE 'error|failed|fatal|exception|panic|exit (code|status) [1-9]|✖|FAIL\b' <<<"$cola"; then r="❌"; else r="✅"; fi
 tmux set -pu -t "$p" @avisame 2>/dev/null
-ws-aviso --panel "$p" --telegram --forzar "$r Terminó «$cmd» ($dtxt) · $nombre" "$cola"
-tmux display -d 4000 "$r Terminó «$cmd» en $nombre ($dtxt)" 2>/dev/null
+ws-aviso --panel "$p" --telegram --forzar "$r Finished «$cmd» ($dtxt) · $nombre" "$cola"
+tmux display -d 4000 "$r Finished «$cmd» in $nombre ($dtxt)" 2>/dev/null

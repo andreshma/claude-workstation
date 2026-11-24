@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
 #
-# ws-redactar — filtro stdin → stdout que tapa secretos antes de que un texto salga de la terminal (a Claude, a
-# Telegram, a un aviso de Windows o a un archivo). Lo usan tmux-panel, tmux-avisame, tmux-logs y tmux-extraer.
+# ws-redactar — stdin → stdout filter that masks secrets before a text leaves the terminal (to Claude, to
+# Telegram, to a Windows notification or to a file). Used by tmux-panel, tmux-avisame, tmux-logs and tmux-extraer.
 #
-# Tapa: tokens de GitHub, Slack, OpenAI/Anthropic (sk-…), AWS (AKIA…), JWT, secretos de cliente de Azure AD
-# (…8Q~…), «Bearer …», firmas SAS (sig=…), contraseñas en URLs (://usuario:clave@), valores de claves conocidas
-# (password, secret, token, api_key, AccountKey, client_secret… = valor) y bloques de llave privada.
-# No es infalible: es una red de seguridad, no un reemplazo de no imprimir secretos.
-# Uso: comando | ws-redactar
+# Masks: GitHub, Slack, OpenAI/Anthropic (sk-…) and AWS (AKIA…) tokens, JWTs, Azure AD client secrets
+# (…8Q~…), "Bearer …", SAS signatures (sig=…), passwords in URLs (://user:password@), values of known keys
+# (password, secret, token, api_key, AccountKey, client_secret… = value) and private key blocks.
+# It is not infallible: it is a safety net, not a replacement for not printing secrets.
+# Usage: command | ws-redactar
 set -uo pipefail
 export LC_ALL=C.UTF-8
 sed -E \
-  -e '/-----BEGIN [A-Z ]*PRIVATE[ ]KEY-----/,/-----END [A-Z ]*PRIVATE[ ]KEY-----/c\[llave privada redactada]' \
+  -e '/-----BEGIN [A-Z ]*PRIVATE[ ]KEY-----/,/-----END [A-Z ]*PRIVATE[ ]KEY-----/c\[private key redacted]' \
   -e 's/\b(ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}/\1_***/g' \
   -e 's/\bxox[abprs]-[A-Za-z0-9-]{10,}/xox-***/g' \
   -e 's/\bsk-[A-Za-z0-9_-]{20,}/sk-***/g' \
   -e 's/\b(AKIA|ASIA)[0-9A-Z]{16}\b/\1***/g' \
   -e 's/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/eyJ***(jwt)/g' \
-  -e 's/\b[A-Za-z0-9_.-]{3}[0-9]Q~[A-Za-z0-9_~.-]{30,}/***(secreto de Azure AD)/g' \
+  -e 's/\b[A-Za-z0-9_.-]{3}[0-9]Q~[A-Za-z0-9_~.-]{30,}/***(Azure AD secret)/g' \
   -e 's/(Bearer|Basic)[[:space:]]+[A-Za-z0-9._~+\/=-]{8,}/\1 ***/Ig' \
   -e 's/([?&]sig=)[^&[:space:]"]+/\1***/Ig' \
   -e 's#(://[^/:@[:space:]]+:)[^@[:space:]/]+@#\1***@#g' \

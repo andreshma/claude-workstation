@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 #
-# tmux-monitor2 — otra ventana de Windows Terminal para el segundo monitor.
-#   tmux-monitor2 [grupo]            ventana INDEPENDIENTE sobre el mismo grupo (sesión enlazada): ves y usas otra
-#                                    pestaña del grupo sin mover la del monitor principal. Se borra al cerrarla.
-#   tmux-monitor2 --espejo [grupo]   ESPEJO de solo lectura de tu sesión: para compartir pantalla en Teams sin
-#                                    riesgo de que se escriba ahí; sigue lo que haces en la principal.
-# Menú → Sesión → m (monitor) · e (espejo). Sin grupo: el de la pestaña actual.
+# tmux-monitor2 — another Windows Terminal window for the second monitor.
+#   tmux-monitor2 [group]            INDEPENDENT window on the same group (linked session): you see and use another
+#                                    tab of the group without moving the main monitor's. Removed when you close it.
+#   tmux-monitor2 --espejo [group]   read-only MIRROR of your session: to share your screen in Teams with no
+#                                    risk of typing there; it follows what you do in the main one.
+# Menu → Views → m (monitor) · e (mirror). Without a group: the current tab's.
 set -uo pipefail
 espejo=0; [[ "${1:-}" == --espejo ]] && { espejo=1; shift; }
 grupo="${1:-$(tmux display -p '#S')}"
-tmux has-session -t "=$grupo" 2>/dev/null || { tmux display "No existe el grupo $grupo"; exit 1; }
+tmux has-session -t "=$grupo" 2>/dev/null || { tmux display "Group $grupo does not exist"; exit 1; }
 distro="${WSL_DISTRO_NAME:-Ubuntu}"
 if (( espejo )); then
-  dentro=(tmux attach -r -t "=$grupo"); titulo="espejo $grupo (solo lectura)"
+  dentro=(tmux attach -r -t "=$grupo"); titulo="mirror $grupo (read-only)"
 else
   n="${grupo}-m2"; i=2; while tmux has-session -t "=$n" 2>/dev/null; do i=$((i + 1)); n="${grupo}-m$i"; done
   tmux new-session -d -t "=$grupo" -s "$n" && tmux set -t "=$n" destroy-unattached on
@@ -22,7 +22,7 @@ wt="$(command -v wt.exe || true)"
 [[ -n "$wt" ]] || wt="$(wslpath "$(wslvar LOCALAPPDATA 2>/dev/null)" 2>/dev/null)/Microsoft/WindowsApps/wt.exe"
 if [[ -x "$wt" ]]; then
   "$wt" -w new --title "$titulo" wsl.exe -d "$distro" -- "${dentro[@]}" >/dev/null 2>&1 &
-  tmux display -d 3000 "Abrí una ventana nueva: $titulo"
+  tmux display -d 3000 "Opened a new window: $titulo"
 else
-  tmux display -d 5000 "No encontré wt.exe. En otra terminal: ${dentro[*]}"
+  tmux display -d 5000 "Could not find wt.exe. In another terminal: ${dentro[*]}"
 fi

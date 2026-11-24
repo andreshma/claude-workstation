@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 #
-# claude-report [días] — resumen de la bitácora de auditoría de Claude Code (default: hoy).
-# Sesiones, prompts, acciones por repo y herramienta, y acciones bloqueadas o denegadas.
+# claude-report [days] — summary of the Claude Code audit log (default: today).
+# Sessions, prompts, actions per repo and tool, and blocked or denied actions.
 days="${1:-1}"
 dir="${CLAUDE_AUDIT_DIR:-$HOME/.claude/audit}"
 mapfile -t files < <(find "$dir" -name '*.jsonl' -mtime -"$days" 2>/dev/null | sort)
-(( ${#files[@]} )) || { echo "Sin registros en $dir"; exit 0; }
+(( ${#files[@]} )) || { echo "No records in $dir"; exit 0; }
 cat "${files[@]}" | jq -rs --arg d "$days" '
   def n(e): [.[] | select(.ev == e)] | length;
-  "Últimos \($d) día(s) · sesiones: \(n("start")) · prompts: \(n("prompt")) · acciones: \(n("tool")) · bloqueos: \(n("blocked")) · denegadas: \(n("denied"))",
-  "", "ACCIONES POR REPO",
+  "Last \($d) day(s) · sessions: \(n("start")) · prompts: \(n("prompt")) · actions: \(n("tool")) · blocked: \(n("blocked")) · denied: \(n("denied"))",
+  "", "ACTIONS PER REPO",
   ([.[] | select(.ev == "tool")] | group_by(.repo)[] |
      "  \(.[0].repo // "-"): " + (group_by(.tool) | map("\(.[0].tool)=\(length)") | join("  "))),
-  "", "BLOQUEOS Y DENEGACIONES",
+  "", "BLOCKED AND DENIED",
   ([.[] | select(.ev == "blocked" or .ev == "denied")][] |
      "  \(.ts[0:16])  \(.repo // "-")  \(.reason // .tool // "")\n      \(.cmd // .file // "")")'

@@ -1,56 +1,56 @@
-# Estándares de trabajo
+# Working standards
 
-Si tu organización o el repo tienen una guía de ingeniería propia, esa manda: léela antes de proponer o revisar
-código. Si algo de aquí choca con esa guía o con el README del repo, dímelo antes de actuar.
+If your organization or the repo has its own engineering guide, that one rules: read it before proposing or reviewing
+code. If anything here conflicts with that guide or with the repo's README, tell me before acting.
 
-## Precedencia
-Ley → contrato y políticas del cliente → políticas de la organización → estándar y guías → decisiones del proyecto
-(ADR/README). Toda desviación queda explícita (motivo, riesgo, dueño, fecha de revisión) en ADR, README o ticket.
+## Precedence
+Law → client contract and policies → organization policies → standard and guides → project decisions
+(ADR/README). Every deviation is made explicit (reason, risk, owner, review date) in an ADR, the README or a ticket.
 
-## Cómo trabajar conmigo
-- Responde en el idioma en que escribo. Decisión primero, luego razonamiento y trade-offs.
-- Tablas y código antes que párrafos; no expliques conceptos básicos.
-- Ante ambigüedad de diseño: recomendación + al menos una alternativa con trade-offs.
-- Antes de un cambio en la nube (az, terraform, kubectl) muestra el comando y la suscripción o contexto activo.
+## How to work with me
+- Respond in the language I write in. Decision first, then reasoning and trade-offs.
+- Tables and code before paragraphs; do not explain basic concepts.
+- When a design is ambiguous: recommendation + at least one alternative with trade-offs.
+- Before a cloud change (az, terraform, kubectl) show the command and the active subscription or context.
 
 ## Git
-- Conventional Commits `type(scope): description` en imperativo (feat, fix, chore, docs, refactor, test,
-  ci, perf, style, build), salvo que el repo defina otra convención.
-- Commits atómicos. Nunca `Co-authored-by` (la configuración ya lo bloquea).
-- Estrategia de ramas la que diga el README (trunk-based o GitFlow); PR con revisor hacia main o release;
-  commits firmados si el cliente lo exige.
+- Conventional Commits `type(scope): description` in the imperative (feat, fix, chore, docs, refactor, test,
+  ci, perf, style, build), unless the repo defines another convention.
+- Atomic commits. Never `Co-authored-by` (the configuration already blocks it).
+- Branching strategy as the README says (trunk-based or GitFlow); PR with a reviewer into main or release;
+  signed commits if the client requires them.
 
-## Documentación
-- Decisión no trivial → ADR (Status, Context, Decision, Consequences, Alternatives). Arquitectura → C4.
-  Requisitos no funcionales → FURPS+. Nada de artefactos pesados en tareas triviales.
-- Repos: README (propósito, setup, variables, runbook) y CHANGELOG (Keep a Changelog).
-- Código: documentación idiomática del lenguaje; superficie pública y el porqué no obvio, sin comentarios redundantes.
+## Documentation
+- Non-trivial decision → ADR (Status, Context, Decision, Consequences, Alternatives). Architecture → C4.
+  Non-functional requirements → FURPS+. No heavy artifacts for trivial tasks.
+- Repos: README (purpose, setup, variables, runbook) and CHANGELOG (Keep a Changelog).
+- Code: the language's idiomatic documentation; public surface and the non-obvious why, no redundant comments.
 
-## Calidad
-- Pirámide de tests; todo código nuevo con sus tests. Obligatorio en auth, pagos, permisos y migraciones
-  destructivas. Cobertura como confianza en el cambio, no como porcentaje.
-- Datos de prueba no productivos y anonimizados. DoD explícita en PRs; contract testing entre servicios.
+## Quality
+- Test pyramid; all new code comes with its tests. Mandatory for auth, payments, permissions and destructive
+  migrations. Coverage as confidence in the change, not as a percentage.
+- Non-production, anonymized test data. Explicit DoD in PRs; contract testing between services.
 
-## Seguridad e IA
-- OWASP Top 10, ASVS y LLM Top 10 como checklist; threat modeling en diseño.
-- Secretos en Key Vault: nunca en código, prompts, fixtures ni logs. Least privilege.
-- Agentes y herramientas con el mismo rigor que un usuario privilegiado (authz, allowlist, sandbox);
-  humano en el ciclo para acciones destructivas.
-- El código generado se revisa como cualquier PR; no sustituye la revisión de seguridad ni las pruebas.
+## Security and AI
+- OWASP Top 10, ASVS and LLM Top 10 as a checklist; threat modeling at design time.
+- Secrets in Key Vault: never in code, prompts, fixtures or logs. Least privilege.
+- Agents and tools get the same rigor as a privileged user (authz, allowlist, sandbox);
+  human in the loop for destructive actions.
+- Generated code is reviewed like any PR; it does not replace the security review or the tests.
 
-## Cloud y CI/CD
-IaC primero, sin ClickOps en prod; tagging env, owner, cost-center, project; multi-AZ en prod.
-Pipeline Lint → SAST → Test → Build → DAST → Deploy → Smoke; rollback y SLOs antes de producción.
+## Cloud and CI/CD
+IaC first, no ClickOps in prod; tagging env, owner, cost-center, project; multi-AZ in prod.
+Pipeline Lint → SAST → Test → Build → DAST → Deploy → Smoke; rollback and SLOs before production.
 
-## Archivos
-Office o PDF → Markdown (MarkItDown o pandoc) antes de procesar; si no hay herramienta, pídeme el archivo convertido.
+## Files
+Office or PDF → Markdown (MarkItDown or pandoc) before processing; if there is no tool, ask me for the converted file.
 
 ## Obsidian
-Tengo un vault de Obsidian accesible con el CLI `obsidian` (search, read, tasks, daily:read…).
-Úsalo para mis notas, tareas y notas diarias; MemPalace es para decisiones e historial de proyectos.
-Escribe en el vault solo si te lo pido. Nunca borres, publiques ni ejecutes código ahí.
+I have an Obsidian vault accessible through the `obsidian` CLI (search, read, tasks, daily:read…).
+Use it for my notes, tasks and daily notes; MemPalace is for decisions and project history.
+Write to the vault only if I ask you to. Never delete, publish or run code there.
 
-## Sandbox: comandos de nube y red
-- Ejecuta `az`, `kubectl`, `gh`, `terraform` y `git push/pull/fetch/clone/ls-remote` solos en la llamada:
-  sin `|`, `&&`, `cd`, redirección a archivo ni `$(...)`. Si no, el sandbox los atrapa y fallan.
-- Filtra con `--query` y `-o tsv|json` en lugar de `| jq`; usa `git -C <ruta>` en lugar de `cd`.
+## Sandbox: cloud and network commands
+- Run `az`, `kubectl`, `gh`, `terraform` and `git push/pull/fetch/clone/ls-remote` alone in the call:
+  no `|`, `&&`, `cd`, redirection to a file or `$(...)`. Otherwise the sandbox traps them and they fail.
+- Filter with `--query` and `-o tsv|json` instead of `| jq`; use `git -C <path>` instead of `cd`.

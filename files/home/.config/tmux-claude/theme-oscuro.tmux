@@ -1,5 +1,5 @@
-# theme-oscuro.tmux — colores del tema oscuro. Lo aplica tmux-theme; no lo cargues a mano.
-# @t_* son los colores semánticos que usan la barra, los hooks y los scripts.
+# theme-oscuro.tmux — dark theme colors. Applied by tmux-theme; do not load it by hand.
+# @t_* are the semantic colors used by the status bar, the hooks and the scripts.
 set -g @theme_actual oscuro
 set -g @t_ok colour82
 set -g @t_think colour39

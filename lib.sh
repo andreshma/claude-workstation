@@ -1,7 +1,7 @@
 # shellcheck shell=bash
-# lib.sh — funciones comunes de export.sh e install.sh (kit claude-workstation).
+# lib.sh — functions shared by export.sh and install.sh (claude-workstation kit).
 
-# Raíz del repo y carpeta espejo del $HOME (las usan export.sh e install.sh).
+# Repo root and the folder that mirrors $HOME (used by export.sh and install.sh).
 # shellcheck disable=SC2034
 KIT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC2034
@@ -14,15 +14,15 @@ warn() { printf '!!  %s\n' "$*" >&2; }
 die()  { printf 'xx  %s\n' "$*" >&2; exit 1; }
 
 #######################################
-# Lista las rutas del manifiesto (sin comentarios ni líneas vacías).
-# Outputs: una ruta relativa a $HOME por línea.
+# Lists the manifest's paths (without comments or empty lines).
+# Outputs: one path relative to $HOME per line.
 #######################################
 manifest_paths() { grep -vE '^\s*(#|$)' "$KIT/manifest.txt"; }
 
 #######################################
-# Expande el manifiesto a archivos concretos bajo una raíz dada.
-# Arguments: raíz ($HOME para exportar, $FILES para instalar).
-# Outputs: rutas relativas de archivos existentes.
+# Expands the manifest into concrete files under a given root.
+# Arguments: root ($HOME to export, $FILES to install).
+# Outputs: relative paths of existing files.
 #######################################
 manifest_files() {
   local root="$1" p
@@ -36,11 +36,11 @@ manifest_files() {
 }
 
 #######################################
-# Detecta secretos en archivos (tokens, llaves, connection strings).
-# Omite las rutas de secrets-allow.txt (relativas a files/): archivos que CONTIENEN los
-# patrones de detección, como guard.sh, y no secretos reales.
-# Arguments: directorio a revisar.
-# Returns: 0 si encontró algo (y lo imprime), 1 si está limpio.
+# Detects secrets in files (tokens, keys, connection strings).
+# Skips the paths in secrets-allow.txt (relative to files/): files that CONTAIN the
+# detection patterns, like guard.sh, and not real secrets.
+# Arguments: directory to check.
+# Returns: 0 if it found something (and prints it), 1 if it is clean.
 #######################################
 find_secrets() {
   local allow="$KIT/secrets-allow.txt" f rel hit=1
@@ -53,23 +53,23 @@ find_secrets() {
 }
 
 #######################################
-# Usuario de Windows: $WIN_USER, o el que reporta Windows por interop (vacío si no hay).
-# Outputs: nombre de usuario de Windows.
+# Windows user: $WIN_USER, or the one Windows reports through interop (empty if none).
+# Outputs: Windows user name.
 #######################################
 win_user() {
   if [[ -n "${WIN_USER:-}" ]]; then echo "$WIN_USER"; return; fi
   cmd.exe /c 'echo %USERNAME%' 2>/dev/null | tr -d '\r' || true
 }
 
-# re_escape <texto> — escapa los caracteres especiales de una expresión regular de sed.
+# re_escape <text> — escapes the special characters of a sed regular expression.
 re_escape() { printf '%s' "$1" | sed -e 's/[.*^$#&/\\[]/\\&/g' -e 's/]/\\]/g'; }
 
 #######################################
-# Convierte en plantilla los archivos de una carpeta: reemplaza las rutas y usuarios de
-# esta máquina por marcadores, para que el kit sirva a cualquier persona del equipo.
-#   /mnt/c/Users/<usuario Windows> → @WINHOME@   ·   <usuario Windows> → @WIN_USER@
-#   $HOME → @HOME@   ·   <usuario Linux> → @LINUX_USER@
-# Arguments: carpeta, usuario de Windows, home de Linux, usuario de Linux.
+# Turns the files of a folder into templates: replaces this machine's paths and users
+# with placeholders, so the kit works for anyone on the team.
+#   /mnt/c/Users/<Windows user> → @WINHOME@   ·   <Windows user> → @WIN_USER@
+#   $HOME → @HOME@   ·   <Linux user> → @LINUX_USER@
+# Arguments: folder, Windows user, Linux home, Linux user.
 #######################################
 templatize() {
   local dir="$1" wu home lu f
@@ -84,8 +84,8 @@ templatize() {
 }
 
 #######################################
-# Sustituye los marcadores por los valores de la máquina destino (inverso de templatize).
-# Arguments: carpeta, usuario de Windows, home de Linux, usuario de Linux.
+# Replaces the placeholders with the target machine's values (inverse of templatize).
+# Arguments: folder, Windows user, Linux home, Linux user.
 #######################################
 render_templates() {
   local dir="$1" wu="$2" home="$3" lu="$4" f
