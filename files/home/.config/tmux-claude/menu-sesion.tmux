@@ -9,6 +9,7 @@ display-menu -O -T "#[align=centre] 🗂  Pestañas y sesión · #S › #W " -x 
   "Grupos y pestañas (Alt+←/→ pestaña, Alt+↑/↓ grupo)" S "choose-tree -sZ -O name" \
   "-#[nodim]── Esta pestaña ──" "" "" \
   "Resumen: qué, dónde y en qué se quedó (doble clic)" i "display-popup -E -w 84% -h 70% -T ' Resumen de la pestaña ' \"~/.local/bin/tmux-flot-run ~/.local/bin/tmux-resumen\"" \
+  "#{?@fav,Quitar de favoritas ☆,Poner en favoritas ★} (Ctrl+b *)" '*' "run-shell -b '~/.local/bin/tmux-favoritos --alternar #{window_id}'" \
   "Etiqueta de la pestaña (Ctrl+b E)" E "run-shell -b '~/.local/bin/tmux-etiqueta --menu #{window_id}'" \
   "Renombrar pestaña" r "command-prompt -I \"#W\" \"rename-window -- '%%'\"" \
   "Cerrar pestaña" x "confirm-before -p \"¿Cerrar la pestaña #W? (y/n)\" kill-window" \

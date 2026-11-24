@@ -7,6 +7,7 @@ display-menu -O -T "#[align=centre] ☰  #S › #W · #{?#{@cs},#{@cs},sin Claud
   "-#[nodim]── Ir a ──" "" "" \
   "Activas ahora, de todos los grupos (Ctrl+b a)" a "display-popup -E -w 92% -h 70% -T ' Activas ahora ' \"~/.local/bin/tmux-flot-run ~/.local/bin/tmux-activas\"" \
   "Ir a la siguiente que te espera o lleva rato sin avance" g "run-shell '~/.local/bin/tmux-watch --goto'" \
+  "Favoritas ★ (Ctrl+b F)" F "display-popup -E -w 85% -h 70% -T ' Favoritas ' \"~/.local/bin/tmux-flot-run ~/.local/bin/tmux-favoritos\"" \
   "Buscar pestaña por nombre" f "display-popup -E -w 85% -h 75% -T ' Buscar pestaña ' \"~/.local/bin/tmux-flot-run ~/.local/bin/tmux-pick\"" \
   "Tablero de pestañas (Ctrl+b D)" D "display-popup -E -w 92% -h 70% -T ' Tablero de pestañas ' \"~/.local/bin/tmux-flot-run ~/.local/bin/tmux-dash\"" \
   "Abrir carpeta o repo (Ctrl+b o)" o "display-popup -E -w 80% -h 70% -T ' Abrir carpeta ' \"~/.local/bin/tmux-flot-run ~/.local/bin/tmux-open\"" \

@@ -296,6 +296,7 @@ watcher's traffic light, the Azure subscription, the git branch and the time.
 | `⏺` | The pane is being recorded |
 | ✔ ✖ ● · `#12` ✓ ✎ 📝 · `ABC-123` | CI passed / failed / running · pull request number, approved / changes requested / draft · ticket taken from the branch name |
 | A label word | The tab's label (`Ctrl+b E`) |
+| ★ | The tab's folder is a favorite (`Ctrl+b *` toggles it, `Ctrl+b F` lists them) |
 
 ### State labels
 

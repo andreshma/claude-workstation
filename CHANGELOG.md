@@ -4,6 +4,9 @@ All notable changes to this project are documented here. The format is based on 
 
 ## [Unreleased]
 
+### Added
+- **Favorite tabs** (`tmux-favoritos`): `Ctrl+b *` adds or removes the current tab's folder, which shows a ★ in the status bar, and `Ctrl+b F` (or Menu → `F`) lists the favorites, open or not; Enter goes to the tab or opens the folder with Claude in its group, and `Ctrl+X` removes it from the list. The mark belongs to the folder, so it survives closing the tab and restarting tmux; it is kept in `~/.config/tmux-claude/favoritos`. `tmux-open --dir <folder>` opens a folder without asking.
+
 ## [2.7.0] - 2026-11-23
 
 First release of the public repository. The history before it lives in the private archive.

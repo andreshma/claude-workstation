@@ -649,6 +649,15 @@ prueba_maravillas() {
   E tmux-etiqueta "$(tm display -p -t dev '#{window_id}')" '🟡rev'; E tmux-etiqueta --barra
   [[ "$(tm show -wv -t dev @etq)" == '🟡rev' && "$(tm show -gv window-status-format | grep -o '@etq' | wc -l)" -le 2 ]] \
     && ok "tmux-etiqueta pone la etiqueta y la barra la muestra (sin duplicarse)" || falla "tmux-etiqueta"
+  local wf df; wf="$(tm display -p -t dev '#{window_id}')"; df="$(tm display -p -t dev '#{pane_current_path}')"
+  E tmux-favoritos --alternar "$wf" >/dev/null 2>&1
+  [[ "$(tm show -wqv -t "$wf" @fav)" == 1 ]] && grep -qxF "$df" "$TH/.config/tmux-claude/favoritos" && E tmux-favoritos --lista | grep -qF "$df" \
+    && ok "tmux-favoritos marca la pestaña, la guarda y la lista" || falla "tmux-favoritos no marcó: $(cat "$TH/.config/tmux-claude/favoritos" 2>&1)"
+  E tmux-favoritos --barra; E tmux-favoritos --barra
+  [[ "$(tm show -gv window-status-format | grep -o '@fav' | wc -l)" -le 2 ]] && ok "la ★ de favoritas entra a la barra sin duplicarse" || falla "tmux-favoritos --barra duplica"
+  E tmux-favoritos --alternar "$wf" >/dev/null 2>&1
+  [[ -z "$(tm show -wqv -t "$wf" @fav)" ]] && ! grep -qxF "$df" "$TH/.config/tmux-claude/favoritos" \
+    && ok "tmux-favoritos quita la pestaña de favoritas" || falla "tmux-favoritos no quitó"
   tm set -g status-right 'ORIGINAL'; E tmux-enfoque 25 >/dev/null
   local en; en="$(tm show -gv status-right)"; E tmux-enfoque off >/dev/null
   [[ "$en" == *enfoque* && "$(tm show -gv status-right)" == ORIGINAL && -z "$(tm show -gqv @enf_fin)" ]] \
@@ -962,10 +971,11 @@ prueba_menus_coherencia() {
   # 2. Cada «(Ctrl+b X)» que anuncia un menú tiene su bind en la configuración (bind [-r] X …, sin los de -n).
   teclas=" $(grep -hE '^bind(-key)?( -r)? +[^-]' "$TH/.tmux.conf" "$c"/ux.tmux "$c"/maravillas.tmux 2>/dev/null \
               | sed -E 's/^bind(-key)?( -r)? +//' | awk '{ print $1 }' | tr -d "'\"\\\\" | tr '\n' ' ')"
-  for k in $(grep -rhoE '\(Ctrl\+b [^ )]+\)' "$c"/menu*.tmux 2>/dev/null | sed -E 's/\(Ctrl\+b (.*)\)/\1/' | sort -u); do
+  while IFS= read -r k; do   # con read y no con for: una tecla como «*» no debe expandirse a los archivos de la carpeta
+    [[ -n "$k" ]] || continue
     x="$k"; [[ "$k" == Espacio ]] && x=Space
     [[ "$teclas" == *" $x "* ]] || sn+=" $k"
-  done
+  done < <(grep -rhoE '\(Ctrl\+b [^ )]+\)' "$c"/menu*.tmux 2>/dev/null | sed -E 's/\(Ctrl\+b (.*)\)/\1/' | sort -u)
   [[ -z "$sn" ]] && ok "cada atajo «Ctrl+b X» anunciado en un menú existe" || falla "atajos anunciados sin bind:$sn"
   # 3. La ayuda no menciona entradas que ya no están.
   ! grep -qE 'Playwright|detener y GIF|modo presentación' "$TH/.local/bin/tmux-help" 2>/dev/null && ok "la ayuda no anuncia opciones retiradas" || falla "tmux-help anuncia opciones que no existen"
