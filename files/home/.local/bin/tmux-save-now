@@ -2,8 +2,8 @@
 #
 # tmux-save-now — saves the tmux session as soon as its structure changes (tab created,
 # closed, renamed, pane created or closed). Called by tmux hooks; it batches consecutive
-# changes: it saves at most once every 10 s and in the background. Complements
-# continuum's automatic save (every minute).
+# changes: it saves at most once every 10 s and in the background. tmux-background also calls it
+# once a minute, so the save and its «confirmed» date do not depend on continuum.
 set -uo pipefail
 # Right after the server starts, tmux is still restoring: saving now would overwrite the last good
 # save with an empty session (it happened on 2026-11-14). continuum takes over afterwards.

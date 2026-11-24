@@ -9,7 +9,7 @@
 # Groups: if a tab already exists in any group it jumps to it; otherwise it creates it in its group's session
 # (label from roots.txt). To go back to everything in the current session: groups=off in ~/.config/tmux-claude/settings
 # Usage: tmux-open [--opus]   (--opus opens the new tab with Claude on Opus, function two)
-#      tmux-open --dir <folder>    opens that folder without asking (used by tmux-favorites)
+#      tmux-open --dir <folder>    opens that folder without asking (used by tmux-find)
 # Internal (used by fzf while navigating): --list · --children <path> · --up <path> <label>
 set -euo pipefail
 conf="${XDG_CONFIG_HOME:-$HOME/.config}/tmux-claude/roots.txt"

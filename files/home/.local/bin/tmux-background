@@ -10,6 +10,9 @@
 #   At most once a minute (WS_BACKGROUND_EVERY), one run at a time:
 #     · CI/PR/ticket of each tab (tmux-branch --update)
 #     · searchable history, if you turned it on (tmux-history --sample)
+#     · the tmux save (tmux-save-now). continuum is configured to save every minute, but it hooks itself into
+#       status-right, which the themes and the bar rewrite, and it stays off when another tmux server is running
+#       (the popups have their own): the save cannot depend on it.
 #   Once a day: ws-personal sync (your personal configuration to the private repo)
 # Usage: tmux-background          everything
 #      tmux-background --bar    only the bar (used by extras.tmux when loading the configuration)
@@ -47,6 +50,7 @@ stamp="$st/last"
 if [[ -f "$stamp" ]] && (( $(date +%s) - $(stat -c %Y "$stamp") < ${WS_BACKGROUND_EVERY:-60} )); then exit 0; fi
 exec 9>"$st/lock"; flock -n 9 || exit 0
 touch "$stamp"
+[[ -x "$B/tmux-save-now" ]] && ( "$B/tmux-save-now" >/dev/null 2>&1 & )
 [[ "$(tmux show -gqv @branch_bar)" == off ]] || timeout 50 "$B/tmux-branch" --update
 [[ "$(tmux show -gqv @history)" == on && -x "$B/tmux-history" ]] && timeout 30 "$B/tmux-history" --sample
 # Once a day: your personal configuration to the private repo (ws-personal, ADR-011). If it finds something that

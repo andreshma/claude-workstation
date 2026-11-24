@@ -28,6 +28,14 @@ saved="$(grep -c '^window' "$last" 2>/dev/null)"; saved="${saved:-0}"
 open="$(tmux list-windows -a 2>/dev/null | wc -l)"
 if (( saved > 0 )) && (( open == 0 || saved == open )); then ok "tmux save up to date ($saved tabs)"
 else bad "tmux save up to date" "$saved saved vs $open open: Ctrl+b Ctrl+s"; fi
+# The save runs every minute and tmux-recover --validate refreshes the date of a good save: an old date with tmux
+# running means the saving stopped, which nothing else would show until the next restart.
+if (( open > 0 )); then
+  age=$(( $(date +%s) - $(stat -c %Y "$(readlink -f "$last")" 2>/dev/null || echo 0) ))
+  up=$(( $(date +%s) - $(tmux display -p '#{start_time}' 2>/dev/null || date +%s) ))
+  if (( up < 300 || age < 300 )); then ok "tmux save confirmed in the last 5 min"
+  else bad "tmux save confirmed in the last 5 min" "last confirmed $(( age / 60 )) min ago: Ctrl+b Ctrl+s, then check continuum"; fi
+fi
 
 k="$HOME/code/claude-workstation"
 if [[ -d "$k/.git" && -z "$(git -C "$k" status --porcelain 2>/dev/null)" && -z "$(git -C "$k" log --oneline '@{u}..' 2>/dev/null)" ]]; then

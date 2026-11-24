@@ -10,7 +10,8 @@
 #                                  ended up empty and the startup save had tabs, it restores it by itself
 #   tmux-recover --validate       (resurrect post-save-all hook) if a save came out empty (it happens when
 #                                  closing tmux: panes close while it is saving), it deletes it
-#                                  and points "last" at the latest save with tabs
+#                                  and points "last" at the latest save with tabs; a good save gets its
+#                                  date refreshed («confirmed»), since equal saves are not written again
 # It only deletes empty saves; for the rest, it changes what "last" points to and uses resurrect's restore.
 # WS_RECOVER_WAIT: seconds to wait before auto-restoring (20; the tests use less).
 set -uo pipefail
@@ -57,6 +58,11 @@ case "${1:-}" in
     if [[ ! -s "$target" ]] || (( $(tab_count "$target") == 0 )); then
       good="$(last_valid "$target")" && ln -sf "$good" "$R/last"
       [[ -s "$target" ]] || rm -f "$target"                   # only empty saves are deleted
+    else
+      # Heartbeat: resurrect discards a save equal to the previous one, so while the tabs do not change the file
+      # keeps its old date. Touching it on every check makes its date mean «last confirmed», which is what the
+      # list below and ws-health show; without it a save that stopped working looks the same as one up to date.
+      touch "$target" 2>/dev/null
     fi
     exit 0 ;;
 
@@ -83,10 +89,10 @@ chosen="$(
   while IFS= read -r f; do
     t="$(basename "$f" .txt)"; t="${t#tmux_resurrect_}"
     label=""; [[ "$f" == "$mark" ]] && label="  ← at startup"
-    printf '%s\t%s %s:%s  %2s tabs  %s%s\n' "$f" "${t:0:4}-${t:4:2}-${t:6:2}" "${t:9:2}" "${t:11:2}" \
-      "$(tab_count "$f")" "$(names "$f" | cut -c1-70)" "$label"
+    printf '%s\t%s %s:%s  %2s tabs  confirmed %s  %s%s\n' "$f" "${t:0:4}-${t:4:2}-${t:6:2}" "${t:9:2}" "${t:11:2}" \
+      "$(tab_count "$f")" "$(date -r "$f" '+%m-%d %H:%M')" "$(names "$f" | cut -c1-60)" "$label"
   done | fzf --with-nth=2.. --delimiter='\t' --no-sort --reverse \
-      --header='Pick the save to restore (the most recent one with your tabs, before the problem)' \
+      --header='Pick the save to restore. The first date is when the tabs last changed; «confirmed» is when the save was last checked against the open tabs' \
   | cut -f1
 )"
 [[ -n "$chosen" ]] || exit 0
