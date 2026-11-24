@@ -1,6 +1,6 @@
-<!-- Thanks for contributing! Keep PRs focused and small where possible. -->
+<!-- Thanks for contributing. Keep pull requests focused and small where possible. -->
 
-## What & why
+## What and why
 
 <!-- What does this change and why? Link any issue: Closes #123 -->
 
@@ -24,3 +24,8 @@
 - [ ] `ws-test` passes (isolated).
 - [ ] New files are listed in `manifest.txt`; user-visible changes are under `[Unreleased]` in `CHANGELOG.md`.
 - [ ] Commits follow Conventional Commits, without `Co-authored-by`.
+
+## Documentation
+
+- [ ] The documents named in `CONTRIBUTING.md` for this kind of change are updated, in English.
+- [ ] A non-trivial decision has an ADR in `docs/adr/`.

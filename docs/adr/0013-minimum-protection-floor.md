@@ -1,30 +1,16 @@
 # 0013. A minimum protection floor that no mode turns off
 
-- Status: Accepted, in phases (partly supersedes [0012](0012-per-tab-protection.md), per-tab protection)
-  - **Phase 1, done:** fail-closed guard and its tests; the floor's `deny`
-    rules and no wildcard `allow`; the pure level (`puro`) keeps the floor and
-    not the kit's permissions; Telegram does not execute without a sandbox and
-    blocks more; lint-on-edit does not run code from the repository; the tab
-    path is escaped in the status bar.
-  - **Full level (`completo`), done:** confirmed against the documentation that
-    lists are merged across sources; the full level now starts without the
-    user settings and with a profile that has no excluded commands.
-  - **Phase 2, partly done (2026-11-23):** a PIN to execute from Telegram
-    (on by default); `install.sh` sets the git hooks path when none is
-    configured; per-project reads in the full level; always-ask rules for MCP
-    tools; Windows-side credentials hidden from the sandbox.
-  - **Phase 2, still pending:** managed policy; a read-only allow list for
-    commands run from Telegram; escaped paths in the menus; encrypted backups
-    with expiry; a status bar indicator derived from the effective
-    configuration; a stricter normal level.
+- Status: Accepted
 - Date: 2026-11-20
-
-Referred to in code and changelog as ADR-013.
 
 ## Context and problem statement
 
+Referred to in code and changelog as ADR-013. This record partly supersedes
+[0012](0012-per-tab-protection.md), per-tab protection, and is implemented in phases; see
+[Implementation status](#implementation-status).
+
 An adversarial review of the kit (2026-11-20) compared Claude's four start
-modes (full, normal, pure and solo mode, `modo solo`) with what the code
+modes (full, normal, pure and solo mode) with what the code
 actually does. ADR-012 starts from a permissive user configuration and each
 profile tries to *subtract* permissions with `--settings`. Three promises do
 not hold that way:
@@ -57,6 +43,14 @@ track:
 
 The per-file, per-line detail is in the review report; only what is needed to
 decide is kept here.
+
+## Decision drivers
+
+- What each protection level promises must hold and must be testable.
+- At least one control must survive every mode.
+- The guard must fail closed and must not be evaded with variants of the same command.
+- Credentials must be protected by rules, not only by the sandbox.
+- The per-tab switch of ADR-012 must be kept.
 
 ## Considered options
 
@@ -110,3 +104,22 @@ Invert the model: the base is strict and the profiles *add*.
 - Negative: the managed policy requires `sudo` at install time.
 - Negative: more permission dialogs until the enumerated `allow` rules are
   tuned.
+
+### Implementation status
+
+- **Phase 1, done:** fail-closed guard and its tests; the floor's `deny`
+  rules and no wildcard `allow`; the pure level (`puro`) keeps the floor and
+  not the kit's permissions; Telegram does not execute without a sandbox and
+  blocks more; lint-on-edit does not run code from the repository; the tab
+  path is escaped in the status bar.
+- **Full level (`completo`), done:** confirmed against the documentation that
+  lists are merged across sources; the full level now starts without the
+  user settings and with a profile that has no excluded commands.
+- **Phase 2, partly done (2026-11-23):** a PIN to execute from Telegram
+  (on by default); `install.sh` sets the git hooks path when none is
+  configured; per-project reads in the full level; always-ask rules for MCP
+  tools; Windows-side credentials hidden from the sandbox.
+- **Phase 2, still pending:** managed policy; a read-only allow list for
+  commands run from Telegram; escaped paths in the menus; encrypted backups
+  with expiry; a status bar indicator derived from the effective
+  configuration; a stricter normal level.

@@ -1,19 +1,27 @@
 # 0012. Three per-tab protection levels for Claude
 
-- Status: Accepted (partly superseded by [0013](0013-minimum-protection-floor.md))
+- Status: Accepted
 - Date: 2026-11-20
 
-Referred to in code and changelog as ADR-012.
-
 ## Context and problem statement
+
+Referred to in code and changelog as ADR-012. This record is partly superseded by
+[0013](0013-minimum-protection-floor.md), which changes what the full and pure levels keep.
 
 The kit adds its own rules on top of Claude Code: the sandbox, an `ask` list
 (terraform, kubectl, cloud, databases, docker…), a `deny` list (reading
 credentials, deleting repositories…) and the `guard.sh` hook. There was a need
 to raise protection to the maximum for delicate work and, in other cases, to
 work with Claude as it ships, without the kit's restrictions. Until then only
-solo mode (`modo solo`: auto mode without sandbox) existed, and it keeps
+solo mode (auto mode without sandbox) existed, and it keeps
 ask/deny/guard.
+
+## Decision drivers
+
+- Delicate work needs protection raised to the maximum.
+- Other work needs Claude as it ships, without the kit's restrictions.
+- The switch must affect one tab, not every tab, and must not require editing a file.
+- Changing the level must not change the account or the credentials.
 
 ## Considered options
 

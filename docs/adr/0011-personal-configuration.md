@@ -3,15 +3,22 @@
 - Status: Accepted
 - Date: 2026-11-19
 
-Referred to in code and changelog as ADR-011.
-
 ## Context and problem statement
+
+Referred to in code and changelog as ADR-011.
 
 The `claude-workstation` kit belongs to the team: it must not carry one
 person's paths, settings or scripts. Personal material (status bar segments,
 budgets, routing and Telegram settings, personal templates, the user-level
 CLAUDE.md) lived only in `~`. On 19 November `mempalace-tmux.sh` was lost: it
 sat uncommitted in a repository and disappeared without a trace.
+
+## Decision drivers
+
+- The kit belongs to the team and must not carry one person's paths, settings or scripts.
+- Personal material must not be lost again: it needs history and diffs, not only a backup.
+- Nothing that looks like a secret may be committed.
+- No new dependency for a small case.
 
 ## Considered options
 
@@ -26,7 +33,7 @@ sat uncommitted in a repository and disappeared without a trace.
 ## Decision
 
 Option **A**. One PRIVATE git repository per person
-(`<usuario>/estacion-personal`), managed by `ws-personal`:
+(`<user>/estacion-personal`), managed by `ws-personal`:
 
 - `incluir.txt` lists which paths under `~` are versioned; the copy lives in
   `home/` with its permissions.
