@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="60">
+<title>Claude usage</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --panel: #ffffff; --ink: #1f1e1b; --muted: #6b675f; --line: #e3e0d8;
+    --acc: #c4643a; --acc2: #3b6e8f; --ok: #3f7d4e; --warn: #b07b1f; --bar: #c4643a; --bar2: #8fb3c9;
+    --s1: #c4643a; --s2: #3b6e8f; --s3: #3f7d4e; --s4: #b07b1f; --s5: #7a5ea8; --s6: #9a968d; --bad: #b3402e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161513; --panel: #1f1e1b; --ink: #ece9e2; --muted: #a39e93; --line: #34322d;
+            --acc: #e08a5c; --acc2: #7fb0cf; --ok: #7cbf8b; --warn: #e0b45c; --bar: #e08a5c; --bar2: #4f7891;
+            --s1: #e08a5c; --s2: #7fb0cf; --s3: #7cbf8b; --s4: #e0b45c; --s5: #b39ddb; --s6: #8f8a80; --bad: #e58a78; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  header { padding: 20px 24px 8px; display: flex; flex-wrap: wrap; gap: 8px 24px; align-items: baseline; }
+  h1 { font-size: 20px; margin: 0; font-weight: 600; }
+  .sub { color: var(--muted); font-size: 12.5px; }
+  main { padding: 8px 24px 32px; display: grid; gap: 16px; grid-template-columns: repeat(12, 1fr); max-width: 1500px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+  .c3 { grid-column: span 3; } .c4 { grid-column: span 4; } .c6 { grid-column: span 6; } .c8 { grid-column: span 8; } .c12 { grid-column: span 12; }
+  @media (max-width: 1000px) { .c3, .c4 { grid-column: span 6; } .c6, .c8 { grid-column: span 12; } }
+  @media (max-width: 600px) { main, header { padding-left: 16px; padding-right: 16px; } .c3, .c4 { grid-column: span 12; } }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  .kpi { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .kpi small { font-size: 13px; color: var(--muted); font-weight: 400; margin-left: 4px; }
+  .row { display: flex; justify-content: space-between; color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.text { text-align: left; max-width: 280px; overflow: hidden; text-overflow: ellipsis; }
+  .table-wrap { overflow-x: auto; }
+  .chip { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; background: var(--line); color: var(--muted); }
+  .bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; display: flex; }
+  .bar span { display: block; height: 100%; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  svg text { fill: var(--muted); font-size: 10px; }
+  .section { grid-column: span 12; margin: 10px 0 -4px; font-size: 15px; font-weight: 600; }
+  .section small { font-weight: 400; color: var(--muted); margin-left: 8px; font-size: 12.5px; }
+  .comp { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px 20px; }
+  .comp b { display: block; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .comp span { color: var(--muted); font-size: 12px; }
+  .delta { font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .delta.up { color: var(--warn); } .delta.down { color: var(--ok); } .delta.bad { color: var(--bad); } .delta.neutral { color: var(--muted); }
+  .note { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .empty { color: var(--muted); padding: 12px 0; }
+  footer { grid-column: span 12; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Claude usage</h1>
+  <span class="sub" id="gen"></span>
+</header>
+<main id="app"></main>
+<script>
+const D = /*__DATA__*/null;
+const $ = (s) => document.querySelector(s);
+const n = (x) => (x || 0).toLocaleString("en-US");
+const k = (x) => x >= 1e9 ? (x / 1e9).toFixed(2) + " B" : x >= 1e6 ? (x / 1e6).toFixed(1) + " M" : x >= 1e3 ? (x / 1e3).toFixed(1) + " k" : String(x || 0);
+const usd = (x) => "$" + (x || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function card(cls, title, html) { return `<section class="card ${cls}"><h2>${title}</h2>${html}</section>`; }
+function table(cols, rows) {
+  if (!rows.length) return `<div class="empty">No data yet.</div>`;
+  return `<div class="table-wrap"><table><thead><tr>${cols.map((c) => `<th>${c[0]}</th>`).join("")}</tr></thead><tbody>${
+    rows.map((f) => `<tr>${cols.map((c, i) => `<td class="${i === 0 ? "text" : ""}">${c[1](f)}</td>`).join("")}</tr>`).join("")
+  }</tbody></table></div>`;
+}
+function bars(days) {
+  const W = 720, H = 150, m = 22, bw = (W - m) / days.length;
+  const max = Math.max(1, ...days.map((d) => d.cost));
+  const rects = days.map((d, i) => {
+    const h = (H - 26) * d.cost / max, x = m + i * bw, y = H - 18 - h;
+    return `<rect x="${x + 1}" y="${y}" width="${bw - 2}" height="${h}" rx="2" fill="var(--bar)"><title>${d.day}: ${usd(d.cost)} · ${k(d.tokens)} tokens · ${d.turns} turns</title></rect>` +
+      (i % 5 === 0 ? `<text x="${x}" y="${H - 4}">${d.day.slice(5)}</text>` : "");
+  }).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Equivalent cost by day">${rects}<text x="0" y="10">${usd(max)}</text></svg>`;
+}
+
+// ---- Trends: hand-made SVG charts (no libraries), with the value in <title> and the extremes printed ----
+const SER = ["var(--s1)", "var(--s2)", "var(--s3)", "var(--s4)", "var(--s5)", "var(--s6)"];
+const dur = (s) => s >= 3600 ? (s / 3600).toFixed(1) + " h" : s >= 90 ? Math.round(s / 60) + " min" : Math.round(s || 0) + " s";
+const wk = (f) => f.start.slice(8) + "/" + f.start.slice(5, 7);
+function legend(names) { return `<div class="legend">${names.map((x, i) => `<span><i style="background:${SER[i % SER.length]}"></i>${esc(x)}</span>`).join("")}</div>`; }
+// Change against the previous period. dir: +1 if going up is good, -1 if going up is bad, 0 if informational only.
+function delta(a, b, dir, fmt) {
+  if (!b && !a) return `<span class="delta neutral">no data</span>`;
+  if (!b) return `<span class="delta neutral">new</span>`;
+  const p = 100 * (a - b) / b, fl = p > 0.5 ? "▲" : p < -0.5 ? "▼" : "＝";
+  const cls = Math.abs(p) <= 0.5 || !dir ? "neutral" : (p > 0) === (dir > 0) ? "down" : dir < 0 ? "up" : "bad";
+  return `<span class="delta ${cls}">${fl} ${Math.abs(p).toFixed(0)}% <span class="neutral">(was ${fmt(b)})</span></span>`;
+}
+// Stacked bars by period. keys = series in order; pct = normalizes each bar to 100 %.
+function stacked(rows, keys, field, label, pct, fmt) {
+  const W = 720, H = 190, mi = 46, mb = 20, mt = 12, bw = (W - mi) / Math.max(1, rows.length);
+  const tot = rows.map((f) => keys.reduce((a, c) => a + (f[field][c] || 0), 0));
+  const max = pct ? 100 : Math.max(1, ...tot), plotH = H - mb - mt;
+  let g = "";
+  for (const fr of [0, 0.5, 1]) {
+    const y = mt + plotH * (1 - fr);
+    g += `<line x1="${mi}" x2="${W}" y1="${y}" y2="${y}" stroke="var(--line)"/><text x="${mi - 6}" y="${y + 3}" text-anchor="end">${pct ? Math.round(100 * fr) + "%" : fmt(max * fr)}</text>`;
+  }
+  rows.forEach((f, i) => {
+    let y = mt + plotH; const x = mi + i * bw;
+    keys.forEach((c, j) => {
+      const v = f[field][c] || 0; if (!v) return;
+      const h = plotH * (pct ? (tot[i] ? 100 * v / tot[i] : 0) : v) / max; y -= h;
+      g += `<rect x="${x + 2}" y="${y}" width="${Math.max(1, bw - 4)}" height="${h}" fill="${SER[j % SER.length]}"${f.partial ? ' opacity=".6"' : ""}><title>${label(f)} · ${esc(c)}: ${fmt(v)}${pct && tot[i] ? " (" + Math.round(100 * v / tot[i]) + "%)" : ""} · total ${fmt(tot[i])}</title></rect>`;
+    });
+    if (!pct && tot[i] && bw > 34) g += `<text x="${x + bw / 2}" y="${y - 3}" text-anchor="middle">${fmt(tot[i])}</text>`;
+    if (rows.length <= 14 || i % 2 === 0) g += `<text x="${x + bw / 2}" y="${H - 5}" text-anchor="middle">${label(f)}</text>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Stacked bars by period">${g}</svg>`;
+}
+// Point-to-point lines. series = [{name, values}], with the last value printed at the end of each line.
+function lines(labels, series, fmt, cap) {
+  const W = 720, H = 180, mi = 46, md = 64, mb = 20, mt = 12, plotH = H - mb - mt, plotW = W - mi - md;
+  const max = cap || Math.max(1, ...series.flatMap((s) => s.values)) * 1.08;
+  const px = (i) => mi + (labels.length > 1 ? plotW * i / (labels.length - 1) : plotW / 2), py = (v) => mt + plotH * (1 - v / max);
+  let g = "";
+  for (const fr of [0, 0.5, 1]) g += `<line x1="${mi}" x2="${W - md}" y1="${py(max * fr)}" y2="${py(max * fr)}" stroke="var(--line)"/><text x="${mi - 6}" y="${py(max * fr) + 3}" text-anchor="end">${fmt(max * fr)}</text>`;
+  const step = Math.ceil(labels.length / 8);
+  labels.forEach((e, i) => { if (i % step === 0) g += `<text x="${px(i)}" y="${H - 5}" text-anchor="middle">${esc(e)}</text>`; });
+  const ends = [];
+  series.forEach((s, j) => {
+    const c = SER[j % SER.length];
+    g += `<polyline fill="none" stroke="${c}" stroke-width="2" points="${s.values.map((v, i) => px(i) + "," + py(v)).join(" ")}"/>`;
+    s.values.forEach((v, i) => { g += `<circle cx="${px(i)}" cy="${py(v)}" r="${i === s.values.length - 1 ? 3.5 : 2}" fill="${c}"><title>${esc(labels[i])} · ${esc(s.name)}: ${fmt(v)}</title></circle>`; });
+    ends.push({ y: py(s.values[s.values.length - 1] || 0), t: fmt(s.values[s.values.length - 1] || 0), c });
+  });
+  ends.sort((a, b) => a.y - b.y).forEach((f, i, a) => { if (i && f.y - a[i - 1].y < 12) f.y = a[i - 1].y + 12; });   // keep them from overlapping
+  for (const f of ends) g += `<text x="${W - md + 8}" y="${f.y + 3}" style="fill:${f.c};font-weight:600">${f.t}</text>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Lines by period">${g}</svg>`;
+}
+// Hour map: rows = days (monday first), columns = local hour.
+function heat(M) {
+  const W = 720, mi = 30, mt = 14, cw = (W - mi) / 24, ch = 20, H = mt + ch * 7 + 4, max = Math.max(1, ...M.flat());
+  const days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+  let g = "";
+  for (let h = 0; h < 24; h += 3) g += `<text x="${mi + h * cw + 2}" y="10">${String(h).padStart(2, "0")} h</text>`;
+  M.forEach((row, d) => {
+    g += `<text x="0" y="${mt + d * ch + 14}">${days[d]}</text>`;
+    row.forEach((v, h) => {
+      g += `<rect x="${mi + h * cw + 1}" y="${mt + d * ch + 1}" width="${cw - 2}" height="${ch - 2}" rx="2" fill="${v ? "var(--s1)" : "var(--line)"}" opacity="${v ? (0.18 + 0.82 * v / max).toFixed(2) : 1}"><title>${days[d]} ${String(h).padStart(2, "0")}:00 · ${n(v)} turns</title></rect>`;
+    });
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Turns by day of the week and hour">${g}</svg>`;
+}
+// ---- OpenTelemetry (local ws-otel collector): API, permissions, active time, hooks, subagents ----
+const ms = (x) => x == null ? "—" : x >= 1000 ? (x / 1000).toFixed(1) + " s" : Math.round(x) + " ms";
+function otel(O, h) {
+  h.push(`<div class="section">API, permissions and active time<small>Claude Code OpenTelemetry, stored on your machine by ws-otel${O && O.since ? " · since " + esc(O.since) : ""}</small></div>`);
+  if (!O || !O.api) {
+    h.push(card("c12", "No signals yet", `<div class="empty">The collector has not received anything. Check <code>ws-otel status</code> and restart your Claude tabs (/exit and claude -c): the export is enabled at startup.</div>`));
+    return;
+  }
+  const A = O.api, C = O.code || {}, act = O.active || [];
+  const mine = act.reduce((a, d) => a + d.user_min, 0), cl = act.reduce((a, d) => a + d.claude_min, 0);
+  const comp = [
+    ["API calls", n(A.calls), `<span class="delta neutral">${usd(A.cost)} equiv.</span>`],
+    ["Typical duration", ms(A.med_ms), `<span class="delta neutral">p95 ${ms(A.p95_ms)}</span>`],
+    ["First token", ms(A.ttft_med_ms), `<span class="delta neutral">p95 ${ms(A.ttft_p95_ms)}</span>`],
+    ["API errors", A.error_pct + "%", `<span class="delta ${A.errors ? "up" : "neutral"}">${n(A.errors)} errors · ${n(A.exhausted)} out of retries</span>`],
+    ["Your active time", (mine / 60).toFixed(1) + " h", `<span class="delta neutral">Claude: ${(cl / 60).toFixed(1)} h</span>`],
+    ["Waiting for your approval", (A.wait_total_min || 0) + " min", `<span class="delta neutral">${n(A.wait_n || 0)} dialogs · typical ${ms(A.wait_med_ms)}</span>`],
+    ["Code", "+" + n(C.lines_added) + " / −" + n(C.lines_removed), `<span class="delta neutral">${n(C.commits)} commits · ${n(C.prs)} PR</span>`],
+  ];
+  h.push(card("c12", `Last ${O.days} days`, `<div class="comp">${comp.map((c) => `<div><span>${c[0]}</span><b>${c[1]}</b>${c[2]}</div>`).join("")}</div>
+    <div class="note">Active time: yours is while you type or read; Claude's, while it responds or runs tools. "First token" is how long the model takes to start answering.</div>`));
+  const Dd = (O.api_days || []).filter((d) => d.calls);
+  if (Dd.length > 1) h.push(card("c6", "API call duration by day", lines(Dd.map((d) => d.day.slice(8) + "/" + d.day.slice(5, 7)),
+    [{ name: "median", values: Dd.map((d) => d.med_ms || 0) }, { name: "p95", values: Dd.map((d) => d.p95_ms || 0) }], ms) + legend(["median", "p95"])));
+  if (act.length > 1) h.push(card("c6", "Active time by day (minutes)", lines(act.map((d) => d.day.slice(8) + "/" + d.day.slice(5, 7)),
+    [{ name: "yours", values: act.map((d) => d.user_min) }, { name: "Claude", values: act.map((d) => d.claude_min) }], (x) => Math.round(x) + " min") + legend(["yours", "Claude"])));
+  h.push(card("c6", "API by model", table([["Model", (f) => esc(f.model)], ["Calls", (f) => n(f.calls)], ["Median", (f) => ms(f.med_ms)], ["p95", (f) => ms(f.p95_ms)], ["Cost", (f) => usd(f.cost)]], O.api_models || [])));
+  h.push(card("c6", "Cost by call origin", table([["Origin", (f) => esc(f.source)], ["Calls", (f) => n(f.n)], ["Cost", (f) => usd(f.cost)]], O.api_origin || [])));
+  h.push(card("c4", "API errors by code", table([["Code", (f) => esc(f.code)], ["Times", (f) => n(f.n)]], O.errors || [])));
+  h.push(card("c4", "Who decides permissions", table([["Source", (f) => esc(f.source)], ["Accepts", (f) => n(f.accepts)], ["Rejects", (f) => n(f.rejects)]], O.permissions || []) +
+    `<div class="note">config = a rule of yours · hook = a hook · user_* = you, in the dialog.</div>`));
+  h.push(card("c4", "Most rejected tools", table([["Tool", (f) => esc(f.tool)], ["Rejections", (f) => n(f.n)]], O.rejections || [])));
+  h.push(card("c6", "How long your hooks take", table([["Hook", (f) => esc(f.event)], ["Times", (f) => n(f.n)], ["Median", (f) => ms(f.med_ms)], ["p95", (f) => ms(f.p95_ms)], ["Total", (f) => f.total_s + " s"]], O.hooks || [])));
+  h.push(card("c6", "Finished subagents", table([["Type", (f) => esc(f.type)], ["Times", (f) => n(f.n)], ["Typical duration", (f) => ms(f.med_ms)], ["Tokens", (f) => k(f.tokens)], ["Tools", (f) => n(f.tools)]], O.subagents || [])));
+  const K = O.compactions || {};
+  h.push(card("c4", "Compactions", `<div class="kpi">${n(K.n)}<small>${n(K.auto)} automatic</small></div>
+    <div class="row"><span>before: ${k(K.before_med || 0)} tokens</span><span>after: ${k(K.after_med || 0)}</span></div><div class="row"><span>typical duration: ${ms(K.med_ms)}</span></div>`));
+  h.push(card("c4", "MCP server connections", table([["Server", (f) => esc(f.server)], ["Status", (f) => esc(f.status)], ["Times", (f) => n(f.n)]], O.mcp || [])));
+  h.push(card("c4", "Activated skills", table([["Skill", (f) => esc(f.skill)], ["How", (f) => esc(f.source)], ["Times", (f) => n(f.n)]], O.skills || [])));
+}
+function trends(T, h) {
+  if (!T || !T.weeks || !T.weeks.some((f) => f.turns)) return;
+  const A = T.current, B = T.previous, S = T.weeks;
+  h.push(`<div class="section">Trends<small>local time · data since ${esc(T.since)} (${n(T.days_with_data)} days with activity)</small></div>`);
+  const comp = [
+    ["Equivalent cost", usd(A.cost), delta(A.cost, B.cost, -1, usd)],
+    ["Your turns", n(A.turns), delta(A.turns, B.turns, 0, n)],
+    ["Sessions", n(A.sessions), delta(A.sessions, B.sessions, 0, n)],
+    ["Cost per turn", usd(A.turns ? A.cost / A.turns : 0), delta(A.turns ? A.cost / A.turns : 0, B.turns ? B.cost / B.turns : 0, -1, usd)],
+    ["Input from cache", A.cache_pct + "%", delta(A.cache_pct, B.cache_pct, 1, (x) => x + "%")],
+    ["Typical turn (median)", dur(A.dur_p50), delta(A.dur_p50, B.dur_p50, -1, dur)],
+    ["Slow turn (p90)", dur(A.dur_p90), delta(A.dur_p90, B.dur_p90, -1, dur)],
+    ["Cost in subagents", A.sub_pct + "%", delta(A.sub_pct, B.sub_pct, 0, (x) => x + "%")],
+    ["Cost in automatic work", (A.auto_pct || 0) + "%", delta(A.auto_pct || 0, B.auto_pct || 0, 0, (x) => x + "%")],
+  ];
+  h.push(card("c12", "Last 7 days against the previous 7", `<div class="comp">${comp.map((c) => `<div><span>${c[0]}</span><b>${c[1]}</b>${c[2]}</div>`).join("")}</div>
+    <div class="note">A turn of yours starts with a message you wrote. Automatic work is what Claude does without you typing: resuming when a background task finishes, system notices or a compaction (${n(A.auto_turns || 0)} times in these 7 days).</div>`));
+  h.push(card("c8", `Cost by week and project (${S.length} weeks)`, stacked(S, T.leaders, "projects", wk, false, usd) + legend(T.leaders) +
+    `<div class="note">Each bar starts on Monday; the last one is the current week.</div>`));
+  h.push(card("c4", "Projects that changed the most (7 days)", table([["Project", (f) => esc(f.project)], ["Now", (f) => usd(f.current)], ["Before", (f) => usd(f.previous)],
+    ["Change", (f) => `<span class="delta ${f.change > 0 ? "up" : "down"}">${f.change > 0 ? "▲" : "▼"} ${usd(Math.abs(f.change))}</span>`]], T.movers)));
+  if (T.families.length) h.push(card("c6", "Models by week (% of cost)", stacked(S, T.families, "models", wk, true, usd) + legend(T.families)));
+  h.push(card("c6", "When you work (turns per hour, 30 days)", heat(T.heat)));
+  h.push(card("c6", "Turn duration by week", lines(S.map(wk), [{ name: "median", values: S.map((f) => f.dur_p50) }, { name: "p90", values: S.map((f) => f.dur_p90) }], dur) +
+    legend(["median", "p90 (1 in 10 turns takes longer)"])));
+  h.push(card("c6", "Turns and sessions by week", lines(S.map(wk), [{ name: "turns", values: S.map((f) => f.turns) }], n) +
+    `<div class="note">Sessions by week: ${S.map((f) => n(f.sessions)).join(" · ")}</div>`));
+  const Dd = T.days.filter((d) => d.turns);
+  if (Dd.length > 1) {
+    h.push(card("c6", "Cache and reasoning by day (30 days)", lines(Dd.map((d) => d.day.slice(8) + "/" + d.day.slice(5, 7)),
+      [{ name: "input from cache", values: Dd.map((d) => d.cache_pct) }, { name: "reasoning over output", values: Dd.map((d) => d.reasoning_pct) }], (x) => Math.round(x) + "%", 100) +
+      legend(["input from cache", "reasoning over output"])));
+    h.push(card("c6", "Output per turn, by day (30 days)", lines(Dd.map((d) => d.day.slice(8) + "/" + d.day.slice(5, 7)), [{ name: "output tokens per turn", values: Dd.map((d) => d.output_per_turn) }], k)));
+  }
+}
+
+function render() {
+  if (!D) { $("#app").innerHTML = `<div class="card c12">No data: run <code>ws-telemetry build</code>.</div>`; return; }
+  $("#gen").textContent = `Updated ${D.generated} · refreshes every ${D.refresh_s} s · cost = equivalent at API prices (your Team plan is not billed per token)`;
+  const K = D.kpi, h = [];
+  for (const [id, t] of [["today", "Today"], ["7d", "Last 7 days"], ["30d", "Last 30 days"]]) {
+    h.push(card("c3", t, `<div class="kpi">${usd(K[id].cost)}<small>API equiv.</small></div>
+      <div class="row"><span>${k(K[id].tokens)} tokens</span><span>${n(K[id].turns)} turns</span></div>`));
+  }
+  h.push(card("c3", "Efficiency", `<div class="kpi">${K.cache_pct}%<small>of the input comes from cache</small></div>
+    <div class="row"><span>mean output/turn: ${k(K.output_per_turn)}</span><span>reasoning: ${K.reasoning_pct}%</span></div>
+    <div class="row"><span>mean prompt: ${n(K.prompt_chars_mean)} chars</span><span>subagents: ${K.subagents_pct}%</span></div>`));
+  h.push(card("c8", "Equivalent cost by day (30 days)", bars(D.days)));
+  const cop = D.copilot;
+  h.push(card("c4", "Terminal copilot", `<div class="kpi">${n(cop.queries)}<small>queries</small></div>
+    <div class="row"><span>${k(cop.in)} input · ${k(cop.out)} output</span><span>${usd(cop.cost)}</span></div>`));
+  trends(D.trends, h);
+  const RZ = D.ratios;
+  if (RZ && RZ.ratios && RZ.ratios.length) {
+    h.push(`<div class="section">Ratios for estimating<small>last ${RZ.days} days · ${n(RZ.turns)} turns of yours · use them as the unit when projecting</small></div>`);
+    const fmtv = (f) => (f.unit === "USD" || f.unit === "USD/h" ? usd(f.value) + (f.unit === "USD/h" ? "/h" : "") : n(f.value) + (f.unit === "%" ? " %" : f.unit === "×" ? " ×" : " " + esc(f.unit)));
+    for (const g of [...new Set(RZ.ratios.map((x) => x.group))]) {
+      h.push(card("c6", g, table([["Ratio", (f) => esc(f.name)], ["Value", (f) => `<b>${fmtv(f)}</b>`], ["Computed from", (f) => `<span class="sub">${esc(f.base)}</span>`]], RZ.ratios.filter((x) => x.group === g))));
+    }
+  }
+  otel(D.otel, h);
+  h.push(`<div class="section">Detail<small>last 30 days, unless the card says otherwise</small></div>`);
+  h.push(card("c6", "By project", table([
+    ["Project", (f) => esc(f.project)], ["Sessions", (f) => n(f.sessions)], ["Turns", (f) => n(f.turns)],
+    ["New", (f) => k(f.in)], ["Cache", (f) => k(f.cr)], ["Output", (f) => k(f.out)], ["Cost", (f) => usd(f.cost)], ["Last", (f) => esc(f.last)],
+  ], D.projects)));
+  h.push(card("c6", "By model", table([
+    ["Model", (f) => esc(f.model) + (f.estimated ? ` <span class="chip">estimated price</span>` : "")],
+    ["Responses", (f) => n(f.responses)], ["Input", (f) => k(f.in + f.cw)], ["Cache", (f) => k(f.cr)],
+    ["Output", (f) => k(f.out)], ["Reason.", (f) => k(f.think)], ["Cost", (f) => usd(f.cost)],
+  ], D.models)));
+  h.push(card("c8", "Sessions with the most usage", table([
+    ["Session", (f) => `${esc(f.project)} <span class="chip">${esc(f.session)}</span>`], ["Branch", (f) => esc(f.branch)],
+    ["Start", (f) => esc((f.start || "").slice(0, 16).replace("T", " "))], ["Turns", (f) => n(f.turns)],
+    ["Tokens", (f) => k(f.tokens)], ["Subagents", (f) => k(f.sub_tokens)], ["Cost", (f) => usd(f.cost)],
+  ], D.sessions)));
+  h.push(card("c4", "Most used tools", table([["Tool", (f) => esc(f.tool)], ["Uses", (f) => n(f.uses)]], D.tools)));
+  const turns = D.recent_turns.map((t) => {
+    const tot = Math.max(1, t.new + t.context + t.output);
+    return { ...t, bar: `<div class="bar" title="new ${k(t.new)} · context ${k(t.context)} · output ${k(t.output)}">
+      <span style="width:${100 * t.new / tot}%;background:var(--acc)"></span><span style="width:${100 * t.context / tot}%;background:var(--bar2)"></span>
+      <span style="width:${100 * t.output / tot}%;background:var(--ok)"></span></div>` };
+  });
+  h.push(card("c8", "Latest turns: what you ask against what is processed and answered", table([
+    ["Start", (f) => esc(f.start.slice(5, 16).replace("T", " "))], ["Project", (f) => esc(f.project)],
+    ["Prompt", (f) => n(f.prompt_chars) + " chars"], ["New", (f) => k(f.new)], ["Context", (f) => k(f.context)],
+    ["Output", (f) => k(f.output)], ["Proportion", (f) => `<div style="width:140px">${f.bar}</div>`], ["Cost", (f) => usd(f.cost)],
+  ], turns) + `<div class="legend"><span><i style="background:var(--acc)"></i>new input</span><span><i style="background:var(--bar2)"></i>reused context (cache)</span><span><i style="background:var(--ok)"></i>output</span></div>`));
+  const rec = Object.entries(D.resources || {}).map(([p, r]) => ({ project: p, ...r })).sort((a, b) => b.cpu_pct - a.cpu_pct);
+  h.push(card("c4", "Claude resources by project (24 h)", table([
+    ["Project", (f) => esc(f.project)], ["CPU", (f) => f.cpu_pct + "%"], ["Max RAM", (f) => n(f.ram_mb) + " MB"],
+    ["Ops/s", (f) => f.iops], ["Read", (f) => f.read_mb + " MB"], ["Written", (f) => f.written_mb + " MB"],
+  ], rec) + `<div class="legend">Samples of the Claude process every minute. Inference happens in the cloud: your GPU is not involved.</div>`));
+  const R = D.routing;
+  if (R) h.push(card("c6", "Model routing (30 days)", `<div class="kpi">${R.accept_rate}%<small>of the suggestions accepted</small></div>
+    <div class="row"><span>${n(R.suggestions)} suggestions</span><span>${n(R.accepted)} accepted · ${n(R.rejected)} not · ${n(R.edited)} edited</span></div>
+    <div class="row"><span>${n(R.same)} were already at the right level</span><span>${n(R.manual)} from the menu · ${n(R.cr)} with cr</span></div>` +
+    table([["Rule", (f) => esc(f.rule)], ["Level", (f) => esc(f.level)], ["Suggested", (f) => n(f.suggested)],
+           ["Accepted", (f) => n(f.accepted)], ["Rejected", (f) => n(f.rejected)]], R.rules)));
+  const G = D.telegram;
+  if (G) h.push(card("c6", "Telegram (30 days)", `<div class="kpi">${n(G.responses)}<small>replies from the phone</small></div>
+    <div class="row"><span>${n(G.sent)} notifications sent</span><span>${n(G.changed)} with the screen changed · ${n(G.expired)} expired</span></div>
+    <div class="row"><span>${G.unauthorized ? `<span class="chip">${n(G.unauthorized)} unauthorized attempts</span>` : "0 unauthorized attempts"}</span><span>${n(G.errors)} send or API errors</span></div>` +
+    table([["When", (f) => esc(f.ts.slice(5, 16).replace("T", " "))], ["Event", (f) => esc(f.event)], ["Detail", (f) => esc(f.detail)]], G.recent)));
+  const W = D.words;
+  if (W && W.turns) h.push(card("c6", "Words (30 days)", `<div class="kpi">${n(W.prompt_mean)} → ${n(W.resp_mean)}<small>words per turn: what you write → what Claude answers</small></div>
+    <div class="row"><span>${n(W.prompt_total)} written · ${n(W.resp_total)} answered</span><span>${W.resp_per_prompt} answer words per word of yours</span></div>
+    <div class="row"><span>${W.output_tokens_per_word} output tokens per visible word</span><span>includes reasoning and tool calls</span></div>` +
+    table([["Project", (f) => esc(f.project)], ["Turns", (f) => n(f.turns)], ["Written", (f) => n(f.prompt)], ["Answered", (f) => n(f.resp)]], W.projects)));
+  const N = D.net;
+  if (N) h.push(card("c6", "Network (24 h)", `<div class="kpi">↓ ${N.wsl_down_mb} MB · ↑ ${N.wsl_up_mb} MB<small>all of WSL, measured (git, npm, az, Claude…)</small></div>
+    <div class="row"><span>${n(N.samples)} 1 min samples</span><span>Claude by project: estimated from tokens (~4 bytes per token)</span></div>` +
+    table([["Project", (f) => esc(f.project)], ["↑ Sent", (f) => f.up_mb + " MB"], ["↓ Received", (f) => f.down_mb + " MB"]], N.claude)));
+  // Patch 51: traces, estimation and budgets
+  const dms = (ms) => ms == null ? "—" : ms >= 60000 ? (ms / 60000).toFixed(1) + " min" : (ms / 1000).toFixed(1) + " s";
+  const chips = (l, f) => l.length ? `<div class="legend">${l.map((x) => `<span class="chip">${f(x)}</span>`).join("")}</div>` : "";
+  const TZ = D.traces;
+  if (TZ) {
+    h.push(card("c6", "Tools: time, errors and cost (30 days)", `<div class="kpi">${n(TZ.calls)}<small>calls · ${TZ.error_pct}% with errors</small></div>
+      <div class="row"><span>Your wait to approve: ${n(TZ.wait.n)} times · median ${TZ.wait.med_s} s · p95 ${TZ.wait.p95_s} s</span><span>${TZ.wait.total_min} min in total</span></div>` +
+      table([["Tool", (f) => esc(f.name)], ["Uses", (f) => n(f.uses)], ["Errors", (f) => n(f.errors)], ["Median", (f) => dms(f.med_ms)],
+             ["p95", (f) => dms(f.p95_ms)], ["$ approx.", (f) => usd(f.cost)]], TZ.tools.slice(0, 10))));
+    h.push(card("c6", "Bash by type of work (30 days)", table([["Type", (f) => esc(f.name)], ["Uses", (f) => n(f.uses)], ["Minutes", (f) => f.total_min],
+             ["Errors", (f) => n(f.errors)]], TZ.bash_categories) +
+      table([["Command", (f) => esc(f.name)], ["Uses", (f) => n(f.uses)], ["Median", (f) => dms(f.med_ms)], ["Type", (f) => esc(f.category)]], TZ.bash.slice(0, 8))));
+    h.push(card("c6", "Code: languages and files (30 days)", `<div class="row"><span>${n(TZ.sessions.commits)} commits in ${n(TZ.sessions.closed)} closed sessions</span>
+      <span>+${n(TZ.sessions.lines_added)} / −${n(TZ.sessions.lines_removed)} lines (diff of each session)</span></div>` +
+      table([["Extension", (f) => esc(f.ext)], ["Edits", (f) => n(f.edits)], ["+ lines", (f) => n(f.lines_added)], ["− lines", (f) => n(f.lines_removed)]], TZ.languages.slice(0, 6)) +
+      table([["File", (f) => esc(f.file)], ["Edits", (f) => n(f.edits)], ["+", (f) => n(f.lines_added)], ["−", (f) => n(f.lines_removed)]], TZ.files.slice(0, 8))));
+    h.push(card("c6", "MCP, subagents, skills and errors (30 days)",
+      table([["MCP server", (f) => esc(f.name)], ["Uses", (f) => n(f.uses)], ["Errors", (f) => n(f.errors)], ["Median", (f) => dms(f.med_ms)],
+             ["Methods", (f) => esc(f.methods.join(", "))]], TZ.mcp) +
+      table([["Subagent", (f) => esc(f.name)], ["Uses", (f) => n(f.uses)], ["Median", (f) => dms(f.med_ms)]], TZ.subagents) +
+      chips(TZ.skills, (x) => `skill ${esc(x.name)}: ${x.uses}`) + chips(TZ.errors_by_type, (x) => `error ${esc(x.type)}: ${x.n}`) +
+      chips(TZ.denied, (x) => `denied ${esc(x.action)}: ${x.n}`) +
+      chips(Object.entries(TZ.compactions), (x) => `compaction ${esc(x[0])}: ${x[1]}`) +
+      chips(TZ.prompts.commands, (x) => `${esc(x.command)}: ${x.n}`)));
+  }
+  const ES = D.estimate;
+  if (ES && ES.length) h.push(card("c12", "Estimation by ticket (90 days)", `<div class="row"><span>Ticket taken from the branch (ABC-123). Active hours = turns merged if the gap is ≤ 15 min.</span>
+      <span>Detail: <code>ws-telemetry estimate</code> · CSV: <code>ws-telemetry export</code></span></div>` +
+    table([["Ticket / branch", (f) => esc(f.key)], ["Project", (f) => esc(f.project)], ["Active hours", (f) => f.active_hours], ["Days", (f) => n(f.days)],
+           ["Turns", (f) => n(f.turns)], ["Cost", (f) => usd(f.cost)], ["Model", (f) => esc(f.model)], ["+/− lines", (f) => `+${n(f.lines_added)}/−${n(f.lines_removed)}`],
+           ["Commits", (f) => n(f.commits)], ["Errors", (f) => n(f.errors)], ["From", (f) => esc(f.start.slice(5))], ["To", (f) => esc(f.end.slice(5))]], ES)));
+  const PR = D.budgets;
+  if (PR && PR.length) h.push(card("c6", "Budgets for the month", table([["Project", (f) => esc(f.project)], ["Spent", (f) => usd(f.spent)],
+      ["Budget", (f) => usd(f.budget)], ["Used", (f) => `<span class="${f.pct >= 100 ? "chip" : ""}">${f.pct}%</span>`], ["Projection", (f) => usd(f.projection)]], PR)));
+  h.push(`<footer>Local data in ~/.local/share/ws-telemetry (13 months, no conversation text) · your own queries: <code>ws-telemetry sql</code> · ADR-008</footer>`);
+  $("#app").innerHTML = h.join("");
+}
+render();
+</script>
+</body>
+</html>

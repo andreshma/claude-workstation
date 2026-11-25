@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 #
-# intent-route.sh — hook UserPromptSubmit: según la intención del prompt, indica a Claude en qué
-# subagente delegar (arquitecto = Opus, explorador = Haiku). No cambia el modelo de la sesión
-# (Claude Code no lo permite desde hooks): agrega una nota de contexto. Sin coincidencia, no hace nada.
+# intent-route.sh — UserPromptSubmit hook: based on the intent of the prompt, tells Claude which
+# subagent to delegate to (architect = Opus, explorer = Haiku). It does not change the session model
+# (Claude Code does not allow that from hooks): it adds a context note. With no match, it does nothing.
 p="$(jq -r '.prompt // ""' | tr '[:upper:]' '[:lower:]')"
-if grep -Eq 'arquitect|diseñ|disen|adr|c4|trade-?off|threat|amenaza|seguridad|owasp|vulnerab|migraci|causa ra|root cause' <<<"$p"; then
-  echo "Ruteo por intención: tarea de diseño, seguridad o análisis profundo. Delega el análisis en el subagente 'arquitecto' (Opus) y después implementa tú."
-elif grep -Eq '^(busca|dónde|donde|lista|explora|mapea|encuentra|qué hace|que hace)|dónde está|donde esta' <<<"$p"; then
-  echo "Ruteo por intención: tarea de exploración o lectura. Delega en el subagente 'explorador' (Haiku)."
+# The patterns come from the language packs (keys intent.design and intent.explore; see ws-lang): English, plus
+# Spanish with `ws-lang es`. Without the library or the packs it stays silent.
+# shellcheck source=/dev/null
+source "$HOME/.local/lib/ws-lang.sh" 2>/dev/null || exit 0
+re=""
+if ws_lang_var re intent.design && grep -Eq -- "$re" <<<"$p"; then
+  echo "Intent routing: design, security or deep analysis task. Delegate the analysis to the 'architect' subagent (Opus) and then implement it yourself."
+elif ws_lang_var re intent.explore && grep -Eq -- "$re" <<<"$p"; then
+  echo "Intent routing: exploration or reading task. Delegate to the 'explorer' subagent (Haiku)."
 fi
 exit 0

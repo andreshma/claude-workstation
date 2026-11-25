@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# audit.sh <evento> [motivo] — bitácora de auditoría local de Claude Code (JSONL diario en
-# ~/.claude/audit/). Guarda metadatos: quién/dónde/qué herramienta/qué comando. No guarda el
-# texto de los prompts ni el contenido de archivos (DLP); los comandos van con secretos redactados.
-# Silencioso: no escribe a stdout (en UserPromptSubmit eso se agregaría al contexto de Claude).
+# audit.sh <event> [reason] — local audit log for Claude Code (daily JSONL in
+# ~/.claude/audit/). Stores metadata: who/where/which tool/which command. It does not store the
+# prompt text or file contents (DLP); commands are stored with secrets redacted.
+# Silent: writes nothing to stdout (on UserPromptSubmit that would be added to Claude's context).
 input="$(cat)"
 dir="${CLAUDE_AUDIT_DIR:-$HOME/.claude/audit}"
 mkdir -p "$dir" && chmod 700 "$dir"

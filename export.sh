@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# export.sh — captura la configuración REAL de esta máquina hacia el repo (files/).
-# Copia lo que lista manifest.txt, los servidores MCP de usuario (~/.claude.json → mcpServers)
-# y el .wslconfig de Windows. Convierte en plantilla las rutas y usuarios personales
-# (@WINHOME@, @WIN_USER@, @HOME@, @LINUX_USER@) para que el kit sirva a todo el equipo.
-# Se niega a exportar si detecta secretos.
+# export.sh — captures this machine's REAL configuration into the repo (files/).
+# Copies what manifest.txt lists, the user MCP servers (~/.claude.json → mcpServers)
+# and the Windows .wslconfig. Turns personal paths and users into template placeholders
+# (@WINHOME@, @WIN_USER@, @HOME@, @LINUX_USER@) so the kit works for the whole team.
+# Refuses to export if it detects secrets.
 #
-# Uso: bash export.sh        Después: git diff, revisar y commit (Conventional Commits).
+# Usage: bash export.sh      Then: git diff, review and commit (Conventional Commits).
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 
@@ -16,24 +16,24 @@ while IFS= read -r rel; do
   install -D -m "$(stat -c '%a' "$HOME/$rel")" "$HOME/$rel" "$FILES/$rel"
   n=$((n + 1))
 done < <(manifest_files "$HOME")
-log "$n archivos de configuración"
+log "$n configuration files"
 
 if [[ -s "$HOME/.claude.json" ]]; then
   jq '.mcpServers // {}' "$HOME/.claude.json" > "$MCP_FILE"
-  log "$(jq 'length' "$MCP_FILE") servidores MCP de usuario: $(jq -r 'keys | join(", ")' "$MCP_FILE")"
+  log "$(jq 'length' "$MCP_FILE") user MCP servers: $(jq -r 'keys | join(", ")' "$MCP_FILE")"
 fi
 
 WU="$(win_user)"
-wslconfig="/mnt/c/Users/${WU:-sin-usuario}/.wslconfig"
+wslconfig="/mnt/c/Users/${WU:-no-user}/.wslconfig"
 if [[ -f "$wslconfig" ]]; then
-  install -D -m 644 "$wslconfig" "$KIT/files/windows/.wslconfig" && log ".wslconfig de Windows"
+  install -D -m 644 "$wslconfig" "$KIT/files/windows/.wslconfig" && log "Windows .wslconfig"
 fi
 
 templatize "$KIT/files" "$WU" "$HOME" "$(id -un)"
-log "Rutas personales convertidas en plantilla (usuario de Windows: ${WU:-no detectado})"
+log "Personal paths turned into template placeholders (Windows user: ${WU:-not detected})"
 
 if find_secrets "$KIT/files"; then
   rm -rf "$KIT/files"
-  die "Se detectaron posibles secretos (arriba). No se exportó nada: muévelos a Key Vault o a un helper y vuelve a correr."
+  die "Possible secrets detected (above). Nothing was exported: move them to Key Vault or a helper and run again."
 fi
-log "Sin secretos. Revisa con: git -C \"$KIT\" diff --stat"
+log "No secrets. Review with: git -C \"$KIT\" diff --stat"

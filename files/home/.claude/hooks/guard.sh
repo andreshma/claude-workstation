@@ -1,28 +1,28 @@
 #!/usr/bin/env bash
 #
-# guard.sh — guardarraíles deterministas para Claude Code (hook PreToolUse). Es parte del PISO de ADR-013: corre en
-# todos los niveles de protección (completo, normal, solo y puro).
-# Bloquea con exit 2 (Claude recibe el motivo y busca otra vía) acciones contra política:
-#   · git push forzado (--force, -f, -fu, +refspec) · push a main/master (explícito, refs/heads/… o estando en esa rama)
-#   · saltarse la compuerta de git (--no-verify, core.hooksPath, ws.gate.*) · commits con Co-authored-by
-#   · bajar y ejecutar (curl|wget … | sh, sh <(curl …)) · leer secretos con ws-secret get
-#   · az, kubectl y helm mutantes contra producción (suscripción o contexto activos, o indicados en el comando)
-#   · escribir secretos en archivos (llaves privadas, tokens, AccountKey, SAS)
-# Falla CERRADO: si no puede leer la entrada (sin jq o JSON inválido) bloquea, porque no sabe qué está dejando pasar.
-# Para decidir ignora el texto entre comillas (un echo o un grep que mencionan un push forzado no se bloquean).
-# Es defensa en profundidad, no un control absoluto: RBAC y la revisión humana siguen mandando.
+# guard.sh — deterministic guardrails for Claude Code (PreToolUse hook). Part of the FLOOR of ADR-013: it runs at
+# every protection level (full, normal, solo and bare).
+# Blocks with exit 2 (Claude receives the reason and looks for another way) actions against policy:
+#   · forced git push (--force, -f, -fu, +refspec) · push to main/master (explicit, refs/heads/… or while on that one)
+#   · bypassing the git gate (--no-verify, core.hooksPath, ws.gate.*) · commits with Co-authored-by
+#   · download and run (curl|wget … | sh, sh <(curl …)) · reading secrets with ws-secret get
+#   · mutating az, kubectl and helm against production (active subscription or context, or the one given in the command)
+#   · writing secrets to files (private keys, tokens, AccountKey, SAS)
+# Fails CLOSED: if it cannot read the input (no jq or invalid JSON) it blocks, because it does not know what it is
+# letting through. To decide, it ignores quoted text (an echo or a grep that mention a forced push are not blocked).
+# It is defense in depth, not an absolute control: RBAC and human review still rule.
 input="$(cat)"
 if ! command -v jq >/dev/null 2>&1 || ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$input"; then
-  printf 'BLOQUEADO por política (guard.sh): no pude leer la acción (falta jq o la entrada no es JSON)\n' >&2
+  printf 'BLOCKED by policy (guard.sh): could not read the action (jq is missing or the input is not JSON)\n' >&2
   exit 2
 fi
 tool="$(jq -r '.tool_name // ""' <<<"$input")"
 PROD="${GUARD_PROD_REGEX:-prod|prd|produccion}"
 
-# block <motivo> — registra en la auditoría y bloquea la acción.
+# block <reason> — records it in the audit log and blocks the action.
 block() {
   "$HOME/.claude/hooks/audit.sh" blocked "$1" <<<"$input" >/dev/null 2>&1
-  printf 'BLOQUEADO por política (guard.sh): %s\n' "$1" >&2
+  printf 'BLOCKED by policy (guard.sh): %s\n' "$1" >&2
   exit 2
 }
 
@@ -30,65 +30,65 @@ case "$tool" in
   Bash)
     cmd="$(jq -r '.tool_input.command // ""' <<<"$input")"
     cwd="$(jq -r '.cwd // ""' <<<"$input")"
-    # Sin el texto entre comillas: lo que queda son las palabras que la shell ejecuta.
+    # Without the quoted text: what remains are the words the shell executes.
     sc="$(sed -E "s/'[^']*'//g; s/\"[^\"]*\"//g" <<<"$cmd")"
     GIT='git([[:space:]]+-[cC][[:space:]]*[^[:space:]]+)*[[:space:]]+'
     if grep -Eq "${GIT}push([[:space:]]|\$)" <<<"$sc"; then
-      resto="$(grep -Eo "${GIT}push[^|;&]*" <<<"$sc" | sed -E "s/^${GIT}push//" | tr '\n' ' ')"
-      grep -Eq '(^|[[:space:]])(--force|-[a-zA-Z]*f[a-zA-Z]*)([[:space:]]|$)|(^|[[:space:]])\+[^[:space:]]' <<<"$resto" &&
-        block "git push forzado (usa --force-with-lease en tu rama, o hazlo tú)"
-      grep -Eq '(^|[[:space:]:/])(main|master)([[:space:]]|$)' <<<"$resto" &&
-        block "push directo a main/master: trabaja en una rama y abre PR"
-      # «git push» sin rama (cero o un argumento que no es opción) o con HEAD: sube la rama actual.
-      args="$(tr ' ' '\n' <<<"$resto" | grep -Evc '^(-.*)?$')"
-      if (( args < 2 )) || grep -Eq '(^|[[:space:]:])HEAD([[:space:]:]|$)' <<<"$resto"; then
-        rama="$(git -C "${cwd:-.}" branch --show-current 2>/dev/null)"
-        [[ "$rama" == main || "$rama" == master ]] && block "push estando en $rama: trabaja en una rama y abre PR"
+      rest="$(grep -Eo "${GIT}push[^|;&]*" <<<"$sc" | sed -E "s/^${GIT}push//" | tr '\n' ' ')"
+      grep -Eq '(^|[[:space:]])(--force|-[a-zA-Z]*f[a-zA-Z]*)([[:space:]]|$)|(^|[[:space:]])\+[^[:space:]]' <<<"$rest" &&
+        block "forced git push (use --force-with-lease on your branch, or do it yourself)"
+      grep -Eq '(^|[[:space:]:/])(main|master)([[:space:]]|$)' <<<"$rest" &&
+        block "direct push to main/master: work on a branch and open a PR"
+      # «git push» with no branch (zero or one non-option argument) or with HEAD: pushes the current branch.
+      args="$(tr ' ' '\n' <<<"$rest" | grep -Evc '^(-.*)?$')"
+      if (( args < 2 )) || grep -Eq '(^|[[:space:]:])HEAD([[:space:]:]|$)' <<<"$rest"; then
+        branch="$(git -C "${cwd:-.}" branch --show-current 2>/dev/null)"
+        [[ "$branch" == main || "$branch" == master ]] && block "push while on $branch: work on a branch and open a PR"
       fi
     fi
     grep -Eq "${GIT}(commit|push|merge|rebase|am|cherry-pick)[^|;&]*[[:space:]]--no-verify([[:space:]]|\$)" <<<"$sc" &&
-      block "--no-verify salta la compuerta de git: corrige lo que marca"
+      block "--no-verify bypasses the git gate: fix what it flags"
     grep -Eq '(^|[;&|[:space:]])git[[:space:]]' <<<"$sc" && grep -Eqi 'core\.hookspath|ws\.gate\.' <<<"$sc" &&
-      block "cambiar core.hooksPath o ws.gate.* desactiva la compuerta de git: hazlo tú si de verdad hace falta"
+      block "changing core.hooksPath or ws.gate.* disables the git gate: do it yourself if it is really needed"
     grep -Eq "${GIT}commit" <<<"$sc" && grep -qi 'co-authored-by' <<<"$cmd" &&
-      block "Co-authored-by está prohibido por la política de la organización"
+      block "Co-authored-by is forbidden by the organization's policy"
     grep -Eq '(curl|wget)[^|;&]*\|[[:space:]]*(sudo([[:space:]]+-[^[:space:]]+)*[[:space:]]+)?(ba|z|da)?sh([[:space:]]|$)' <<<"$sc" &&
-      block "curl|sh: descarga el script, revísalo y ejecútalo tú"
+      block "curl|sh: download the script, review it and run it yourself"
     grep -Eq '(^|[;&|[:space:]])(ba|z|da)?sh[[:space:]]+<\([[:space:]]*(curl|wget)' <<<"$sc" &&
-      block "sh <(curl …): descarga el script, revísalo y ejecútalo tú"
+      block "sh <(curl …): download the script, review it and run it yourself"
     grep -Eq '(^|[;&|[:space:](])ws-secret[[:space:]]+get([[:space:]]|$)' <<<"$sc" &&
-      block "ws-secret get muestra un secreto: úsalo tú, fuera de Claude"
+      block "ws-secret get prints a secret: use it yourself, outside Claude"
     if grep -Eq '(^|[;&|[:space:]])az[[:space:]].*[[:space:]](create|update|delete|delete-batch|set|start|stop|restart|deallocate|scale|purge|deploy|invoke|assign|import|swap|upload|remove)([[:space:]]|$)' <<<"$sc"; then
       sub="$(grep -Eo -- '--subscription[[:space:]=]+[^[:space:]]+' <<<"$cmd" | sed -E 's/--subscription[[:space:]=]+//' | tr -d "\"'" | head -1)"
       [[ -n "$sub" ]] || sub="$(sed '1s/^\xEF\xBB\xBF//' "$HOME/.azure/azureProfile.json" 2>/dev/null | jq -r '.subscriptions[]? | select(.isDefault) | .name' 2>/dev/null)"
       grep -Eqi "$PROD" <<<"$sub" &&
-        block "az mutante contra la suscripción de producción ($sub): ejecútalo tú, fuera de Claude"
+        block "mutating az against the production subscription ($sub): run it yourself, outside Claude"
     fi
     if grep -Eq '(^|[;&|[:space:]])(kubectl|helm)([[:space:]]+[^[:space:]|;&]+)*[[:space:]]+(delete|apply|scale|patch|replace|drain|cordon|rollout|uninstall|upgrade|install|rollback|edit|annotate|label|taint)([[:space:]]|$)' <<<"$sc"; then
       ctx="$(grep -Eo -- '--(kube-)?context[[:space:]=]+[^[:space:]]+' <<<"$cmd" | sed -E 's/--(kube-)?context[[:space:]=]+//' | tr -d "\"'" | head -1)"
       [[ -n "$ctx" ]] || ctx="$(kubectl config current-context 2>/dev/null)"
       grep -Eqi "$PROD" <<<"$ctx" &&
-        block "kubectl/helm mutante contra el contexto de producción ($ctx): ejecútalo tú, fuera de Claude"
+        block "mutating kubectl/helm against the production context ($ctx): run it yourself, outside Claude"
     fi
-    # PowerShell de Windows corre fuera de la sandbox: sin comandos codificados ni «baja y ejecuta» (aquí sí cuenta el
-    # texto entre comillas, porque el guion va dentro de -Command "…").
+    # Windows PowerShell runs outside the sandbox: no encoded commands and no «download and run» (here the quoted
+    # text does count, because the script goes inside -Command "…").
     if grep -Eqi '(^|[;&|[:space:]])(pwsh|powershell)(\.exe)?([[:space:]]|$)' <<<"$sc"; then
       grep -Eqi '[[:space:]]-(e|ec|enc|enco[a-z]*)[[:space:]]' <<<"$cmd" &&
-        block "PowerShell con comando codificado (-EncodedCommand): escríbelo en claro o ejecútalo tú"
+        block "PowerShell with an encoded command (-EncodedCommand): write it in plain text or run it yourself"
       grep -Eqi '(iex|invoke-expression)' <<<"$cmd" && grep -Eqi '(iwr|irm|invoke-webrequest|invoke-restmethod|downloadstring|downloadfile|start-bitstransfer)' <<<"$cmd" &&
-        block "PowerShell que descarga y ejecuta: baja el script, revísalo y ejecútalo tú"
+        block "PowerShell that downloads and runs: download the script, review it and run it yourself"
     fi
-    # Lo que git ejecuta después, fuera de la sandbox (hooks, alias, filtros): no se escribe desde Claude.
+    # What git runs later, outside the sandbox (hooks, aliases, filters): not written from Claude.
     grep -Eq '(>|>>|(^|[;&|[:space:]])(tee|cp|mv|install|ln|chmod|rm|touch|truncate|dd)[[:space:]]|sed[[:space:]]+(-[a-zA-Z]*[[:space:]]+)*-[a-zA-Z]*i)[^|;&]*\.git/(hooks(/|[[:space:]]|$)|config([[:space:]]|$))' <<<"$cmd" &&
-      block "escribir en .git/hooks o .git/config deja código que se ejecuta fuera de la sandbox: hazlo tú"
+      block "writing to .git/hooks or .git/config leaves code that runs outside the sandbox: do it yourself"
     ;;
   Write|Edit|MultiEdit|NotebookEdit)
-    ruta="$(jq -r '.tool_input.file_path // .tool_input.notebook_path // ""' <<<"$input")"
-    grep -Eq '(^|/)\.git/(hooks/|config$|info/attributes$)' <<<"$ruta" &&
-      block "escribir en .git/hooks o .git/config deja código que se ejecuta fuera de la sandbox: hazlo tú"
+    path="$(jq -r '.tool_input.file_path // .tool_input.notebook_path // ""' <<<"$input")"
+    grep -Eq '(^|/)\.git/(hooks/|config$|info/attributes$)' <<<"$path" &&
+      block "writing to .git/hooks or .git/config leaves code that runs outside the sandbox: do it yourself"
     content="$(jq -r '[.tool_input.content, .tool_input.new_string, .tool_input.new_source, (.tool_input.edits[]?.new_string)] | map(select(. != null)) | join("\n")' <<<"$input")"
     grep -Eq -- '-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|AccountKey=[A-Za-z0-9+/=]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}|SharedAccessSignature=|[?&]sig=[A-Za-z0-9%]{30,}' <<<"$content" &&
-      block "el contenido parece incluir un secreto: usa Key Vault o una referencia a variable"
+      block "the content seems to include a secret: use Key Vault or a variable reference"
     ;;
 esac
 exit 0

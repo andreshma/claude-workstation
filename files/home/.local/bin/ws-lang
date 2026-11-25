@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+#
+# ws-lang — language selector: which languages the kit recognises in your prompts and in Claude's answers, and
+# the language Claude is asked to write reports and handoffs in. The interface of the kit is always English.
+#
+#   en (default)  English patterns                         · Claude writes in English
+#   es            English AND Spanish patterns (mixed use) · Claude writes in Spanish
+#
+# Usage:
+#   ws-lang            shows the current language and what it affects
+#   ws-lang en|es      sets it (no restart needed: every script reads it each time)
+#   ws-lang --get      prints only the code (en|es), for scripts
+#   ws-lang --name     prints English|Spanish
+#   ws-lang --toggle   switches between en and es (used by Menu → Workstation → Language)
+#   ws-lang --sync     copies the setting to the tmux option @ws_lang, which the menu shows (run at tmux start)
+# Stored in ~/.config/tmux-claude/lang; WS_LANG=en|es in the environment overrides it. Packs with the patterns:
+# ~/.local/lib/ws-lang/en.conf and es.conf. Library for scripts: ~/.local/lib/ws-lang.sh.
+set -uo pipefail
+# shellcheck source=/dev/null
+source "$HOME/.local/lib/ws-lang.sh" || { echo "✖ ~/.local/lib/ws-lang.sh is missing" >&2; exit 1; }
+
+usage() { sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+in_tmux() { [[ -n "${TMUX:-}" ]] && command -v tmux >/dev/null 2>&1; }
+sync_tmux() { in_tmux && tmux set -g @ws_lang "$(ws_lang)" 2>/dev/null; return 0; }
+
+set_lang() {
+  local dir tmp
+  dir="$(dirname -- "$WS_LANG_FILE")"
+  if ! { mkdir -p "$dir" && tmp="$(mktemp "$dir/.lang.XXXXXX")"; }; then echo "✖ cannot write $WS_LANG_FILE" >&2; return 1; fi
+  if ! { echo "$1" > "$tmp" && chmod 644 "$tmp" && mv -f "$tmp" "$WS_LANG_FILE"; }; then
+    rm -f "$tmp"; echo "✖ cannot write $WS_LANG_FILE" >&2; return 1
+  fi
+  sync_tmux
+  if [[ -n "${WS_LANG:-}" && "$(ws_lang)" != "$1" ]]; then
+    echo "⚠ saved $1, but WS_LANG=$WS_LANG in this environment overrides it here" >&2
+  fi
+}
+
+show() {
+  local l src="default: no $WS_LANG_FILE"
+  l="$(ws_lang)"
+  [[ -r "$WS_LANG_FILE" ]] && src="$WS_LANG_FILE"
+  [[ "${WS_LANG:-}" == en || "${WS_LANG:-}" == es ]] && src="WS_LANG in the environment"
+  echo "Language: $(ws_lang_name) ($l)   [$src]"
+  if [[ "$l" == es ]]; then
+    echo "  Recognised in prompts and in Claude's answers: English and Spanish"
+  else
+    echo "  Recognised in prompts and in Claude's answers: English"
+  fi
+  echo "  Claude writes reports and handoffs (ws-report --ai, ws-handoff, ws-learn) in: $(ws_lang_name)"
+  echo "  Affects: subagent hints, model routing (cr), «waiting for you», notifications, Telegram commands,"
+  echo "           the audit's escape test and the recurring prompts of ws-report. The interface stays in English."
+  echo "  Change:  ws-lang en | ws-lang es   (packs: $WS_LANG_DIR/{en,es}.conf)"
+}
+
+case "${1:-}" in
+  "") show ;;
+  en|es) set_lang "$1" || exit 1; echo "✔ Language: $(WS_LANG="$1" ws_lang_name) ($1)" ;;
+  --get) ws_lang ;;
+  --name) ws_lang_name ;;
+  --sync) sync_tmux ;;
+  --toggle)
+    if [[ "$(WS_LANG="" ws_lang)" == es ]]; then new=en; else new=es; fi
+    set_lang "$new" || exit 1
+    msg="Language: $(WS_LANG="$new" ws_lang_name) ($new)"
+    # From the menu (run-shell) there is no terminal: the message goes to the tmux status line.
+    if in_tmux && [[ ! -t 1 ]]; then tmux display-message "$msg" 2>/dev/null; else echo "✔ $msg"; fi ;;
+  -h|--help) usage ;;
+  *) echo "✖ unknown language or option: $1 (use en or es)" >&2; usage 2 ;;
+esac

@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""ws-learn — lets Claude learn from you, with your approval (HITL). Menu → Usage → a / k.
+
+  ws-learn facts [--days 14]   Claude (with the MemPalace tools, read-only) reviews your diary and your recent
+                                  sessions and PROPOSES stable facts about you: preferences, conventions,
+                                  architecture decisions, tools, projects. You choose which ones; only those are
+                                  saved to the MemPalace graph (mempalace_kg_add). That way any Claude with
+                                  MemPalace looks them up before answering.
+  ws-learn commands            from the requests you repeat (ws-report), Claude proposes your own slash commands
+                                  (~/.claude/commands/<name>.md). You choose which are created; never overwrites.
+Log of what was learned: ~/.local/share/ws-telemetry/learning/YYYY-MM-DD.jsonl.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import json
+import os
+import re
+import shutil
+import subprocess  # nosec B404 — claude, ws-report, fzf with fixed arguments
+import sys
+from pathlib import Path
+
+HOME = Path.home()
+BIN = HOME / ".local/bin"
+DATA = Path(os.environ.get("WS_TELEMETRY_DIR", HOME / ".local/share/ws-telemetry"))
+CMDS = Path(os.environ.get("WS_LEARN_COMMANDS", HOME / ".claude/commands"))
+READ_TOOLS = "mcp__mempalace__mempalace_diary_read,mcp__mempalace__mempalace_search,mcp__mempalace__mempalace_kg_query,mcp__mempalace__mempalace_kg_stats"
+WRITE_TOOLS = "mcp__mempalace__mempalace_kg_add"
+
+
+def lang_name() -> str:
+    """Language Claude is asked to write in (English|Spanish): WS_LANG, else ~/.config/tmux-claude/lang, else English.
+    Copy of ws_lang_name in ~/.local/lib/ws-lang.sh (the reference implementation)."""
+    code = os.environ.get("WS_LANG", "").lower()
+    if code not in ("en", "es"):
+        try:
+            code = ((HOME / ".config/tmux-claude/lang").read_text(encoding="utf-8").split() or [""])[0].lower()
+        except OSError:
+            code = ""
+    return "Spanish" if code == "es" else "English"
+
+
+def claude(prompt: str, tools: str = "", stdin: str = "", t: int = 600) -> str:
+    if not shutil.which("claude"):
+        sys.exit("✖ Claude is not in PATH")
+    # No TMUX_PANE: the tab's hooks (routing, state) must not treat this call as a message of yours.
+    args = ["env", "-u", "TMUX_PANE", "-u", "TMUX", "claude", "-p", "--model", "sonnet", "--no-session-persistence",
+            *(["--allowedTools", tools] if tools else ["--tools", ""]), prompt]
+    try:
+        return subprocess.run(args, input=stdin, capture_output=True, text=True, timeout=t).stdout  # nosec B603
+    except (OSError, subprocess.SubprocessError) as e:
+        sys.exit(f"✖ Claude did not answer: {e}")
+
+
+def json_of(text: str):
+    m = re.search(r"\[[\s\S]*\]", text)
+    try:
+        return json.loads(m.group(0)) if m else []
+    except ValueError:
+        return []
+
+
+def choose(options: list[str]) -> list[int]:
+    """Chosen indexes: fzf multi (Tab) if there is a terminal; otherwise a line of numbers (e.g. "1 3 4" or "all")."""
+    if not options:
+        return []
+    if sys.stdin.isatty() and shutil.which("fzf"):
+        r = subprocess.run(["fzf", "--multi", "--reverse", "--prompt", "save> ", "--header", "Tab marks · Enter saves the marked ones · Esc saves nothing"],  # nosec B603 B607
+                           input="\n".join(f"{i + 1}\t{o}" for i, o in enumerate(options)), capture_output=True, text=True).stdout
+        return [int(l.split("\t", 1)[0]) - 1 for l in r.splitlines() if l.strip()]
+    for i, o in enumerate(options, 1):
+        print(f"  {i}. {o}")
+    r = input("Which ones do I save? (numbers separated by spaces, \"all\" or Enter for none): ").strip().lower()
+    if r in ("all", "todos"):
+        return list(range(len(options)))
+    return [int(x) - 1 for x in r.split() if x.isdigit() and 0 < int(x) <= len(options)]
+
+
+def log(kind: str, data) -> None:
+    d = DATA / "learning"; d.mkdir(parents=True, exist_ok=True)
+    with open(d / f"{dt.date.today():%Y-%m-%d}.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"ts": dt.datetime.now().isoformat(timespec="seconds"), "type": kind, "data": data}, ensure_ascii=False) + "\n")
+
+
+def facts(days: int) -> int:
+    print(f"Claude is reviewing your diary and sessions from the last {days} days in MemPalace (read-only)…")
+    r = claude(f"Use the MemPalace tools (diary_read, search, kg_query, kg_stats) to review the last {days} days of the user "
+               "(their own wing and the projects). Propose STABLE FACTS about the user that are worth remembering: "
+               "work preferences, conventions, architecture decisions in force, tools and active projects. "
+               "Skip what is already in the graph (query it) and anything short-lived. No secrets or sensitive personal data. "
+               "Answer ONLY with a JSON array: [{\"subject\":\"user\",\"predicate\":\"prefers\",\"object\":\"…\",\"evidence\":\"…\"}] "
+               f"with at most 15 items. Write the object and the evidence in {lang_name()}.", READ_TOOLS)
+    props = [h for h in json_of(r) if isinstance(h, dict) and h.get("subject") and h.get("predicate") and h.get("object")]
+    if not props:
+        print("Claude proposed no new facts."); return 0
+    chosen = choose([f"{h['subject']} · {h['predicate']} · {h['object']}  ({h.get('evidence', '')[:80]})" for h in props])
+    if not chosen:
+        print("Nothing was saved."); return 0
+    sel = [props[i] for i in chosen]
+    out = claude("Save EXACTLY these facts to the MemPalace graph, one by one, with mempalace_kg_add "
+                 "(subject, predicate, object; source = 'ws-learn'). Do not add or change anything. At the end say how many you saved.",
+                 WRITE_TOOLS, json.dumps(sel, ensure_ascii=False))
+    log("facts", sel)
+    print(out.strip() or f"Saved {len(sel)} facts.")
+    return 0
+
+
+def commands() -> int:
+    try:
+        d = json.loads(subprocess.run([str(BIN / "ws-report"), "--json"], capture_output=True, text=True, timeout=600).stdout)  # nosec B603
+    except (OSError, subprocess.SubprocessError, ValueError):
+        sys.exit("✖ Could not read the recurring requests (ws-report --json)")
+    rec = d.get("recurring") or []
+    if not rec:
+        print("No request is repeated often enough (3 or more times)."); return 0
+    r = claude("These are the openings of requests the user repeats in Claude Code (normalized). Propose personal slash "
+               "commands that solve them in one go. Answer ONLY with a JSON array: [{\"name\":\"review-pr\","
+               "\"description\":\"…\",\"prompt\":\"command text in Markdown; use $ARGUMENTS where the variable part goes\"}] "
+               f"with at most 8. Lowercase names with hyphens; description and prompt in {lang_name()}.",
+               "", json.dumps(rec, ensure_ascii=False))
+    props = [c for c in json_of(r) if isinstance(c, dict) and re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", str(c.get("name", "")))]
+    if not props:
+        print("Claude proposed no commands."); return 0
+    chosen = choose([f"/{c['name']} — {c.get('description', '')}" for c in props])
+    CMDS.mkdir(parents=True, exist_ok=True); created = []
+    for i in chosen:
+        c = props[i]; f = CMDS / f"{c['name']}.md"
+        if f.exists():
+            print(f"  skipped /{c['name']} ({f} already exists)"); continue
+        f.write_text(f"---\ndescription: {c.get('description', '')}\n---\n\n{c['prompt']}\n", encoding="utf-8")
+        print(f"  done    /{c['name']} → {f}"); created.append(c["name"])
+    log("commands", created)
+    if created:
+        print("Use them in any Claude: /" + " · /".join(created) + "  (ws-personal add .claude/commands/ to version them)")
+    return 0
+
+
+def main() -> int:
+    a = sys.argv[1:]
+    if not a or a[0] not in ("facts", "commands"):
+        print(__doc__); return 2
+    if a[0] == "facts":
+        return facts(int(a[a.index("--days") + 1]) if "--days" in a else 14)
+    return commands()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

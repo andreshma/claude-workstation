@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 #
-# ws-completions — genera el completado con Tab de las herramientas instaladas en
-# ~/.local/share/bash-completion/completions (bash-completion los carga al primer Tab de
-# cada comando). Cada archivo lo produce la propia herramienta, no un script descargado.
-# Córrelo de nuevo tras instalar herramientas (ws-update lo puede llamar).
+# ws-completions — generates Tab completion for the installed tools in
+# ~/.local/share/bash-completion/completions (bash-completion loads them on the first Tab of
+# each command). Each file is produced by the tool itself, not by a downloaded script.
+# Run it again after installing tools (ws-update can call it).
 set -uo pipefail
 D="${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions"
 mkdir -p "$D"
 ok=() no=()
 
-# gen <comando> <archivo> <generador...> — escribe solo si el comando existe y genera algo.
+# gen <command> <file> <generator...> — writes only if the command exists and generates something.
 gen() {
   local cmd="$1" f="$2"; shift 2
   command -v "$cmd" >/dev/null 2>&1 || return 0
   if timeout 20 "$@" > "$D/$f.tmp" 2>/dev/null && [[ -s "$D/$f.tmp" ]]; then mv "$D/$f.tmp" "$D/$f"; ok+=("$cmd")
   else rm -f "$D/$f.tmp"; no+=("$cmd"); fi
 }
-# lin <comando> <línea complete> — para herramientas que se completan a sí mismas (complete -C).
+# lin <command> <complete line> — for tools that complete themselves (complete -C).
 lin() { command -v "$1" >/dev/null 2>&1 || return 0; printf '%s\n' "$2" > "$D/$1"; ok+=("$1"); }
 
 gen kubectl kubectl kubectl completion bash
@@ -37,6 +37,6 @@ lin aws       "complete -C $(command -v aws_completer 2>/dev/null || echo aws_co
 lin az        "[[ -f /etc/bash_completion.d/azure-cli ]] && source /etc/bash_completion.d/azure-cli"
 if command -v register-python-argcomplete >/dev/null; then gen pipx pipx register-python-argcomplete pipx; fi
 
-printf 'Completado listo para: %s\n' "${ok[*]:-ninguno}"
-(( ${#no[@]} )) && printf 'No se pudo generar: %s\n' "${no[*]}"
+printf 'Completion ready for: %s\n' "${ok[*]:-none}"
+(( ${#no[@]} )) && printf 'Could not generate: %s\n' "${no[*]}"
 exit 0

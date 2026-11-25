@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+#
+# tmux-level — Claude's protection level PER TAB (ADR-012). Restarts Claude on the tab with the chosen level
+# and resumes the conversation (claude-resume: continues the folder's conversation, or starts a new one when the
+# tab never had one). Menu → Claude → Protection.
+#
+#   full      🔒  Claude Code sandbox on and with NO escape hatches (allowUnsandboxedCommands=false, no excluded
+#                commands) + all the kit's rules (allow, ask, deny, guard.sh). az, gh, git push, kubectl… stay
+#                INSIDE the sandbox: with no network or credentials, almost all will fail; that is what «normal» is for.
+#   normal        your usual configuration (what is in ~/.claude/settings.json).
+#   bare      🔓  Claude almost as it ships: no sandbox and without the kit's allow/ask permissions (it asks like
+#                Claude without the kit). The FLOOR of ADR-013 stays, which no level turns off: the deny rules
+#                (credentials, secrets, bypassing the git gate) and guard.sh. Also the hooks that do not restrict
+#                (state, traces, notifications, MemPalace, recall, bar) and whatever your organization and repo impose.
+#
+# The profiles are GENERATED every time from your ~/.claude/settings.json (always up to date) in
+# ~/.config/claude-levels/{full,bare}.json (0600). Both start with --setting-sources project,local, so as NOT to
+# load the user settings, and --settings with the full profile. It has to be this way because Claude Code MERGES the
+# lists of every source it loads (documented in «Lists merge instead of overriding»): passing an empty list of
+# excluded commands does not remove the ones in your settings.json; the only way to remove them is not to load that
+# source. If your Claude has no --setting-sources, it tells you and changes nothing. Note: whatever a repo defines in
+# its .claude/settings*.json (excluded commands too) is still added.
+# In «full», besides, sandboxed commands only READ the tab's project: your other repos (the folders in
+# roots.txt) and your Windows documents are left out. If Claude needs to look at another repo, use «normal».
+# Usage: tmux-level full|normal|bare [PANE]
+#      tmux-level --profile full|bare [settings.json] [folder]    prints the generated profile (tests)
+#      tmux-level --command full|normal|bare [folder]            prints the command Claude would start with
+set -euo pipefail
+PATH="$HOME/.local/bin:$PATH"   # the tmux server that runs this from a menu may not have it
+D="${WS_LEVELS_DIR:-$HOME/.config/claude-levels}"
+USR="$HOME/.claude/settings.json"
+
+# isolate <folder> — JSON {deny: […], allow: […]} so that sandboxed commands read ONLY this project: it denies the
+# folders where your other repos and documents live (those in roots.txt and those of the Windows profile) and allows
+# again the tab's project and its worktrees. In Claude Code the most specific path wins, so the project stays
+# readable even inside a denied folder. WS_FULL_READ=0 turns it off.
+isolate() {
+  local d r c root line w
+  local -a deny=() allow=()
+  d="$(realpath -e "${1:-.}" 2>/dev/null)" || d="${1:-.}"
+  c="$(git -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [[ "$c" == */.git ]]; then root="${c%/.git}"; else root="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null || echo "$d")"; fi
+  allow=("$root" "$root.wt" "$d")
+  while IFS='|' read -r _ _ line; do
+    line="${line%$'\r'}"; [[ -n "$line" ]] || continue
+    r="${line/#\~/$HOME}"; [[ -d "$r" ]] && deny+=("${r%/}")
+  done < <(grep -vE '^[[:space:]]*(#|$)' "$HOME/.config/tmux-claude/roots.txt" 2>/dev/null)
+  w="$(wslpath "$(cmd.exe /c 'echo %UserProfile%' 2>/dev/null | tr -d '\r')" 2>/dev/null || true)"
+  [[ -n "${WS_WINHOME:-}" ]] && w="$WS_WINHOME"
+  if [[ -n "$w" && -d "$w" ]]; then
+    for r in "$w/Documents" "$w/Desktop" "$w/Downloads" "$w/Pictures" "$w/Videos" "$w"/OneDrive*; do [[ -d "$r" ]] && deny+=("$r"); done
+  fi
+  # Absolute paths with a double slash: in Claude Code settings «/path» is resolved against the settings
+  # folder and only «//path» is truly absolute.
+  jq -nc '{deny: ($ARGS.positional[:($n | tonumber)] | map("/" + .) | unique), allow: ($ARGS.positional[($n | tonumber):] | map("/" + .) | unique)}' \
+     --arg n "${#deny[@]}" --args "${deny[@]}" "${allow[@]}"
+}
+
+profile() {   # level [settings] [project folder] → JSON
+  local s="${2:-$USR}" reads='{"deny":[],"allow":[]}'; [[ -f "$s" ]] || s=/dev/null
+  case "$1" in
+    full)
+      # Your whole settings.json (permissions, hooks, bar…) minus the list of commands that leave the sandbox. With
+      # the project folder, reads are also limited to that project.
+      [[ -n "${3:-}" && "${WS_FULL_READ:-1}" != 0 ]] && reads="$(isolate "$3")"
+      jq --argjson reads "$reads" '(. // {}) | .sandbox = (((.sandbox // {}) + {enabled: true, allowUnsandboxedCommands: false}) | del(.excludedCommands))
+          | .sandbox.filesystem.denyRead = (((.sandbox.filesystem.denyRead // []) + $reads.deny) | unique)
+          | if ($reads.allow | length) > 0 then .sandbox.filesystem.allowRead = (((.sandbox.filesystem.allowRead // []) + $reads.allow) | unique) else . end' "$s" 2>/dev/null \
+        || echo '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false}}' ;;
+    bare)
+      # allow and ask out (with no deny to hold them back, the broad allows would leave «bare» more open than Claude
+      # without the kit); deny and the hooks stay: they are the floor.
+      jq '(. // {})
+          | .permissions = {deny: (.permissions.deny // [])}
+          | .sandbox = ((.sandbox // {}) + {enabled: false})' "$s" 2>/dev/null || echo '{}' ;;
+    *) echo "invalid level: $1" >&2; return 2 ;;
+  esac
+}
+
+# The help is captured first: with pipefail, «claude --help | grep -q» fails when grep closes the pipe early.
+has_sources() { local h; h="$(claude --help 2>/dev/null)" || true; grep -q -- '--setting-sources' <<<"$h"; }
+
+# claude-resume and not «claude -c»: in a tab where Claude never received a message, «claude -c» ends with «No
+# conversation found to continue» and the tab would be left marked with a level while no Claude runs.
+command_for() {   # level [folder] → Claude command (resumes the folder's conversation, or starts a new one)
+  local f="$D/full.json"
+  mkdir -p "$D" && chmod 700 "$D"
+  case "$1" in
+    normal) echo "claude-resume" ;;
+    full)
+      has_sources || { echo "✖ Your Claude has no --setting-sources: «full» cannot remove the commands excluded from the sandbox" >&2; return 1; }
+      # With a folder, the profile is specific to that project (it carries its read paths).
+      [[ -n "${2:-}" ]] && f="$D/full-$(printf '%s' "$2" | md5sum | cut -c1-12).json"
+      profile full "" "${2:-}" > "$f"; chmod 600 "$f"
+      echo "claude-resume --setting-sources project,local --settings '$f'" ;;
+    bare)
+      has_sources || { echo "✖ Your Claude has no --setting-sources: «bare» cannot remove the user rules" >&2; return 1; }
+      profile bare > "$D/bare.json"; chmod 600 "$D/bare.json"
+      echo "claude-resume --setting-sources project,local --settings '$D/bare.json'" ;;
+    *) echo "invalid level: $1" >&2; return 2 ;;
+  esac
+}
+
+# The level names from before the rename (completo, puro) are still accepted as input.
+canon() { case "$1" in completo) echo full ;; puro) echo bare ;; *) echo "$1" ;; esac; }
+case "${1:-}" in
+  --profile) : "${2:?level}"; profile "$(canon "$2")" "${3:-}" "${4:-}"; exit $? ;;
+  --command) : "${2:?level}"; command_for "$(canon "$2")" "${3:-}"; exit $? ;;
+  full|normal|bare|completo|puro) ;;
+  *) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac
+
+level="$(canon "$1")"; pane="${2:-$(tmux display -p '#{pane_id}')}"
+win="$(tmux display -p -t "$pane" '#{window_id}')"
+# Errors go to a file, not into $cmd: anything on stderr would otherwise be typed into the pane with the command.
+err="$(mktemp)"
+cmd="$(command_for "$level" "$(tmux display -p -t "$pane" '#{pane_current_path}')" 2>"$err")" \
+  || { tmux display -d 5000 "$(tail -c 300 "$err")"; rm -f "$err"; exit 1; }
+rm -f "$err"
+
+# Is there a Claude in the pane? (the native binary is named after its version, e.g. 2.1.329)
+running() { [[ ! "$(tmux display -p -t "$pane" '#{pane_current_command}')" =~ ^(bash|zsh|sh|fish|dash)$ ]]; }
+if running; then
+  # Ctrl+C first: it clears whatever is typed in the input box; otherwise «<text>/exit» is sent as a message and
+  # Claude never closes. If /exit still does not close it in 10 s, Ctrl+C twice (Claude's own way out).
+  tmux send-keys -t "$pane" Escape; sleep 0.5
+  tmux send-keys -t "$pane" C-c; sleep 0.4
+  running && { tmux send-keys -t "$pane" -l "/exit"; tmux send-keys -t "$pane" Enter; }
+  for (( i = 0; i < 40; i++ )); do
+    running || break
+    (( i == 20 )) && { tmux send-keys -t "$pane" C-c; sleep 0.3; tmux send-keys -t "$pane" C-c; }
+    sleep 0.5
+  done
+  (( i < 40 )) || { tmux display "Claude did not close; close it yourself (/exit) and try again"; exit 1; }
+fi
+tmux send-keys -t "$pane" -l "$cmd"; tmux send-keys -t "$pane" Enter
+case "$level" in
+  full)     tmux set -w -t "$win" @clevel full \; set -w -t "$win" @clevel_ico "🔒" ;;
+  bare)     tmux set -w -t "$win" @clevel bare \; set -w -t "$win" @clevel_ico "🔓" ;;
+  normal)   tmux set -wu -t "$win" @clevel \; set -wu -t "$win" @clevel_ico ;;
+esac
+tmux set -wu -t "$win" @csolo 2>/dev/null || true   # solo mode is a different start: choosing a level leaves it
+d="$(mkdir -p "$HOME/.local/share/ws-telemetry/levels" && echo "$HOME/.local/share/ws-telemetry/levels")"
+jq -nc --arg n "$level" --arg p "$(basename "$(tmux display -p -t "$pane" '#{pane_current_path}')")" \
+  '{ts: (now | todate), level: $n, project: $p}' >> "$d/$(date +%F).jsonl" 2>/dev/null || true
+case "$level" in
+  full)     tmux display -d 4000 "🔒 Full protection: sandbox with no escape hatches, reads only this project + the kit's rules" ;;
+  bare)     tmux display -d 4000 "🔓 Pure Claude: no sandbox or kit permissions; the floor stays (deny and guard)" ;;
+  normal)   tmux display -d 4000 "Normal protection (your usual configuration)" ;;
+esac

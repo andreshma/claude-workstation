@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 #
-# ws-tomd <archivo> — convierte PDF, Office (.docx .pptx .xlsx .doc .ppt .xls), .csv, .rtf,
-# .odt y .epub a Markdown, extrae sus imágenes a assets/ y las enlaza al final del .md.
-# Usa MarkItDown y, si falla, pandoc. Corre aislado: sin red (bubblewrap), máximo 2 min y
-# 100 MB. Resultado en caché por hash: ~/.cache/ws-tomd/<hash>/<nombre>.md (imprime la ruta).
+# ws-tomd <file> — converts PDF, Office (.docx .pptx .xlsx .doc .ppt .xls), .csv, .rtf,
+# .odt and .epub to Markdown, extracts their images to assets/ and links them at the end of the .md.
+# Uses MarkItDown and, if it fails, pandoc. Runs isolated: no network (bubblewrap), 2 min and
+# 100 MB at most. Result cached by hash: ~/.cache/ws-tomd/<hash>/<name>.md (prints the path).
 set -uo pipefail
-src="$(realpath -e "${1:?archivo}")" || exit 1
+src="$(realpath -e "${1:?file}")" || exit 1
 max=$(( 100 * 1024 * 1024 ))
-(( $(stat -c %s "$src") <= max )) || { echo "ws-tomd: $src pesa más de 100 MB" >&2; exit 1; }
+(( $(stat -c %s "$src") <= max )) || { echo "ws-tomd: $src is larger than 100 MB" >&2; exit 1; }
 hash="$(sha256sum "$src" | cut -c1-16)"
 out="${XDG_CACHE_HOME:-$HOME/.cache}/ws-tomd/$hash"; name="${src##*/}"; md="$out/${name%.*}.md"
 [[ -s "$md" ]] && { echo "$md"; exit 0; }
 mkdir -p "$out/assets"
 
-# jail <comando…> — sin red, solo puede escribir en la carpeta de salida y en /tmp.
+# jail <command…> — no network, can only write to the output folder and to /tmp.
 jail() {
   if command -v bwrap >/dev/null && bwrap --ro-bind / / --unshare-net true 2>/dev/null; then
     timeout 120 bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp \
@@ -28,7 +28,7 @@ if (( ! ok )) && command -v pandoc >/dev/null; then
   case "${name,,}" in *.docx|*.odt|*.epub|*.rtf)
     jail pandoc "$src" -t gfm --extract-media="$out/assets" -o "$md" 2>/dev/null && [[ -s "$md" ]] && ok=1 ;; esac
 fi
-(( ok )) || { echo "ws-tomd: no pude convertir $name (instala markitdown: ws-tools install markitdown)" >&2; rm -rf "$out"; exit 1; }
+(( ok )) || { echo "ws-tomd: could not convert $name (install markitdown: ws-tools install markitdown)" >&2; rm -rf "$out"; exit 1; }
 
 case "${name,,}" in
   *.docx|*.pptx|*.xlsx|*.odt|*.epub)
@@ -38,8 +38,8 @@ case "${name,,}" in
 esac
 mapfile -t imgs < <(find "$out/assets" -type f \( -iname '*.png' -o -iname '*.jp*g' -o -iname '*.gif' -o -iname '*.bmp' -o -iname '*.tif*' -o -iname '*.emf' -o -iname '*.wmf' \) -size +2k | sort)
 if (( ${#imgs[@]} )); then
-  { printf '\n\n---\n\n## Imágenes extraídas (%d)\n\n' "${#imgs[@]}"
+  { printf '\n\n---\n\n## Extracted images (%d)\n\n' "${#imgs[@]}"
     for i in "${imgs[@]}"; do printf -- '- ![%s](%s)\n' "${i##*/}" "$i"; done; } >> "$md"
 fi
-printf '\n\n<!-- ws-tomd: origen %s · %s · %d imágenes en %s/assets -->\n' "$src" "$(date '+%F %H:%M')" "${#imgs[@]}" "$out" >> "$md"
+printf '\n\n<!-- ws-tomd: source %s · %s · %d images in %s/assets -->\n' "$src" "$(date '+%F %H:%M')" "${#imgs[@]}" "$out" >> "$md"
 echo "$md"

@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""ws-handoff — exports a tab's work so that ANOTHER Claude can continue it (another PC, claude.ai, a colleague,
+another account). Menu → Claude → E.
+
+Builds a handoff package in Markdown:
+  · summary written by Claude (Sonnet, no tools): goal, status, decisions, pending items, key files, how to
+    continue and risks — from the conversation messages, REDACTED (ws-redact)
+  · hard data: folder, branch, uncommitted changes, latest commits, diff against the base branch, Claude's task
+    list and the files it touched
+  · with --conversation, also the transcript (.jsonl) to resume it with `claude --resume` on another PC
+It is saved in %UserProfile%\\ws-telemetry\\handoffs\\ (and ~/.local/share/ws-telemetry/handoffs/) and copied
+to the clipboard to paste it into claude.ai or another Claude.
+Usage: ws-handoff [folder|%pane] [--conversation] [--no-ai]
+"""
+from __future__ import annotations
+
+import datetime as dt
+import json
+import os
+import re
+import shutil
+import subprocess  # nosec B404 — git, claude, tmux, ws-redact, ws-copy with fixed arguments
+import sys
+from pathlib import Path
+
+HOME = Path.home()
+BIN = HOME / ".local/bin"
+CLAUDE = Path(os.environ.get("WS_TELEMETRY_CLAUDE", HOME / ".claude"))
+DATA = Path(os.environ.get("WS_TELEMETRY_DIR", HOME / ".local/share/ws-telemetry"))
+
+
+def sh(*a: str, stdin: str | None = None, t: int = 30) -> str:
+    try:
+        return subprocess.run(list(a), input=stdin, capture_output=True, text=True, timeout=t).stdout.strip()  # nosec B603
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def redact(t: str) -> str:
+    return sh(str(BIN / "ws-redact"), stdin=t) or t
+
+
+def folder_of(arg: str | None) -> Path:
+    if arg and arg.startswith("%"):
+        return Path(sh("tmux", "display", "-p", "-t", arg, "#{pane_current_path}") or os.getcwd())
+    if arg:
+        return Path(arg).resolve()
+    if os.environ.get("TMUX"):
+        return Path(sh("tmux", "display", "-p", "#{pane_current_path}") or os.getcwd())
+    return Path.cwd()
+
+
+def transcript(folder: Path) -> Path | None:
+    key = re.sub(r"[^A-Za-z0-9]", "-", str(folder))
+    d = CLAUDE / "projects" / key
+    fs = sorted(d.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True) if d.is_dir() else []
+    return fs[0] if fs else None
+
+
+def read_transcript(f: Path) -> dict:
+    msgs, tasks, files = [], [], []
+    for line in open(f, encoding="utf-8", errors="replace"):
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        c = (o.get("message") or {}).get("content")
+        if o.get("type") == "user" and not o.get("isMeta"):
+            t = c if isinstance(c, str) else " ".join(b.get("text", "") for b in c or [] if isinstance(b, dict) and b.get("type") == "text")
+            if t and not t.lstrip().startswith("<"):
+                msgs.append(("You", t))
+        elif o.get("type") == "assistant":
+            for b in c or []:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "text" and b.get("text"):
+                    msgs.append(("Claude", b["text"]))
+                elif b.get("type") == "tool_use":
+                    i = b.get("input") or {}
+                    if b.get("name") == "TodoWrite":
+                        tasks = i.get("todos") or tasks
+                    if i.get("file_path") and b.get("name") in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+                        files.append(i["file_path"])
+    return {"msgs": msgs, "tasks": tasks, "files": list(dict.fromkeys(files))}
+
+
+def git(folder: Path) -> dict:
+    g = lambda *a: sh("git", "-C", str(folder), *a)  # noqa: E731
+    if not g("rev-parse", "--git-dir"):
+        return {}
+    branch = g("branch", "--show-current")
+    base = next((b for b in ("main", "master", "develop") if g("rev-parse", "-q", "--verify", b) and b != branch), "")
+    return {"branch": branch, "remote": g("remote", "get-url", "origin"), "status": g("status", "--short")[:3000],
+            "commits": g("log", "--oneline", "-8"), "base": base,
+            "diff_base": g("diff", "--stat", f"{base}...HEAD")[-2500:] if base else ""}
+
+
+def lang_name() -> str:
+    """Language Claude is asked to write in (English|Spanish): WS_LANG, else ~/.config/tmux-claude/lang, else English.
+    Copy of ws_lang_name in ~/.local/lib/ws-lang.sh (the reference implementation)."""
+    code = os.environ.get("WS_LANG", "").lower()
+    if code not in ("en", "es"):
+        try:
+            code = ((HOME / ".config/tmux-claude/lang").read_text(encoding="utf-8").split() or [""])[0].lower()
+        except OSError:
+            code = ""
+    return "Spanish" if code == "es" else "English"
+
+
+def ai_summary(msgs: list, folder: Path) -> str:
+    if not shutil.which("claude"):
+        return "_(Claude is not available: only the data below is included)_"
+    text = "\n\n".join(f"### {q}\n{t[:4000]}" for q, t in msgs)[-60000:]
+    text = redact(text)
+    prompt = ("You are preparing a HANDOFF PACKAGE so that another Claude instance (or a person) can continue this "
+              f"work in “{folder.name}”. From the conversation (stdin), write in Markdown, in {lang_name()}, with these "
+              "sections: Goal · Current status (what is done) · Decisions made and why · Pending items (in order) · "
+              "Key files and commands · How to continue (concrete first step) · Risks and assumptions. Be concrete and "
+              "brief; do not make up anything that is not in the conversation.")
+    return sh("env", "-u", "TMUX_PANE", "-u", "TMUX", "claude", "-p", "--model", "sonnet", "--tools", "", "--no-session-persistence", prompt, stdin=text, t=300) \
+        or "_(Claude did not answer: only the data below is included)_"
+
+
+def main() -> int:
+    a = sys.argv[1:]
+    arg = next((x for x in a if not x.startswith("--")), None)
+    folder = folder_of(arg)
+    f = transcript(folder)
+    data = read_transcript(f) if f else {"msgs": [], "tasks": [], "files": []}
+    g = git(folder)
+    now = dt.datetime.now().strftime("%Y-%m-%d_%H%M")
+    md = [f"# Handoff: {folder.name} — {dt.datetime.now():%Y-%m-%d %H:%M}", "",
+          f"_Package to continue this work in another Claude. Original folder: `{folder}`._", ""]
+    md += ["## Summary", "", ai_summary(data["msgs"], folder) if data["msgs"] and "--no-ai" not in a else "_(no summary from Claude)_", ""]
+    if data["tasks"]:
+        md += ["## Claude's task list", ""] + [f"- [{'x' if t.get('status') == 'completed' else ' '}] {t.get('content', '')}" for t in data["tasks"]] + [""]
+    if g:
+        md += ["## Repository", "", f"- Branch: `{g['branch']}` · remote: `{g['remote'] or '—'}`" + (f" · base: `{g['base']}`" if g["base"] else ""), "",
+               "Latest commits:", "```", g["commits"] or "—", "```", "Uncommitted changes:", "```", g["status"] or "(none)", "```"]
+        if g["diff_base"]:
+            md += [f"Diff against `{g['base']}`:", "```", g["diff_base"], "```"]
+        md.append("")
+    if data["files"]:
+        md += ["## Files Claude touched", ""] + [f"- `{os.path.relpath(p, folder) if p.startswith(str(folder)) else p}`" for p in data["files"][-30:]] + [""]
+    if data["msgs"]:
+        last = [t for q, t in data["msgs"] if q == "You"][-3:]
+        md += ["## Your latest requests", ""] + [f"> {redact(t[:600]).strip()}" for t in last] + [""]
+    out = DATA / "handoffs"; out.mkdir(parents=True, exist_ok=True)
+    name = f"{folder.name}-{now}"
+    text = "\n".join(md) + "\n"
+    if "--conversation" in a and f:
+        shutil.copyfile(f, out / f"{name}.jsonl")
+        key = re.sub(r"[^A-Za-z0-9]", "-", str(folder))
+        text += ("\n## Resume the conversation on another PC with Claude Code\n\n"
+                  f"1. Copy `{name}.jsonl` to `~/.claude/projects/<encoded-folder>/` (here it was `{key}`: every "
+                  "character of the path that is not a letter or a digit becomes `-`).\n2. In that folder: `claude --resume` and pick it.\n")
+    (out / f"{name}.md").write_text(text, encoding="utf-8")
+    final = out / f"{name}.md"
+    w = None if os.environ.get("WS_HANDOFF_NO_WINDOWS") else sh("wslvar", "USERPROFILE")
+    if w:
+        wd = Path(sh("wslpath", "-u", w)) / "ws-telemetry/handoffs"
+        try:
+            wd.mkdir(parents=True, exist_ok=True)
+            for ext in ("md", "jsonl"):
+                if (out / f"{name}.{ext}").exists():
+                    shutil.copyfile(out / f"{name}.{ext}", wd / f"{name}.{ext}")
+            final = wd / f"{name}.md"
+        except OSError:
+            pass
+    sh(str(BIN / "ws-copy"), stdin=text)
+    print(text)
+    print(f"Handoff: {final}  (also on the clipboard: paste it into claude.ai or another Claude)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

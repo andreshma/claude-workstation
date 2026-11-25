@@ -1,182 +1,285 @@
 #!/usr/bin/env bash
 #
-# ws-verify — prueba de todo el setup ANTES de subir cambios del kit. Solo lee: no instala,
-# no hace commit ni push. Sale con 1 si hay alguna FALLA.
+# ws-verify — checks the whole setup BEFORE pushing changes to the kit. Read-only: it does not install,
+# commit or push. Exits with 1 if anything is marked FAIL.
 #
-# Uso: ws-verify [--rapido]
-#   --rapido   omite las pruebas del kit y la revisión completa del repo (ws-gate repo)
+# Usage: ws-verify [--quick]
+#   --quick   skips the kit tests and the full repo review (ws-gate repo)
+#        ws-verify --live            only the checks of the running tmux server: PATH, save, tabs, leftover finder
+#                                    sessions, scripts the bar, keys and hooks call, stale sockets
+#        ws-verify --clean-sockets   deletes the tmux socket files no server answers on (the one mode that writes;
+#                                    never «default» or a socket with a live server, such as the popups')
 set -uo pipefail
 KIT="$HOME/code/claude-workstation"
-RAPIDO=0; [[ "${1:-}" == "--rapido" ]] && RAPIDO=1
-OK=0 AV=0 FA=0
-FALLAS=()
-ok()    { printf '  \e[32mok\e[0m     %s\n' "$1"; OK=$((OK + 1)); }
-aviso() { printf '  \e[33maviso\e[0m  %s\n' "$1"; AV=$((AV + 1)); }
-falla() { printf '  \e[31mFALLA\e[0m  %s\n' "$1"; FA=$((FA + 1)); FALLAS+=("$1"); }
-# detalle <texto> — muestra hasta 6 líneas del motivo, sangradas.
-detalle() { sed -n '1,6s/^/           /p' <<<"$1"; }
-seccion() { printf '\n\e[1m== %s\e[0m\n' "$1"; }
+QUICK=0; [[ "${1:-}" == "--quick" ]] && QUICK=1
+OK=0 WARNED=0 FAILED=0
+FAILURES=()
+ok()   { printf '  \e[32mok\e[0m     %s\n' "$1"; OK=$((OK + 1)); }
+warn() { printf '  \e[33mwarn\e[0m   %s\n' "$1"; WARNED=$((WARNED + 1)); }
+fail() { printf '  \e[31mFAIL\e[0m   %s\n' "$1"; FAILED=$((FAILED + 1)); FAILURES+=("$1"); }
+# detail <text> — shows up to 6 lines of the reason, indented.
+detail() { sed -n '1,6s/^/           /p' <<<"$1"; }
+section() { printf '\n\e[1m== %s\e[0m\n' "$1"; }
+
+# Where tmux keeps its sockets. TMUX_TMPDIR is tmux's own variable: the tests point it (and HOME) at temporary folders,
+# so every check below can run against a throwaway server.
+SOCKDIR="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
 
 #######################################
-# 1. Parches instalados
+# Prints the socket files in $SOCKDIR that no server answers on (test servers and old popups leave them behind:
+# tmux does not delete its socket when the server ends). Never «default», never the socket of the server this runs in.
+# A socket counts as stale only when tmux itself says «no server running»: a timeout or a permission error (inside
+# Claude's sandbox every socket is refused) proves nothing, and that socket is left alone.
 #######################################
-seccion "Parches instalados"
-chk() { if eval "$2" >/dev/null 2>&1; then ok "$1"; else falla "$1"; fi; }
-chk "17 tema claro/oscuro (tmux-theme, temas)"   '[[ -x ~/.local/bin/tmux-theme && -f ~/.config/tmux-claude/theme-claro.tmux ]]'
-chk "17 menú Apariencia"                         '[[ -f ~/.config/tmux-claude/menu-apariencia.tmux ]]'
-chk "18 guardado continuo (tmux-save-now)"       '[[ -x ~/.local/bin/tmux-save-now ]] && grep -q tmux-save-now ~/.tmux.conf'
-chk "18 arreglo de fnm en .bashrc"               'grep -q "fnm_multishells" ~/.bashrc'
-chk "19 escenas nuevas del protector"            'grep -q serpiente ~/.local/bin/tmux-saver'
-chk "19 kit con plantillas (lib.sh)"             'grep -q render_templates "$KIT/lib.sh"'
+stale_sockets() {
+  local s r mine="${TMUX:-}"; mine="${mine%%,*}"
+  for s in "$SOCKDIR"/*; do
+    [[ -S "$s" && "${s##*/}" != default && "$s" != "$mine" ]] || continue
+    r="$(env -u TMUX timeout 5 tmux -S "$s" list-sessions 2>&1)" && continue
+    [[ "$r" == "no server running"* ]] && printf '%s\n' "$s"
+  done
+  return 0
+}
 
 #######################################
-# 2. Scripts: sintaxis y shellcheck
+# The REAL tmux server (the one a plain `tmux` reaches). ws-test uses isolated servers, so it cannot see a server
+# started without ~/.local/bin in its PATH, a save that stopped running or a restore that did not act.
+# Each failure prints its remedy on the next line.
 #######################################
-seccion "Scripts (bash -n + shellcheck)"
-if ! command -v shellcheck >/dev/null; then falla "shellcheck no está instalado"; else
-  n=0; malos=()
+remedy() { printf '           → %s\n' "$1"; }
+live_checks() {
+  section "tmux: the running server"
+  local bin="$HOME/.local/bin" last="$HOME/.local/share/tmux/resurrect/last" path saved open age up s f
+  local -a peeks=() missing=() stale=()
+  if ! tmux list-sessions >/dev/null 2>&1; then warn "no tmux server is running: its checks are skipped"
+  else
+    path="$(tmux show-environment -g PATH 2>/dev/null)"; path="${path#PATH=}"
+    if [[ ":$path:" == *":$bin:"* ]]; then ok "the server's PATH has ~/.local/bin"
+    else
+      fail "the server's PATH lacks ~/.local/bin (menus and hooks do not find the kit's commands)"
+      # shellcheck disable=SC2016  # the command is shown for the user to run, not expanded here
+      remedy 'tmux set-environment -g PATH "$HOME/.local/bin:$PATH"; next time start tmux from a shell that has it'
+    fi
+    # Same rule as ws-health: the date of the save «last» points to is the last time it was confirmed.
+    age=$(( $(date +%s) - $(stat -c %Y "$(readlink -f "$last")" 2>/dev/null || echo 0) ))
+    up=$(( $(date +%s) - $(tmux display -p '#{start_time}' 2>/dev/null || date +%s) ))
+    if (( up < 300 )); then ok "save: the server started ${up}s ago (checked after the first 5 min)"
+    elif (( age < 300 )); then ok "save confirmed ${age}s ago"
+    else
+      if [[ -e "$last" ]]; then fail "the save was not confirmed in the last 5 min (last: $(( age / 60 )) min ago)"
+      else fail "there is no tmux save (${last/#"$HOME"/\~} is missing)"; fi
+      remedy "Ctrl+b Ctrl+s; if it stays old, run ~/.local/bin/tmux-save-now and check that continuum is loaded"
+    fi
+    # Linked sessions (monitor 2, the finder's find-peek-*) show the tabs of their group: every tab is counted once.
+    saved="$(grep -c '^window' "$last" 2>/dev/null)"; saved="${saved:-0}"
+    open="$(tmux list-windows -a -F '#{window_id}' 2>/dev/null | sort -u | wc -l)"
+    if (( saved > 0 && saved == open )); then ok "the save has the open tabs ($saved)"
+    else
+      fail "the save has $saved tabs and $open are open"
+      remedy "Ctrl+b Ctrl+s; tabs missing after a restart: Menu → Tabs and session → Restore tabs from a save"
+    fi
+    while IFS=$'\t' read -r s f; do
+      [[ "$s" == find-peek-* && "$f" == 0 ]] && peeks+=("$s")
+    done < <(tmux list-sessions -F '#{session_name}	#{session_attached}' 2>/dev/null)
+    if (( ${#peeks[@]} == 0 )); then ok "no leftover find-peek-* session"
+    else
+      fail "leftover finder sessions without a client: ${peeks[*]}"
+      remedy "$(printf 'tmux kill-session -t =%s; ' "${peeks[@]}")"
+    fi
+    while IFS= read -r f; do
+      [[ -x "$HOME/$f" ]] || missing+=("${f##*/}")
+    done < <({ tmux show -gqv status-right; tmux show -gqv status-left; tmux list-keys; tmux show-hooks -g; } 2>/dev/null \
+               | grep -oE '\.local/bin/[A-Za-z0-9_.-]+' | sort -u)
+    if (( ${#missing[@]} == 0 )); then ok "every script the status bar, the keys and the hooks call exists"
+    else
+      fail "the status bar, a key or a hook calls scripts that are missing or not executable: ${missing[*]}"
+      remedy "bash install.sh in the kit, then tmux source-file ~/.tmux.conf (a binding of an old name: restart tmux)"
+    fi
+  fi
+  mapfile -t stale < <(stale_sockets)
+  if (( ${#stale[@]} == 0 )); then ok "no stale tmux sockets in $SOCKDIR"
+  else
+    fail "${#stale[@]} stale tmux sockets in $SOCKDIR: $(printf '%s ' "${stale[@]##*/}")"
+    remedy "ws-verify --clean-sockets"
+  fi
+}
+
+summary() {
+  printf '\n\e[1mResult: %d ok · %d warnings · %d failed\e[0m\n' "$OK" "$WARNED" "$FAILED"
+  if (( FAILED )); then printf '  - %s\n' "${FAILURES[@]}"; exit 1; fi
+}
+
+case "${1:-}" in
+  --live) live_checks; summary; exit 0 ;;
+  --clean-sockets)
+    n=0
+    while IFS= read -r s; do rm -f -- "$s" && { printf '  removed %s\n' "$s"; n=$((n + 1)); }; done < <(stale_sockets)
+    echo "$n stale tmux sockets removed from $SOCKDIR"; exit 0 ;;
+esac
+
+#######################################
+# 1. Installed patches
+#######################################
+section "Installed patches"
+chk() { if eval "$2" >/dev/null 2>&1; then ok "$1"; else fail "$1"; fi; }
+chk "17 light/dark theme (tmux-theme, themes)"   '[[ -x ~/.local/bin/tmux-theme && -f ~/.config/tmux-claude/theme-light.tmux ]]'
+chk "17 Appearance menu"                         '[[ -f ~/.config/tmux-claude/menu-appearance.tmux ]]'
+chk "18 continuous save (tmux-save-now)"         '[[ -x ~/.local/bin/tmux-save-now ]] && grep -q tmux-save-now ~/.tmux.conf'
+chk "18 fnm fix in .bashrc"                      'grep -q "fnm_multishells" ~/.bashrc'
+chk "19 new screensaver scenes"                  'grep -q hyperspace ~/.local/bin/tmux-saver'
+chk "19 kit with templates (lib.sh)"             'grep -q render_templates "$KIT/lib.sh"'
+
+#######################################
+# 2. Scripts: syntax and shellcheck
+#######################################
+section "Scripts (bash -n + shellcheck)"
+if ! command -v shellcheck >/dev/null; then fail "shellcheck is not installed"; else
+  n=0; bad=()
   for f in ~/.local/bin/tmux-* ~/.local/bin/ws-* ~/.local/bin/claude-* ~/.claude/hooks/*.sh \
            ~/.claude/statusline*.sh ~/.config/tmux-claude/*.sh ~/.config/git/hooks/_chain; do
     [[ -f "$f" ]] || continue
     head -1 "$f" | grep -qE '^#!.*(ba)?sh' || [[ "$f" == *.sh ]] || continue
     n=$((n + 1))
-    if ! r=$(bash -n "$f" 2>&1 && shellcheck -S error -s bash "$f" 2>&1); then malos+=("$f"); detalle "$r"; fi
+    if ! r=$(bash -n "$f" 2>&1 && shellcheck -S error -s bash "$f" 2>&1); then bad+=("$f"); detail "$r"; fi
   done
-  if (( ${#malos[@]} == 0 )); then ok "$n scripts sin errores"; else falla "errores en: ${malos[*]/#"$HOME"/\~}"; fi
+  if (( ${#bad[@]} == 0 )); then ok "$n scripts without errors"; else fail "errors in: ${bad[*]/#"$HOME"/\~}"; fi
 fi
 
 #######################################
-# 3. tmux: configuración, menús y estado
+# 3. tmux: configuration, menus and state
 #######################################
-seccion "tmux"
-# Servidor desechable (-L) para no tocar la sesión dev. .tmux.conf y temas se cargan de verdad
-# (detecta opciones inválidas) sin las líneas run: así no arrancan resurrect/continuum ahí,
-# que podrían sobrescribir el guardado real. Los menús solo se analizan (-n): necesitan cliente.
+section "tmux"
+# Throwaway server (-L) so the dev session is not touched. .tmux.conf and the themes are really loaded
+# (catches invalid options) without the run lines: that way resurrect/continuum do not start there,
+# where they could overwrite the real save. The menus are only parsed (-n): they need a client.
 TS="wsverify-$$"; tmp_conf="$(mktemp)"
+# tmux leaves the socket file of a server that ended: this one is removed on the way out.
+trap 'tmux -L "$TS" kill-server 2>/dev/null; rm -f "$SOCKDIR/$TS"' EXIT
 grep -vE '^[[:space:]]*run(-shell)?\b' ~/.tmux.conf > "$tmp_conf"
 r=$(tmux -L "$TS" -f /dev/null new-session -d \; source-file "$tmp_conf" 2>&1)
-if [[ -z "$r" ]]; then ok ".tmux.conf carga sin errores"; else falla ".tmux.conf"; detalle "$r"; fi
+if [[ -z "$r" ]]; then ok ".tmux.conf loads without errors"; else fail ".tmux.conf"; detail "$r"; fi
 rm -f "$tmp_conf"
 for m in ~/.config/tmux-claude/*.tmux; do
   if [[ "${m##*/}" == theme-* ]]; then r=$(tmux -L "$TS" source-file "$m" 2>&1)
   else r=$(tmux -L "$TS" source-file -n "$m" 2>&1); fi
-  if [[ -z "$r" ]]; then ok "${m##*/}"; else falla "${m##*/}"; detalle "$r"; fi
+  if [[ -z "$r" ]]; then ok "${m##*/}"; else fail "${m##*/}"; detail "$r"; fi
 done
-tmux -L "$TS" kill-server 2>/dev/null
+tmux -L "$TS" kill-server 2>/dev/null; rm -f "$SOCKDIR/$TS"
 if tmux has-session -t dev 2>/dev/null; then
-  ok "sesión dev viva ($(tmux list-windows -t dev | wc -l) pestañas)"
+  ok "dev session alive ($(tmux list-windows -t dev | wc -l) tabs)"
   last=$(readlink -f ~/.local/share/tmux/resurrect/last 2>/dev/null)
   if [[ -f "$last" ]]; then
-    # resurrect no toca "last" si nada cambió: se usa la hora del último guardado de continuum.
+    # resurrect does not touch "last" if nothing changed: the time of continuum's last save is used.
     ts=$(tmux show -gqv @continuum-save-last-timestamp)
-    edad=$(( $(date +%s) - ${ts:-$(stat -c %Y "$last")} ))
-    if (( edad < 300 )); then ok "último guardado hace ${edad}s"; else aviso "último guardado hace $((edad / 60)) min (esperado < 5)"; fi
-  else falla "no hay guardado de resurrect"; fi
-  [[ "$(tmux show -gqv @theme_mode)" =~ ^(oscuro|claro|auto)$ ]] && ok "tema: $(tmux show -gqv @theme_mode)" || aviso "tema sin aplicar (Menú → Apariencia)"
-else aviso "la sesión dev no está corriendo; se omite estado y guardado"; fi
+    age=$(( $(date +%s) - ${ts:-$(stat -c %Y "$last")} ))
+    if (( age < 300 )); then ok "last save ${age}s ago"; else warn "last save $((age / 60)) min ago (expected < 5)"; fi
+  else fail "there is no resurrect save"; fi
+  [[ "$(tmux show -gqv @theme_mode)" =~ ^(dark|light|auto)$ ]] && ok "theme: $(tmux show -gqv @theme_mode)" || warn "theme not applied (Menu → Appearance)"
+else warn "the dev session is not running; state and save are skipped"; fi
+live_checks
 
 #######################################
-# 4. Protector: cada escena dibuja sin error
+# 4. Screensaver: every scene draws without error
 #######################################
-seccion "Protector de pantalla"
-for s in $(~/.local/bin/tmux-arte --lista 2>/dev/null); do
+section "Screensaver"
+for s in $(~/.local/bin/tmux-art --list 2>/dev/null); do
   r=$(COLUMNS=100 LINES=30 timeout 60 bash ~/.local/bin/tmux-saver --test "$s" 8 2>&1 >/dev/null)
-  if [[ $? -eq 0 && -z "$r" ]]; then ok "$s"; else falla "escena $s"; detalle "$r"; fi
+  if [[ $? -eq 0 && -z "$r" ]]; then ok "$s"; else fail "scene $s"; detail "$r"; fi
 done
 
 #######################################
-# 5. Claude Code: settings y hooks
+# 5. Claude Code: settings and hooks
 #######################################
-seccion "Claude Code"
+section "Claude Code"
 S=~/.claude/settings.json
-if jq empty "$S" 2>/dev/null; then ok "settings.json es JSON válido"; else falla "settings.json no es JSON válido"; fi
-[[ "$(jq -r '.sandbox.allowUnsandboxedCommands' "$S")" == "false" ]] && ok "sandbox sin salida" || falla "sandbox.allowUnsandboxedCommands no es false"
-jq -e '.env // {} | keys | map(select(startswith("OTEL_"))) | length == 0' "$S" >/dev/null && ok "sin OTEL_* en settings de usuario" || falla "hay OTEL_* en settings de usuario (lo pone la gobernanza)"
-faltan=()
-# Toma de cada comando las rutas a scripts propios (~/…, $HOME/…, /home/…) y verifica que existan.
+if jq empty "$S" 2>/dev/null; then ok "settings.json is valid JSON"; else fail "settings.json is not valid JSON"; fi
+[[ "$(jq -r '.sandbox.allowUnsandboxedCommands' "$S")" == "false" ]] && ok "sandbox with no way out" || fail "sandbox.allowUnsandboxedCommands is not false"
+jq -e '.env // {} | keys | map(select(startswith("OTEL_"))) | length == 0' "$S" >/dev/null && ok "no OTEL_* in the user settings" || fail "there is OTEL_* in the user settings (governance sets it)"
+missing=()
+# Takes from each command the paths to our own scripts (~/…, $HOME/…, /home/…) and checks that they exist.
 while IFS= read -r p; do
   p="${p/#\~/$HOME}"; p="${p//\$HOME/$HOME}"; p="${p//\"/}"
-  [[ -f "$p" ]] || faltan+=("$p")
+  [[ -f "$p" ]] || missing+=("$p")
 done < <(jq -r '[.hooks[]?[]?.hooks[]?.command, .statusLine.command] | .[] | select(. != null)' "$S" \
          | grep -oE '(~|\$HOME|/home)/[^ ;|&]+\.(sh|py)|(~|\$HOME|/home)/\.local/bin/[^ ;|&]+' | sort -u)
-(( ${#faltan[@]} == 0 )) && ok "todos los scripts de hooks y la status line existen" || falla "hooks faltantes: ${faltan[*]}"
-command -v claude >/dev/null && ok "claude $(claude --version 2>/dev/null | head -1)" || falla "claude no está en PATH"
+(( ${#missing[@]} == 0 )) && ok "all the hook scripts and the status line exist" || fail "missing hooks: ${missing[*]}"
+command -v claude >/dev/null && ok "claude $(claude --version 2>/dev/null | head -1)" || fail "claude is not in PATH"
 
 #######################################
-# 6. Estación: ws-check y ws-health
+# 6. Workstation: ws-check and ws-health
 #######################################
-seccion "Estación"
-# Clasifica cada línea FALTA/FALLA: los commits del kit sin subir son justo lo que se va a
-# subir (se ignora); el snapshot vencido es resiliencia, no calidad del cambio (aviso);
-# cualquier otra cosa bloquea (FALLA).
+section "Workstation"
+# Classifies each MISSING/FAIL line: the unpushed kit commits are exactly what is about to be
+# pushed (ignored); an expired snapshot is resilience, not quality of the change (warn);
+# anything else blocks (FAIL).
 for t in ws-check ws-health; do
   r=$(timeout 180 "$t" </dev/null 2>&1); rc=$?
   (( rc == 0 )) && { ok "$t"; continue; }
-  malas=$(grep -E 'FALTA|FALLA|ERROR|✖' <<<"$r" | sed 's/\x1b\[[0-9;]*m//g')
-  if [[ -z "$malas" ]]; then
-    if (( rc == 124 )); then malas="tardó más de 180 s (rc=124)"
-    else malas="sale con rc=$rc sin línea FALTA; últimas líneas: $(tail -2 <<<"$r" | tr '\n' ' ')"; fi
+  lines=$(grep -E 'MISSING|FAIL|ERROR|✖' <<<"$r" | sed 's/\x1b\[[0-9;]*m//g')
+  if [[ -z "$lines" ]]; then
+    if (( rc == 124 )); then lines="took more than 180 s (rc=124)"
+    else lines="exits with rc=$rc and no MISSING/FAIL line; last lines: $(tail -2 <<<"$r" | tr '\n' ' ')"; fi
   fi
-  bloquea=$(grep -viE 'kit sin cambios pendientes|snapshot' <<<"$malas")
-  avisa=$(grep -iE 'snapshot' <<<"$malas")
-  if [[ -n "$bloquea" ]]; then falla "$t"; detalle "$bloquea"
-  elif [[ -n "$avisa" ]]; then aviso "$t: $(sed 's/  */ /g' <<<"$avisa" | head -1)"
-  else ok "$t (solo lo que se va a subir)"; fi
+  blocking=$(grep -viE 'kit has no pending changes|snapshot' <<<"$lines")
+  warning=$(grep -iE 'snapshot' <<<"$lines")
+  if [[ -n "$blocking" ]]; then fail "$t"; detail "$blocking"
+  elif [[ -n "$warning" ]]; then warn "$t: $(sed 's/  */ /g' <<<"$warning" | head -1)"
+  else ok "$t (only what is about to be pushed)"; fi
 done
 
 #######################################
-# 7. Kit: pruebas, datos personales, compuerta y remoto
+# 7. Kit: tests, personal data, gate and remote
 #######################################
-seccion "Kit claude-workstation"
-if [[ ! -d "$KIT/.git" ]]; then falla "no existe $KIT"; else
+section "Kit claude-workstation"
+if [[ ! -d "$KIT/.git" ]]; then fail "$KIT does not exist"; else
   cd "$KIT" || exit 1
-  if (( RAPIDO )); then aviso "pruebas del kit omitidas (--rapido)"
-  elif r=$(bash tests/run.sh 2>&1); then ok "pruebas: $(tail -1 <<<"$r")"
-  else falla "pruebas del kit"; detalle "$(grep -E 'FALLA|fall' <<<"$r")"; fi
+  if (( QUICK )); then warn "kit tests skipped (--quick)"
+  elif r=$(bash tests/run.sh 2>&1); then ok "tests: $(tail -1 <<<"$r")"
+  else fail "kit tests"; detail "$(grep -E 'FAIL|failed' <<<"$r")"; fi
 
   wu=$(cmd.exe /c 'echo %USERNAME%' 2>/dev/null | tr -d '\r')
-  # Rutas fijas rompen la instalación en otra máquina (FALLA); nombres sueltos solo se avisan.
-  rutas=$(grep -rnI -e "/mnt/c/Users/[A-Za-z]" -e 'C:\\Users\\[A-Za-z]' files/ windows/ 2>/dev/null | head -5)
-  [[ -z "$rutas" ]] && ok "sin rutas personales fijas en files/ ni windows/" || { falla "rutas personales fijas en el kit"; detalle "$rutas"; }
-  pers=$(grep -rnIi -e "\b$(id -un)\b" ${wu:+-e "\b$wu\b"} files/ windows/ 2>/dev/null | head -5)
-  [[ -z "$pers" ]] && ok "sin usuario personal en files/ ni windows/" || { aviso "aparece tu usuario en el kit (revisa si es intencional)"; detalle "$pers"; }
+  # Hard-coded paths break the install on another machine (FAIL); bare names only get a warning.
+  paths=$(grep -rnI -e "/mnt/c/Users/[A-Za-z]" -e 'C:\\Users\\[A-Za-z]' files/ windows/ 2>/dev/null | head -5)
+  [[ -z "$paths" ]] && ok "no hard-coded personal paths in files/ or windows/" || { fail "hard-coded personal paths in the kit"; detail "$paths"; }
+  personal=$(grep -rnIi -e "\b$(id -un)\b" ${wu:+-e "\b$wu\b"} files/ windows/ 2>/dev/null | head -5)
+  [[ -z "$personal" ]] && ok "no personal user in files/ or windows/" || { warn "your user name appears in the kit (check whether it is intended)"; detail "$personal"; }
 
-  # Solo la configuración capturada, sin los escáneres (contienen los patrones a propósito).
+  # Only the captured configuration, without the scanners (they contain the patterns on purpose).
   pat='(ghp_[A-Za-z0-9]{20}|github_pat_[A-Za-z0-9_]{20}|sk-ant-[a-z]+[0-9]{2}-[A-Za-z0-9_-]{20}|AKIA[0-9A-Z]{16}|AccountKey=[A-Za-z0-9+/]{20}|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
   sec=$(git grep --untracked -nIE "$pat" -- files windows ':!files/home/.local/bin/ws-verify' ':!files/home/.local/bin/ws-gate' 2>/dev/null | head -3)
-  [[ -z "$sec" ]] && ok "sin patrones de secretos en archivos versionados" || { falla "posibles secretos"; detalle "$sec"; }
+  [[ -z "$sec" ]] && ok "no secret patterns in versioned files" || { fail "possible secrets"; detail "$sec"; }
 
-  if (( ! RAPIDO )) && command -v ws-gate >/dev/null; then
-    if r=$(timeout 300 ws-gate repo 2>&1); then ok "ws-gate repo"; else aviso "ws-gate repo reporta hallazgos (revisa: ws-gate repo-view)"; detalle "$(grep -E '✖' <<<"$r")"; fi
+  if (( ! QUICK )) && command -v ws-gate >/dev/null; then
+    if r=$(timeout 300 ws-gate repo 2>&1); then ok "ws-gate repo"; else warn "ws-gate repo reports findings (check: ws-gate repo-view)"; detail "$(grep -E '✖' <<<"$r")"; fi
   fi
 
-  rama=$(git branch --show-current)
-  git fetch -q 2>/dev/null && ok "remoto accesible ($rama)" || falla "no pude leer el remoto (¿gh auth login?)"
-  read -r detras adelante < <(git rev-list --left-right --count "@{u}...HEAD" 2>/dev/null || echo "? ?")
-  [[ "$detras" == 0 ]] && ok "al día con origin (por subir: $adelante commits)" || aviso "origin tiene $detras commits que no tienes: git pull --rebase antes de subir"
+  branch=$(git branch --show-current)
+  git fetch -q 2>/dev/null && ok "remote reachable ($branch)" || fail "could not read the remote (gh auth login?)"
+  read -r behind ahead < <(git rev-list --left-right --count "@{u}...HEAD" 2>/dev/null || echo "? ?")
+  [[ "$behind" == 0 ]] && ok "up to date with origin (to push: $ahead commits)" || warn "origin has $behind commits you do not have: git pull --rebase before pushing"
   vis=$(gh repo view --json visibility -q .visibility 2>/dev/null || echo "?")
-  # El kit puede publicarse a propósito (git config ws.kit.publico true); sin esa marca, lo esperado es privado.
-  if [[ "$(git config --get ws.kit.publico 2>/dev/null)" == "true" ]]; then
-    [[ "$vis" == "PUBLIC" ]] && ok "repo público (ws.kit.publico)" || aviso "ws.kit.publico=true pero la visibilidad del repo es: $vis"
+  # The kit can be public on purpose (git config ws.kit.public true); without that mark, private is expected.
+  # The mark set before the rename (ws.kit.publico) still counts.
+  if [[ "$(git config --get ws.kit.public 2>/dev/null || git config --get ws.kit.publico 2>/dev/null)" == "true" ]]; then
+    [[ "$vis" == "PUBLIC" ]] && ok "public repo (ws.kit.public)" || warn "ws.kit.public=true but the repo visibility is: $vis"
   else
-    [[ "$vis" == "PRIVATE" ]] && ok "repo privado" || aviso "visibilidad del repo: $vis"
+    [[ "$vis" == "PRIVATE" ]] && ok "private repo" || warn "repo visibility: $vis"
   fi
-  [[ -z "$(git status --porcelain)" ]] && ok "sin cambios sin commit" || aviso "hay cambios sin commit: $(git status --porcelain | wc -l) archivos"
+  [[ -z "$(git status --porcelain)" ]] && ok "no uncommitted changes" || warn "there are uncommitted changes: $(git status --porcelain | wc -l) files"
 fi
 
 #######################################
-# 8. Pruebas de comportamiento (ws-test: aisladas, sin gastar uso)
+# 8. Behavior tests (ws-test: isolated, without spending usage)
 #######################################
-seccion "Pruebas de comportamiento"
-if (( RAPIDO )); then aviso "ws-test omitido (--rapido)"
+section "Behavior tests"
+if (( QUICK )); then warn "ws-test skipped (--quick)"
 elif command -v ws-test >/dev/null; then
   if r=$(ws-test 2>&1); then ok "ws-test: $(tail -1 <<<"$r" | sed 's/\x1b\[[0-9;]*m//g')"
-  else falla "ws-test"; detalle "$(grep 'FALLA' <<<"$r" | sed 's/\x1b\[[0-9;]*m//g')"; fi
+  else fail "ws-test"; detail "$(grep 'FAIL' <<<"$r" | sed 's/\x1b\[[0-9;]*m//g')"; fi
 fi
 
 #######################################
-# Resumen
+# Summary
 #######################################
-printf '\n\e[1mResultado: %d ok · %d avisos · %d fallas\e[0m\n' "$OK" "$AV" "$FA"
-if (( FA )); then printf '  - %s\n' "${FALLAS[@]}"; exit 1; fi
-echo "Listo para subir."
+summary
+echo "Ready to push."

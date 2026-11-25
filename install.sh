@@ -1,117 +1,186 @@
 #!/usr/bin/env bash
 #
-# install.sh — aplica la configuración del repo (files/) a esta máquina SIN planchar:
-# cada archivo que cambia se respalda antes como <archivo>.bak.<fecha>; lo que ya es igual no se toca.
+# install.sh — applies the repo's configuration (files/) to this machine WITHOUT overwriting blindly:
+# every file that changes is copied first to ~/.local/share/ws-kit/backup.<date>/<same path>; what is already the
+# same is left alone. The newest 10 backup folders are kept.
 #
-# Uso: bash install.sh [--dry-run] [--no-plugins] [--no-mcp] [--no-git-hooks] [--win-user USUARIO] [--repos RUTA]
-#   --dry-run          muestra qué cambiaría (nuevo / cambia / igual) sin escribir nada
-#   --no-plugins       no instala TPM ni los plugins de tmux
-#   --no-mcp           no registra servidores MCP
-#   --win-user USUARIO usuario de Windows (por defecto lo detecta; si no puede, lo pregunta)
-#   --repos RUTA       carpeta de repos (por defecto /mnt/c/Users/<usuario>/source/repos)
-# Los archivos del kit son plantillas: @WINHOME@, @WIN_USER@, @HOME@ y @LINUX_USER@ se
-# reemplazan por los valores de esta máquina antes de instalar.
+# Usage: bash install.sh [--dry-run] [--no-plugins] [--no-mcp] [--no-git-hooks] [--win-user USER] [--repos PATH]
+#        bash install.sh --remove-shims   deletes the wrappers left under the names used before 3.0
+#        bash install.sh --prune-backups [--dry-run]   moves the <file>.bak.<date> copies that earlier versions left
+#                           next to each file into ~/.local/share/ws-kit/backup.legacy/
+#   --dry-run          shows what would change (new / changed / same) without writing anything
+#   --no-plugins       does not install TPM or the tmux plugins
+#   --no-mcp           does not register MCP servers
+#   --win-user USER    Windows user (detected by default; if it cannot, it asks)
+#   --repos PATH       repos folder (default /mnt/c/Users/<user>/source/repos)
+# The kit's files are templates: @WINHOME@, @WIN_USER@, @HOME@ and @LINUX_USER@ are
+# replaced with this machine's values before installing.
 set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
+source "$(dirname -- "${BASH_SOURCE[0]}")/migrate.sh"
 
-DRY=0 PLUGINS=1 MCP=1 GITHOOKS=1 REPOS_DIR=""
+DRY=0 PLUGINS=1 MCP=1 GITHOOKS=1 SHIMS=0 PRUNE=0 REPOS_DIR=""
 STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP_ROOT="$HOME/.local/share/ws-kit"   # also holds pre-english.<date> (migrate.sh), which is never pruned
+BACKUP_DIR="$BACKUP_ROOT/backup.$STAMP"
+BACKUP_KEEP=10
 while (( $# )); do
   case "$1" in
     --dry-run) DRY=1 ;; --no-plugins) PLUGINS=0 ;; --no-mcp) MCP=0 ;; --no-git-hooks) GITHOOKS=0 ;;
-    --win-user) export WIN_USER="${2:?falta el usuario}"; shift ;;
-    --repos) REPOS_DIR="${2:?falta la ruta}"; shift ;;
-    -h|--help) sed -n '3,14p' "${BASH_SOURCE[0]}"; exit 0 ;;
-    *) die "opción desconocida: $1" ;;
+    --remove-shims) SHIMS=1 ;;
+    --prune-backups) PRUNE=1 ;;
+    --win-user) export WIN_USER="${2:?missing user}"; shift ;;
+    --repos) REPOS_DIR="${2:?missing path}"; shift ;;
+    -h|--help) sed -n '3,18p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    *) die "unknown option: $1" ;;
   esac
   shift
 done
-[[ -d "$FILES" ]] || die "No hay files/: corre primero export.sh en la máquina de origen"
+
+#######################################
+# Copies a file of $HOME into this run's backup folder, keeping its relative path. Used before a file is replaced
+# (apply_file) and by migrate.sh for ~/.bashrc. Does nothing in a dry run, and never replaces a copy already there.
+# Arguments: path relative to $HOME.
+#######################################
+backup_file() {
+  (( DRY )) && return 0
+  [[ -e "$BACKUP_DIR/$1" ]] && return 0
+  mkdir -p "$(dirname "$BACKUP_DIR/$1")" && cp -p "$HOME/$1" "$BACKUP_DIR/$1"
+}
+
+#######################################
+# Keeps the newest $BACKUP_KEEP backup.<date> folders and deletes the older ones. Only folders named by a date are
+# touched: pre-english.<date> and backup.legacy are never deleted.
+#######################################
+rotate_backups() {
+  local d
+  while IFS= read -r d; do rm -rf -- "$d"; done < <(
+    find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'backup.[0-9]*' 2>/dev/null | sort -r \
+      | tail -n +$((BACKUP_KEEP + 1))
+  )
+}
+
+#######################################
+# Moves the <file>.bak.<date> copies that versions before 3.0 left next to each file into
+# ~/.local/share/ws-kit/backup.legacy/<relative path>.<date>. Looks only at the kit's own paths: every manifest
+# path (files, and the files directly inside its folders), ~/.bashrc and the names used before 3.0 (renames.tsv).
+# Outputs: one line per file and the count. Uses DRY.
+#######################################
+prune_legacy_backups() {
+  local p f rel n=0 dest="$BACKUP_ROOT/backup.legacy"
+  while IFS= read -r f; do
+    [[ -f "$f" && "$f" =~ ^(.*)\.bak\.([0-9][0-9-]*)$ ]] || continue
+    rel="${BASH_REMATCH[1]#"$HOME"/}.${BASH_REMATCH[2]}"
+    printf '  moved   %s\n' "${f#"$HOME"/}"; n=$((n + 1))
+    (( DRY )) || { mkdir -p "$(dirname "$dest/$rel")" && mv -f -- "$f" "$dest/$rel"; }
+  done < <(
+    { manifest_paths; echo .bashrc; awk -F'\t' '$1 !~ /^#/ && NF >= 3 { print $2 }' "$KIT/renames.tsv"; } | sort -u \
+      | while IFS= read -r p; do
+          if [[ "$p" == */ ]]; then find "$HOME/${p%/}" -maxdepth 1 -type f -name '*.bak.*' 2>/dev/null || true
+          else compgen -G "$HOME/$p.bak.*" || true; fi
+        done | sort -u
+  )
+  if (( DRY )); then log "Dry run: $n backup files would be moved to ${dest/#"$HOME"/\~}"
+  else log "$n backup files moved to ${dest/#"$HOME"/\~}"; fi
+}
+
+if (( SHIMS )); then log "Wrappers of the old names"; remove_shims; exit 0; fi
+if (( PRUNE )); then log "Backups left next to the files (*.bak.<date>)"; prune_legacy_backups; exit 0; fi
+[[ -d "$FILES" ]] || die "There is no files/: run export.sh first on the source machine"
 
 WU="$(win_user)"
-if [[ -z "$WU" && -t 0 ]]; then read -rp "Usuario de Windows (carpeta en C:\\Users\\): " WU; fi
-[[ -n "$WU" ]] || die "No pude detectar el usuario de Windows: usa --win-user USUARIO"
+if [[ -z "$WU" && -t 0 ]]; then read -rp "Windows user (folder in C:\\Users\\): " WU; fi
+[[ -n "$WU" ]] || die "Could not detect the Windows user: use --win-user USER"
 REPOS_DIR="${REPOS_DIR:-/mnt/c/Users/$WU/source/repos}"
-log "Usuario de Windows: $WU · repos: $REPOS_DIR"
+log "Windows user: $WU · repos: $REPOS_DIR"
 
-# Copia renderizada de las plantillas: lo que se instala ya trae las rutas de esta máquina.
+# Rendered copy of the templates: what gets installed already has this machine's paths.
 RENDER="$(mktemp -d)"; trap 'rm -rf "$RENDER"' EXIT
 cp -a "$KIT/files/." "$RENDER/"
 render_templates "$RENDER" "$WU" "$HOME" "$(id -un)"
 FILES="$RENDER/home"; MCP_FILE="$RENDER/mcp-servers.json"
 
 #######################################
-# Copia un archivo del repo a $HOME con respaldo si cambia.
-# Arguments: ruta relativa. Outputs: estado (nuevo / cambia / igual).
+# Copies a file from the repo to $HOME, with a backup (backup_file) if it changes.
+# Arguments: relative path. Outputs: status (new / changed / same).
 #######################################
 apply_file() {
   local rel="$1" src="$FILES/$1" dst="$HOME/$1"
   if [[ ! -e "$dst" ]]; then
-    printf '  nuevo   %s\n' "$rel"
+    printf '  new     %s\n' "$rel"
   elif cmp -s "$src" "$dst"; then
-    printf '  igual   %s\n' "$rel"; return 0
+    printf '  same    %s\n' "$rel"; return 0
   else
-    printf '  cambia  %s\n' "$rel"
-    (( DRY )) || cp -p "$dst" "$dst.bak.$STAMP"
+    printf '  changed %s\n' "$rel"
+    backup_file "$rel"
   fi
   (( DRY )) || install -D -m "$(stat -c '%a' "$src")" "$src" "$dst"
 }
 
 #######################################
-# Agrega a ~/.bashrc las líneas del kit que falten (no duplica las que ya existen).
+# Adds to ~/.bashrc the kit's lines that are missing (does not duplicate existing ones).
 #######################################
 ensure_bashrc() {
   local line
   local -a lines=(
     "export REPOS=$REPOS_DIR"
     '[ -f ~/.config/tmux-claude/functions.sh ] && . ~/.config/tmux-claude/functions.sh'
-    '[ -f ~/.config/tmux-claude/cuentas.sh ] && . ~/.config/tmux-claude/cuentas.sh'
+    '[ -f ~/.config/tmux-claude/accounts.sh ] && . ~/.config/tmux-claude/accounts.sh'
     '[ -f ~/.config/tmux-claude/shell.sh ] && . ~/.config/tmux-claude/shell.sh'
   )
   for line in "${lines[@]}"; do
-    if grep -qF "${line##* ~/}" "$HOME/.bashrc" 2>/dev/null; then printf '  igual   .bashrc: %s\n' "${line:0:50}"
-    else printf '  agrega  .bashrc: %s\n' "${line:0:50}"; (( DRY )) || printf '%s\n' "$line" >> "$HOME/.bashrc"; fi
+    if grep -qF "${line##* ~/}" "$HOME/.bashrc" 2>/dev/null; then printf '  same    .bashrc: %s\n' "${line:0:50}"
+    else printf '  added   .bashrc: %s\n' "${line:0:50}"; (( DRY )) || printf '%s\n' "$line" >> "$HOME/.bashrc"; fi
   done
 }
 
-log "Archivos ($([[ $DRY -eq 1 ]] && echo 'simulación' || echo "respaldo: *.bak.$STAMP"))"
+migrate_names
+log "Files ($([[ $DRY -eq 1 ]] && echo 'dry run' || echo "backup: ${BACKUP_DIR/#"$HOME"/\~}"))"
 while IFS= read -r rel; do apply_file "$rel"; done < <(manifest_files "$FILES")
 ensure_bashrc
+(( DRY )) || rotate_backups
 
-# Compuerta de git: los hooks del kit (secretos, mensaje, push a main) solo corren si git los busca en
-# ~/.config/git/hooks. Se fija solo si no hay otro valor: no pisa el tuyo. --no-git-hooks lo omite.
+# Git gate: the kit's hooks (secrets, message, push to main) only run if git looks for them in
+# ~/.config/git/hooks. Set only if there is no other value: it does not override yours. --no-git-hooks skips it.
 if (( GITHOOKS )); then
-  log "Compuerta de git"
-  hp_actual="$(git config --global --get core.hooksPath 2>/dev/null || true)"
-  if [[ "$hp_actual" == "$HOME/.config/git/hooks" ]]; then printf '  igual   core.hooksPath\n'
-  elif [[ -z "$hp_actual" ]]; then
-    printf '  nuevo   core.hooksPath → ~/.config/git/hooks\n'
+  log "Git gate"
+  hp_current="$(git config --global --get core.hooksPath 2>/dev/null || true)"
+  if [[ "$hp_current" == "$HOME/.config/git/hooks" ]]; then printf '  same    core.hooksPath\n'
+  elif [[ -z "$hp_current" ]]; then
+    printf '  new     core.hooksPath → ~/.config/git/hooks\n'
     (( DRY )) || git config --global core.hooksPath "$HOME/.config/git/hooks"
-  else printf '  omite   core.hooksPath ya apunta a %s (no se cambia)\n' "$hp_actual"; fi
+  else printf '  skipped core.hooksPath already points to %s (not changed)\n' "$hp_current"; fi
 fi
 
 if (( PLUGINS )); then
-  log "Plugins de tmux"
+  log "tmux plugins"
   if [[ ! -d "$HOME/.tmux/plugins/tpm" ]]; then
-    printf '  nuevo   tpm\n'; (( DRY )) || git clone -q https://github.com/tmux-plugins/tpm "$HOME/.tmux/plugins/tpm"
+    printf '  new     tpm\n'; (( DRY )) || git clone -q https://github.com/tmux-plugins/tpm "$HOME/.tmux/plugins/tpm"
   fi
   (( DRY )) || "$HOME/.tmux/plugins/tpm/bin/install_plugins" | sed 's/^/  /'
 fi
 
 if (( MCP )) && [[ -s "$MCP_FILE" ]]; then
-  log "Servidores MCP de usuario"
-  command -v claude >/dev/null || die "Falta Claude Code: curl -fsSL https://claude.ai/install.sh -o /tmp/ci.sh, revísalo y bash /tmp/ci.sh"
+  log "User MCP servers"
+  command -v claude >/dev/null || die "Claude Code is missing: curl -fsSL https://claude.ai/install.sh -o /tmp/ci.sh, review it and bash /tmp/ci.sh"
   while IFS= read -r name; do
     cmd="$(jq -r --arg n "$name" '.[$n].command // empty' "$MCP_FILE")"
-    if [[ "$cmd" == /* && ! -e "$cmd" ]]; then printf '  omite   %s (no existe %s en esta máquina)\n' "$name" "$cmd"; continue; fi
-    if claude mcp get "$name" >/dev/null 2>&1; then printf '  igual   %s\n' "$name"
-    else printf '  nuevo   %s\n' "$name"; (( DRY )) || claude mcp add-json "$name" "$(jq -c --arg n "$name" '.[$n]' "$MCP_FILE")" --scope user >/dev/null
+    if [[ "$cmd" == /* && ! -e "$cmd" ]]; then printf '  skipped %s (%s does not exist on this machine)\n' "$name" "$cmd"; continue; fi
+    if claude mcp get "$name" >/dev/null 2>&1; then printf '  same    %s\n' "$name"
+    else printf '  new     %s\n' "$name"; (( DRY )) || claude mcp add-json "$name" "$(jq -c --arg n "$name" '.[$n]' "$MCP_FILE")" --scope user >/dev/null
     fi
   done < <(jq -r 'keys[]' "$MCP_FILE")
 fi
 
 if [[ -f "$KIT/files/windows/.wslconfig" ]]; then
-  log "Windows: compara a mano files/windows/.wslconfig con %UserProfile%\\.wslconfig (no se aplica automático)"
+  log "Windows: compare files/windows/.wslconfig with %UserProfile%\\.wslconfig by hand (it is not applied automatically)"
 fi
-if (( DRY )); then log "Simulación: no se escribió nada."
-else log "Listo. Recarga: tmux source-file ~/.tmux.conf; en cada pestaña /exit y claude -c"; fi
+if (( DRY )); then log "Dry run: nothing was written."
+elif (( MIGRATED )); then
+  log "Done. Names changed: save your work and restart tmux (tmux kill-server, then open it again); the tabs come back."
+  log "When nothing calls the old names any more: bash install.sh --remove-shims"
+  if (( HANDLER_STALE )); then
+    warn "The Windows handler of ws-claude:// could not be updated: clicking a notification will not jump to its tab."
+    warn "In that .ps1, accept ws-claude://focus/N and call tmux-goto (see windows/ws-claude-focus.ps1)."
+  fi
+else log "Done. Reload: tmux source-file ~/.tmux.conf; in each tab /exit and claude -c"; fi

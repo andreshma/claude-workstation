@@ -1,35 +1,43 @@
 #!/usr/bin/env bash
 #
-# ws-check — revisa el estado de la estación (tmux + Claude Code) sin cambiar nada.
-chk() { printf '%-42s %s\n' "$1" "$(eval "$2" >/dev/null 2>&1 && echo OK || echo FALTA)"; }
+# ws-check — checks the state of the workstation (tmux + Claude Code) without changing anything.
+chk() { printf '%-42s %s\n' "$1" "$(eval "$2" >/dev/null 2>&1 && echo OK || echo MISSING)"; }
 S=~/.claude/settings.json
-echo "== Barra de tmux (UTF-8)"
-chk "LANG=C.UTF-8 en ~/.bashrc"          "grep -qx 'export LANG=C.UTF-8' ~/.bashrc"
-chk "tmux con UTF-8"                     "tmux show-environment -g LANG | grep -qi utf"
-echo "== MCP de Azure"
-chk "Node instalado"                     "command -v node"
-chk "MCP azure registrado"               "claude mcp get azure"
-chk "confirmaciones extra mcp__azure"    "jq -e '.permissions.ask | index(\"mcp__azure__*update*\")' $S"
+echo "== tmux status bar (UTF-8)"
+chk "LANG=C.UTF-8 in ~/.bashrc"          "grep -qx 'export LANG=C.UTF-8' ~/.bashrc"
+chk "tmux with UTF-8"                    "tmux show-environment -g LANG | grep -qi utf"
+echo "== Azure MCP"
+chk "Node installed"                     "command -v node"
+chk "azure MCP registered"               "claude mcp get azure"
+chk "extra confirmations mcp__azure"     "jq -e '.permissions.ask | index(\"mcp__azure__*update*\")' $S"
 echo "== Obsidian"
-chk "envoltorio ~/.local/bin/obsidian"   "test -x ~/.local/bin/obsidian"
-chk "Obsidian responde"                  "timeout 15 obsidian version"
-chk "permisos de Obsidian"               "jq -e '.permissions.deny | index(\"Bash(obsidian eval*)\")' $S"
-chk "sección Obsidian en estándares"     "grep -q '^## Obsidian' ~/.claude/estandares.md"
-echo "== Sandbox (piloto)"
-chk "bubblewrap y socat"                 "command -v bwrap && command -v socat"
+chk "wrapper ~/.local/bin/obsidian"      "test -x ~/.local/bin/obsidian"
+chk "Obsidian responds"                  "timeout 15 obsidian version"
+chk "Obsidian permissions"               "jq -e '.permissions.deny | index(\"Bash(obsidian eval*)\")' $S"
+chk "Obsidian section in standards.md"  "grep -q '^## Obsidian' ~/.claude/standards.md"
+echo "== Sandbox (pilot)"
+chk "bubblewrap and socat"               "command -v bwrap && command -v socat"
 echo "== Kit"
 chk "repo ~/code/claude-workstation"     "test -f ~/code/claude-workstation/export.sh"
-chk "export hecho (files/)"              "test -d ~/code/claude-workstation/files"
-chk "commit inicial"                     "git -C ~/code/claude-workstation log --oneline -1"
-echo "== Base (fases 1 y 2)"
-chk "claude-resume (restauración)"       "grep -q 'claude->claude-resume' ~/.tmux.conf"
-chk "guardado cada 1 min"                "grep -q \"continuum-save-interval '1'\" ~/.tmux.conf"
-chk "MemPalace en WSL (5 hooks)"         "test \$(grep -c win-hook $S) -ge 5"
-chk "MCP microsoft-learn"                "claude mcp get microsoft-learn"
-chk "MCP ms-release-comms"               "claude mcp get ms-release-comms"
-chk "gh autenticado"                     "gh auth status"
-chk "modelo por defecto configurado"     "jq -e '.model | strings | length > 0' $S"
-echo "== Seguridad adicional"
-chk "sandbox global"                     "jq -e '.sandbox.enabled' $S"
-chk "gitleaks + hooks globales"          "command -v gitleaks && test \"\$(git config --global core.hooksPath)\" = \"$HOME/.config/git/hooks\""
-chk "respaldo de conversaciones (<2 h)"  "test -n \"\$(find @WINHOME@/.claude-wsl-backup/.last -mmin -120 2>/dev/null)\""
+chk "export done (files/)"               "test -d ~/code/claude-workstation/files"
+chk "initial commit"                     "git -C ~/code/claude-workstation log --oneline -1"
+echo "== Base (phases 1 and 2)"
+chk "claude-resume (restore)"            "grep -q 'claude->claude-resume' ~/.tmux.conf"
+chk "save every 1 min"                   "grep -q \"continuum-save-interval '1'\" ~/.tmux.conf"
+chk "MemPalace in WSL (5 hooks)"         "test \$(grep -c win-hook $S) -ge 5"
+# claude mcp get exits non-zero when a registered server fails to connect, so its exit code alone reported a
+# registered but unreachable server as MISSING. Registered and connected are told apart.
+mcp() {
+  local out; out="$(timeout 30 claude mcp get "$1" 2>&1)"
+  if [[ "$out" != *"Scope:"* ]]; then printf '%-42s %s\n' "MCP $1" MISSING
+  elif [[ "$out" == *"Connected"* && "$out" != *"Failed"* ]]; then printf '%-42s %s\n' "MCP $1" OK
+  else printf '%-42s %s\n' "MCP $1" "registered, not connected (claude mcp list)"; fi
+}
+mcp microsoft-learn
+mcp ms-release-comms
+chk "gh authenticated"                   "gh auth status"
+chk "default model configured"           "jq -e '.model | strings | length > 0' $S"
+echo "== Additional security"
+chk "global sandbox"                     "jq -e '.sandbox.enabled' $S"
+chk "gitleaks + global hooks"            "command -v gitleaks && test \"\$(git config --global core.hooksPath)\" = \"$HOME/.config/git/hooks\""
+chk "conversation backup (<2 h)"         "test -n \"\$(find @WINHOME@/.claude-wsl-backup/.last -mmin -120 2>/dev/null)\""

@@ -1,0 +1,912 @@
+#!/usr/bin/env python3
+"""ws-report — full report on how you work with Claude, and what to do about it. Menu → Usage → i.
+
+Measures (all local, no conversation text except normalized and redacted recurring phrases):
+  · usage: equivalent cost, turns, active hours, sessions, cache, by project and model
+  · pattern: at what hours and on what days you work, turn duration, turns per session, your wait to approve
+  · models and routing: mix by cost, routing decisions (accepted, rejected, silenced)
+  · agents: which subagents you use, how much, in which projects, with which model, how long they take
+  · tools: uses, times, errors, MCP, skills (from the traces)
+  · prompts: most used slash commands and phrases your repeated requests start with (command or skill candidates)
+  · MemPalace: diary saves (ok/failed), mined, Hub restarts and errors, palace size
+  · recall: decisions, threshold, latency and what it would inject (tools/shadow_report.py in the recall repo)
+With --ai, Claude (Sonnet, no tools) reads the aggregated METRICS and writes concrete findings and suggestions;
+with --ai-memory it also queries MemPalace through its MCP (status, wings, graph) and summarizes it.
+Output: %UserProfile%\\ws-telemetry\\report-YYYY-MM-DD.html and .md (and ~/.local/share/ws-telemetry/reports/).
+Usage: ws-report [--days 30] [--ai] [--ai-memory] [--json] [--open]
+Paths (optional) in ~/.config/ws-report.conf: recall_repo=… · recall_log=… · mempalace_dir=…
+"""
+from __future__ import annotations
+
+import datetime as dt
+import glob
+import hashlib
+import html
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shutil
+import statistics
+import subprocess  # nosec B404 — claude, python from the recall repo, wslpath, explorer with fixed arguments
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+
+HOME = Path.home()
+BIN = HOME / ".local/bin"
+CLAUDE = Path(os.environ.get("WS_TELEMETRY_CLAUDE", HOME / ".claude"))
+DATA = Path(os.environ.get("WS_TELEMETRY_DIR", HOME / ".local/share/ws-telemetry"))
+CACHE = DATA / "cache-report"
+TICKET = re.compile(r"[A-Z][A-Z0-9]+-\d+")
+
+
+def lang_code() -> str:
+    """Language of the workstation (en|es): WS_LANG, else ~/.config/tmux-claude/lang, else en. Copy of the reader in
+    ~/.local/lib/ws-lang.sh (the reference implementation), so that no process is started per pattern."""
+    code = os.environ.get("WS_LANG", "").lower()
+    if code not in ("en", "es"):
+        try:
+            code = ((HOME / ".config/tmux-claude/lang").read_text(encoding="utf-8").split() or [""])[0].lower()
+        except OSError:
+            code = ""
+    return "es" if code == "es" else "en"
+
+
+def lang_pack(key: str, sep: str = "|") -> str:
+    """Value of KEY in the language packs (~/.local/lib/ws-lang/en.conf, plus es.conf with `ws-lang es`), joined
+    with sep; "" when no pack has it. Same rules as ws_lang_pat in ~/.local/lib/ws-lang.sh."""
+    out = []
+    for code in ["en"] + (["es"] if lang_code() == "es" else []):
+        try:
+            lines = (Path(os.environ.get("WS_LANG_DIR") or HOME / ".local/lib/ws-lang") / f"{code}.conf").read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        out += [l[len(key) + 1:] for l in lines if l.startswith(key + "=")][:1]
+    return sep.join(v for v in out if v)
+
+
+def lang_name() -> str:
+    """Language Claude is asked to write in (English|Spanish)."""
+    return "Spanish" if lang_code() == "es" else "English"
+
+
+# Recurring prompts: stop words and the letters that make a word come from the language packs (keys
+# report.stopwords and report.letters; see ws-lang): English, plus Spanish with `ws-lang es`.
+STOP = set(lang_pack("report.stopwords", " ").split())
+WORD = re.compile("[" + (lang_pack("report.letters", "") or "a-z") + "]+")
+
+
+def conf() -> dict:
+    c = {"recall_repo": "@WINHOME@/source/repos/recall",
+         "recall_log": "@WINHOME@/AppData/Local/recall/shadow.log",
+         "mempalace_dir": "@WINHOME@/.mempalace"}
+    f = HOME / ".config/ws-report.conf"
+    if f.exists():
+        for l in f.read_text(encoding="utf-8").splitlines():
+            if "=" in l and not l.strip().startswith("#"):
+                k, v = l.split("=", 1); c[k.strip()] = v.strip()
+    return c
+
+
+def telemetry():
+    """ws-telemetry as a module (prices, turns, traces, estimation): a single source of truth."""
+    loader = importlib.machinery.SourceFileLoader("wst", str(BIN / "ws-telemetry"))
+    spec = importlib.util.spec_from_loader("wst", loader)
+    m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+    return m
+
+
+def redact(t: str) -> str:
+    try:
+        return subprocess.run([str(BIN / "ws-redact")], input=t, capture_output=True, text=True, timeout=10).stdout  # nosec B603
+    except (OSError, subprocess.SubprocessError):
+        return t
+
+
+def local(ts: str | None):
+    try:
+        return dt.datetime.fromisoformat((ts or "").replace("Z", "+00:00")).astimezone()
+    except ValueError:
+        return None
+
+
+# ---- transcripts: normalized prompts and subagents (cached per file) -----------------------------------
+def normalize_prompt(t: str) -> str:
+    t = re.sub(r"```.*?```", " ", t, flags=re.S)
+    t = re.sub(r"https?://\S+|[\w.-]*[/\\][\w./\\-]+|\b\d[\d.,:]*\b|[`\"'«»()\[\]{}<>]", " ", t.lower())
+    words = [p for p in WORD.findall(t) if p not in STOP]
+    return " ".join(words[:6])
+
+
+def extract(f: Path) -> dict:
+    sub = "/subagents/" in str(f)
+    prompts, agents, commands = [], [], []
+    with open(f, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            ts = o.get("timestamp"); proj = re.split(r"[\\/]", (o.get("cwd") or "").rstrip("\\/"))[-1] or "?"
+            m = o.get("message") or {}
+            c = m.get("content")
+            if o.get("type") == "user" and not sub and not o.get("isMeta"):
+                text = c if isinstance(c, str) else " ".join(b.get("text", "") for b in c or [] if isinstance(b, dict) and b.get("type") == "text")
+                if not text or text.startswith("<local-command") or "tool_result" in json.dumps(c)[:200]:
+                    continue
+                cm = re.search(r"<command-name>(/[\w:-]+)</command-name>", text) or re.match(r"\s*(/[\w:-]+)", text)
+                if cm:
+                    commands.append([ts, cm.group(1)]); continue
+                if text.lstrip().startswith("<"):
+                    continue
+                n = normalize_prompt(text)
+                if len(n.split()) >= 3:
+                    prompts.append([ts, proj, n])
+            elif o.get("type") == "assistant":
+                for b in c or []:
+                    if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") in ("Task", "Agent"):
+                        i = b.get("input") or {}
+                        agents.append([ts, proj, i.get("subagent_type") or "general-purpose", i.get("model") or "", m.get("model") or ""])
+    return {"prompts": prompts, "agents": agents, "commands": commands}
+
+
+def transcripts() -> dict:
+    CACHE.mkdir(parents=True, exist_ok=True)
+    total = {"prompts": [], "agents": [], "commands": []}
+    for f in glob.glob(str(CLAUDE / "projects/**/*.jsonl"), recursive=True):
+        p = Path(f)
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        key = hashlib.sha1(f.encode(), usedforsecurity=False).hexdigest()
+        c = CACHE / f"{key}.json"; sig = f"i2:{st.st_mtime_ns}:{st.st_size}:{lang_code()}"   # the language changes the normalized prompts
+        d = None
+        if c.exists():
+            try:
+                d = json.loads(c.read_text())
+                d = d["data"] if d.get("sig") == sig else None
+            except (ValueError, KeyError):
+                d = None
+        if d is None:
+            d = extract(p); c.write_text(json.dumps({"sig": sig, "data": d}))
+        for k in total:
+            total[k] += d[k]
+    return total
+
+
+# ---- MemPalace and recall --------------------------------------------------------------------------
+def mempalace(c: dict, since: dt.date) -> dict | None:
+    d = Path(c["mempalace_dir"])
+    if not d.exists():
+        return None
+    r = {"diary": Counter(), "by_day": defaultdict(Counter), "hub": Counter(), "palace_mb": None}
+    hook = d / "hook_state/hook.log"
+    if hook.exists():
+        # The log only carries the time ([HH:MM:SS]). The day is rebuilt by counting day changes (the time goes back)
+        # backwards from the file's modification date. It is approximate: a day with no activity goes unnoticed.
+        lines = open(hook, encoding="utf-8", errors="replace").read().splitlines()
+        jumps, prev, marks = 0, None, []
+        for l in lines:
+            m = re.match(r"\[(\d{2}):(\d{2}):(\d{2})\]", l)
+            if m:
+                secs = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+                if prev is not None and secs < prev - 60:
+                    jumps += 1
+                prev = secs
+            marks.append(jumps)
+        last = dt.date.fromtimestamp(hook.stat().st_mtime)
+        r["dates_approx"] = True
+        for l, s in zip(lines, marks):
+            date = re.search(r"\d{4}-\d{2}-\d{2}", l)
+            day = date.group(0) if date else (last - dt.timedelta(days=jumps - s)).isoformat()
+            if day < since.isoformat():
+                continue
+            for pattern, k in ((r"Diary checkpoint (saved|sent|forwarded)", "saved"), (r"Diary checkpoint failed|did not report back", "failed"),
+                              (r"Save marker advanced without diary", "no_diary"), (r"\bmin(e|ing)\b", "mined")):
+                if re.search(pattern, l, re.I):
+                    r["diary"][k] += 1; r["by_day"][day][k] += 1
+    for hl in d.glob("server/*/hub.log"):
+        for l in open(hl, encoding="utf-8", errors="replace"):
+            if "listening on" in l:
+                r["hub"]["starts"] += 1
+            if re.search(r"CUBLAS failure|ONNXRuntimeError|Filtered search failed", l):
+                r["hub"]["embedding_errors"] += 1
+    sq = d / "palace/chroma.sqlite3"
+    if sq.exists():
+        r["palace_mb"] = round(sq.stat().st_size / 1048576)
+    r["by_day"] = {k: dict(v) for k, v in sorted(r["by_day"].items())[-14:]}
+    r["diary"] = dict(r["diary"]); r["hub"] = dict(r["hub"])
+    return r
+
+
+def recall(c: dict, since: dt.date) -> dict | None:
+    rep = Path(c["recall_repo"]) / "tools/shadow_report.py"
+    if not rep.exists() or not Path(c["recall_log"]).exists():
+        return None
+    try:
+        out = subprocess.run([sys.executable, "-I", str(rep), "--log", c["recall_log"], "--since", since.isoformat()],  # nosec B603
+                             capture_output=True, text=True, timeout=120).stdout
+        return json.loads(out)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+NOISE = ("session being continued", "request interrupted", "caveat messages below")
+
+# ---- machine resources, tokens, learning and ideas ------------------------------------------------------
+def resources(wst, since: dt.date) -> dict | None:
+    """CPU, RAM, disk operations and MB read/written by the Claude processes, per day and per project.
+    Comes from the per-minute samples of ws-telemetry (raw/resources-YYYY-MM-DD.jsonl); the counters are cumulative
+    per process, so the difference between the first and the last sample of each process in the day is added up."""
+    raw = getattr(wst, "RAW", None)
+    if not raw or not Path(raw).is_dir():
+        return None
+    days, proj, samples = [], defaultdict(lambda: {"cpu_s": 0.0, "secs": 0.0, "ram": 0, "ops": 0, "read": 0, "written": 0}), 0
+    for day, f in wst._resource_files():
+        if day < since.isoformat():
+            continue
+        by_pid = defaultdict(list)
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    r = wst.normalize(json.loads(line))
+                    by_pid[r["pid"]].append(r)
+                except (ValueError, KeyError, TypeError):
+                    continue
+        t = {"cpu_s": 0.0, "ops": 0, "read": 0, "written": 0}
+        ram_min = defaultdict(int); ts = []
+        for rs in by_pid.values():
+            rs.sort(key=lambda r: r["ts"]); samples += len(rs)
+            a = proj[rs[-1].get("project") or "?"]
+            a["ram"] = max(a["ram"], max(r.get("rss_kb", 0) for r in rs))
+            for r in rs:
+                ram_min[int(r["ts"] // 60)] += r.get("rss_kb", 0); ts.append(r["ts"])
+            if len(rs) > 1:
+                cpu = max(0.0, rs[-1]["cpu_s"] - rs[0]["cpu_s"]); t["cpu_s"] += cpu; a["cpu_s"] += cpu; a["secs"] += rs[-1]["ts"] - rs[0]["ts"]
+                for k in ("ops", "read", "written"):
+                    v = max(0, rs[-1].get(k, 0) - rs[0].get(k, 0)); t[k] += v; a[k] += v
+        secs = (max(ts) - min(ts)) if len(ts) > 1 else 0
+        days.append({"day": day, "processes": len(by_pid), "cpu_min": round(t["cpu_s"] / 60, 1),
+                     "cpu_pct": round(100 * t["cpu_s"] / secs, 1) if secs else 0,
+                     "ram_peak_mb": round(max(ram_min.values(), default=0) / 1024),
+                     "iops": round(t["ops"] / secs, 1) if secs else 0,
+                     "read_mb": round(t["read"] / 1e6, 1), "written_mb": round(t["written"] / 1e6, 1)})
+    if not days:
+        return None
+    return {"days": days, "samples": samples,
+            "projects": sorted(({"project": k, "cpu_min": round(v["cpu_s"] / 60, 1), "cpu_pct": round(100 * v["cpu_s"] / v["secs"], 1) if v["secs"] else 0,
+                                  "ram_mb": round(v["ram"] / 1024), "iops": round(v["ops"] / v["secs"], 1) if v["secs"] else 0,
+                                  "read_mb": round(v["read"] / 1e6, 1), "written_mb": round(v["written"] / 1e6, 1)}
+                                 for k, v in proj.items()), key=lambda x: -x["cpu_min"])[:10]}
+
+
+def tokens(turns: list[dict]) -> dict:
+    """Tokens by type and your words and Claude's in the period (counts only, never the text)."""
+    t = Counter(); pp, rp = [], []
+    for x in turns:
+        for m in x["models"].values():
+            for k in ("in", "out", "cw", "cr", "think"):
+                t[k] += m.get(k, 0)
+        if not x.get("subagent") and not x.get("auto"):
+            pp.append(x.get("prompt_words") or 0)
+            if x.get("resp_words"):
+                rp.append(x["resp_words"])
+    n = len(pp) or 1; ent = t["in"] + t["cw"] + t["cr"]
+    return {"new_input": t["in"], "cache_written": t["cw"], "cache_read": t["cr"], "output": t["out"], "reasoning": t["think"],
+            "total": ent + t["out"], "cache_pct": round(100 * t["cr"] / ent, 1) if ent else 0,
+            "reasoning_pct": round(100 * t["think"] / t["out"], 1) if t["out"] else 0, "per_turn": round((ent + t["out"]) / n),
+            "your_words": sum(pp), "claude_words": sum(rp),
+            "prompt_median": round(statistics.median(pp)) if pp else 0, "response_median": round(statistics.median(rp)) if rp else 0,
+            "claude_words_per_yours": round(sum(rp) / sum(pp), 1) if sum(pp) else 0}
+
+
+def estimate_base(turns: list[dict], projects: list[dict], rec: dict | None) -> list[dict]:
+    """Real data per project to estimate future work: active hours, turns, tokens, words, cost, lines,
+    commits and CPU, plus the ratios that serve as a unit (per active hour and per 100 lines added)."""
+    ag = defaultdict(lambda: {"tokens": 0, "output": 0, "yours": 0, "claude": 0})
+    for t in turns:
+        a = ag[t.get("project") or "?"]
+        for m in t["models"].values():
+            a["tokens"] += m.get("in", 0) + m.get("cw", 0) + m.get("cr", 0) + m.get("out", 0); a["output"] += m.get("out", 0)
+        if not t.get("subagent") and not t.get("auto"):
+            a["yours"] += t.get("prompt_words") or 0; a["claude"] += t.get("resp_words") or 0
+    cpu = {x["project"]: x for x in (rec or {}).get("projects", [])}
+    out = []
+    for p in projects:
+        a, h, lin = ag[p["key"]], p.get("active_hours") or 0, p.get("lines_added") or 0
+        out.append({"project": p["key"], "active_hours": h, "turns": p["turns"], "cost": p["cost"], "tokens": a["tokens"], "output_tokens": a["output"],
+                    "your_words": a["yours"], "claude_words": a["claude"], "lines_added": lin, "commits": p.get("commits") or 0,
+                    "cpu_min": (cpu.get(p["key"]) or {}).get("cpu_min"), "ram_mb": (cpu.get(p["key"]) or {}).get("ram_mb"),
+                    "cost_per_hour": round(p["cost"] / h, 2) if h else None, "turns_per_hour": round(p["turns"] / h, 1) if h else None,
+                    "output_tokens_per_hour": round(a["output"] / h) if h else None, "your_words_per_hour": round(a["yours"] / h) if h else None,
+                    "cost_per_100_lines": round(100 * p["cost"] / lin, 2) if lin else None})
+    return out
+
+
+def learning(since: dt.date) -> dict:
+    """What Claude already keeps about you and what you have tailored: memories by type (and the new ones in the
+    period), slash commands, skills, agents and rules. Only names, type and date: memory contents are not copied."""
+    base = Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude")
+    mem, kinds = [], Counter()
+    for f in base.glob("projects/*/memory/*.md"):
+        if f.name == "MEMORY.md":
+            continue
+        try:
+            head = f.read_text(encoding="utf-8", errors="replace")[:1500]
+            date = dt.date.fromtimestamp(f.stat().st_mtime)
+        except OSError:
+            continue
+        kind = (re.search(r"^\s*type:\s*(\w+)", head, re.M) or [None, "untyped"])[1]
+        name = (re.search(r"^name:\s*(.+)$", head, re.M) or [None, f.stem])[1].strip()
+        kinds[kind] += 1
+        mem.append({"name": name[:60], "type": kind, "date": date.isoformat(), "new": date >= since})
+
+    def names(pattern: str) -> list[str]:
+        return sorted({(f.parent.name if f.name == "SKILL.md" else f.stem) for f in base.glob(pattern)})
+
+    rules = base / "CLAUDE.md"
+    cmds, skills, agents = names("commands/**/*.md"), names("skills/*/SKILL.md"), names("agents/*.md")
+    return {"memories": len(mem), "new_memories": sum(m["new"] for m in mem), "by_type": dict(kinds.most_common()),
+            "recent": sorted(mem, key=lambda m: m["date"], reverse=True)[:12],
+            "own_commands": cmds, "own_skills": skills, "own_agents": agents,
+            "rules_lines": len(rules.read_text(encoding="utf-8", errors="replace").splitlines()) if rules.is_file() else 0}
+
+
+def ideas(d: dict) -> list[dict]:
+    """What to improve, create and watch, derived from the metrics with fixed rules (no AI): each idea carries its evidence."""
+    out = []
+
+    def idea(kind: str, title: str, evidence: str) -> None:
+        out.append({"type": kind, "title": title, "evidence": evidence})
+
+    u, tk, te, ap = d["usage"], d.get("tokens") or {}, d.get("trend") or {}, d.get("learning") or {}
+    a, b = te.get("current") or {}, te.get("previous") or {}
+    for r in d["recurring"][:5]:
+        idea("create", f"Slash command or skill for “{r['phrase']}”", f"you asked for it {r['times']} times in {r['projects']} project(s); ws-learn commands builds it")
+    if b.get("cost") and a.get("cost", 0) > 1.3 * b["cost"]:
+        idea("watch", "This week's cost went up", f"${a['cost']:,.2f} in 7 days versus ${b['cost']:,.2f} in the previous 7 (+{100 * (a['cost'] - b['cost']) / b['cost']:.0f} %)")
+    if a.get("sub_pct", 0) >= 40:
+        idea("improve", "Subagents weigh heavily on the cost", f"{a['sub_pct']} % of the cost of the last 7 days; check which ones can run on a smaller model")
+    costly = [m for m in d["models"] if m["pct"] >= 85]
+    if costly:
+        idea("improve", f"Almost everything runs on {costly[0]['model']}", f"{costly[0]['pct']} % of the cost; routing can send mechanical work to a smaller model")
+    if tk and tk["cache_pct"] < 90:
+        idea("improve", "Little input from cache", f"{tk['cache_pct']} % (over 95 % is normal); short sessions or context that changes a lot")
+    if u["turn_p90_min"] >= 10:
+        idea("improve", "One in ten turns is very long", f"p90 of {u['turn_p90_min']} min; split those tasks or send them to the background")
+    for h in d["tools"]:
+        if h.get("uses", 0) >= 20 and h.get("errors", 0) / h["uses"] >= 0.15:
+            idea("improve", f"{h.get('name')} fails often", f"{h['errors']} of {h['uses']} calls with an error ({100 * h['errors'] / h['uses']:.0f} %)")
+    ag = d["agents"]
+    if ag and ag[0]["type"] == "general-purpose" and ag[0]["uses"] >= 20:
+        idea("create", "A tailored agent for what general-purpose does today", f"{ag[0]['uses']} uses of the generic agent")
+    used = {x.get("name") for x in d.get("skills") or []}
+    unused = [x for x in ap.get("own_skills", []) if x not in used]
+    if ap.get("own_skills") and len(unused) >= 3 and d.get("skills"):
+        idea("watch", "Installed skills you did not use", f"{len(unused)} of {len(ap['own_skills'])} unused in the period: " + ", ".join(unused[:6]))
+    if ap and not ap.get("new_memories"):
+        idea("improve", "Claude saved nothing new about you in the period", f"{ap.get('memories', 0)} memories in total; run ws-learn facts")
+    rt = d.get("routing") or {}
+    resp = rt.get("accepted", 0) + rt.get("rejected", 0)
+    if resp >= 10 and rt.get("accepted", 0) / resp < 0.5:
+        idea("improve", "You reject most routing suggestions", f"{rt.get('accepted', 0)} accepted out of {resp}; adjust the rules you reject most")
+    rc = d.get("resources")
+    if rc and max(x["ram_peak_mb"] for x in rc["days"]) >= 8000:
+        idea("watch", "High Claude memory peak", f"{max(x['ram_peak_mb'] for x in rc['days']):,} MB adding up all processes; close idle tabs")
+    if u["wait_min"] >= 30:
+        idea("improve", "You spend time approving permissions", f"{u['wait_min']} min of waiting; add to allow the read-only things you approve most")
+    return out
+
+
+# ---- calculation -------------------------------------------------------------------------------------
+def compute(days: int) -> dict:
+    wst = telemetry(); table = wst.prices()
+    today = dt.date.today(); since = today - dt.timedelta(days=days)
+    turns = [t for t in wst.all_turns() if t.get("start") and wst.local_day(t["start"]) >= since.isoformat()] \
+        if hasattr(wst, "local_day") else [t for t in wst.all_turns() if (t.get("start") or "")[:10] >= since.isoformat()]
+    tr = wst.traces(since)
+    main_turns = [t for t in turns if not t.get("subagent") and not t.get("auto")]
+    cost = lambda t: sum(wst.cost(m, k, table) for k, m in t["models"].items())  # noqa: E731
+    # Pattern: hour × day of the week (turns), turn duration, turns per session
+    hourmap = [[0] * 24 for _ in range(7)]
+    durs, by_session = [], Counter()
+    for t in main_turns:
+        a, b = local(t["start"]), local(t.get("end"))
+        if a:
+            hourmap[a.weekday()][a.hour] += 1
+        if a and b:
+            durs.append(max(0, (b - a).total_seconds()))
+        by_session[t["session"]] += 1
+    projects = wst.estimate(turns, tr, "project", since)[:12]
+    mix = Counter()
+    for t in turns:
+        for k, m in t["models"].items():
+            mix[k] += wst.cost(m, k, table)
+    total = sum(cost(t) for t in turns)
+    routing = Counter(r.get("decision") for r in wst._events("routing", days)) if hasattr(wst, "_events") else Counter()
+    det = wst.tool_detail(tr, turns) if tr else None
+    # Transcripts: agents, recurring prompts, commands
+    tx = transcripts()
+    within = lambda ts: (local(ts) or dt.datetime.min.replace(tzinfo=dt.timezone.utc)).date() >= since  # noqa: E731
+    ag = [a for a in tx["agents"] if within(a[0])]
+    ag_type = Counter(a[2] for a in ag)
+    ag_proj = defaultdict(Counter)
+    for a in ag:
+        ag_proj[a[2]][a[1]] += 1
+    ag_model = Counter((a[2], a[3] or "inherited") for a in ag)
+    ag_dur = defaultdict(list)
+    for t in tr:
+        if t.get("type") == "subagent" and t.get("phase") == "end" and t.get("dur_ms"):
+            ag_dur[t.get("agent") or "?"].append(t["dur_ms"] / 60000)
+    # Drop what you did not write: the automatic summary when a session is continued and the interruption notice.
+    pr = [p for p in tx["prompts"] if within(p[0]) and not p[2].startswith(NOISE)]
+    phrases = Counter(p[2] for p in pr)
+    recurring = [{"phrase": redact(f).strip(), "times": n, "projects": len({p[1] for p in pr if p[2] == f})}
+                   for f, n in phrases.most_common(40) if n >= 3][:20]
+    cmds = Counter(c[1] for c in tx["commands"] if within(c[0]))
+    c = conf()
+    d = {
+        "generated": dt.datetime.now().strftime("%Y-%m-%d %H:%M"), "days": days, "since": since.isoformat(),
+        "usage": {"cost": round(total, 2), "turns": len(main_turns), "sessions": len(by_session),
+                "active_hours": wst._hours([(wst._ts(t["start"]), wst._ts(t.get("end") or t["start"])) for t in main_turns]),
+                "turn_med_min": round(statistics.median(durs) / 60, 1) if durs else 0,
+                "turn_p90_min": round(sorted(durs)[int(len(durs) * 0.9)] / 60, 1) if durs else 0,
+                "turns_per_session": round(statistics.median(by_session.values()), 1) if by_session else 0,
+                "wait_min": det["wait"]["total_min"] if det else 0},
+        "map": hourmap,
+        "projects": [{k: p[k] for k in ("key", "cost", "active_hours", "turns", "model", "lines_added", "commits")} for p in projects],
+        "models": [{"model": k, "cost": round(v, 2), "pct": round(100 * v / total) if total else 0} for k, v in mix.most_common()],
+        "routing": dict(routing),
+        "agents": [{"type": k, "uses": n, "projects": ", ".join(p for p, _ in ag_proj[k].most_common(3)),
+                     "model": ", ".join(sorted({m for (t, m) in ag_model if t == k})),
+                     "min_median": round(statistics.median(ag_dur[k]), 1) if ag_dur.get(k) else None} for k, n in ag_type.most_common(15)],
+        "tools": (det or {}).get("tools", [])[:12], "bash": (det or {}).get("bash_categories", []),
+        "mcp": (det or {}).get("mcp", []), "skills": (det or {}).get("skills", []), "errors": (det or {}).get("errors_by_type", []),
+        "commands": [{"command": k, "times": n} for k, n in cmds.most_common(15)],
+        "recurring": recurring,
+        "mempalace": mempalace(c, since), "recall": recall(c, since),
+    }
+    d["tokens"] = tokens(turns)
+    d["resources"] = resources(wst, since)
+    d["estimate_base"] = estimate_base(turns, projects, d["resources"])
+    d["trend"] = wst.trends(wst.all_turns()) if hasattr(wst, "trends") else None
+    d["ratios"] = wst.ratios(wst.all_turns(), days) if hasattr(wst, "ratios") else None
+    d["otel"] = wst.otel_summary(days) if hasattr(wst, "otel_summary") else None
+    d["learning"] = learning(since)
+    d["ideas"] = ideas(d)
+    return d
+
+
+# ---- Claude: findings and suggestions -------------------------------------------------------------------
+def claude_text(prompt: str, inp: str, tools: str = "", model: str = "sonnet") -> str:
+    if not shutil.which("claude"):
+        return "(Claude is not in PATH)"
+    # No TMUX_PANE: the tab's hooks (model routing, state) must not treat this call as a message of yours.
+    args = ["env", "-u", "TMUX_PANE", "-u", "TMUX", "claude", "-p", "--model", model, "--no-session-persistence",
+            *(["--allowedTools", tools] if tools else ["--tools", ""]),
+            "--append-system-prompt", f"Answer in {lang_name()}, directly, with short bullets. Do not make up numbers: use only the ones in the JSON.",
+            prompt]
+    try:
+        r = subprocess.run(args, input=inp, capture_output=True, text=True, timeout=300)  # nosec B603
+        out = r.stdout.strip()
+        if "operation blocked by hook" in out[:300] or out.startswith("UserPromptSubmit"):
+            return "(Claude did not answer: a hook blocked the query. Run ws-report --ai again.)"
+        return out or f"(no answer: {r.stderr.strip()[:200]})"
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"(could not query Claude: {e})"
+
+
+def ai(d: dict, memory: bool) -> dict:
+    out = {}
+    out["findings"] = claude_text(
+        "You are the productivity analyst of an architect/tech lead who uses Claude Code daily. With the metrics JSON "
+        "(stdin) write: 1) 5 findings with numbers; 2) recurring prompts worth turning into slash commands, skills or "
+        "templates (propose a name and what they would do); 3) agents: which add value, which are superfluous and "
+        "which are missing; 4) models and routing: where to save without losing quality; 5) MemPalace and recall: what "
+        "to adjust (threshold, cleanup, what to save); 6) the 5 most valuable concrete actions for next week.",
+        json.dumps({k: v for k, v in d.items() if k not in ("map", "trend", "learning")} | {"learning": {k: v for k, v in (d.get("learning") or {}).items() if k != "recent"},
+                    "current_week": (d.get("trend") or {}).get("current"), "previous_week": (d.get("trend") or {}).get("previous")}, ensure_ascii=False))
+    if memory:
+        out["memory"] = claude_text(
+            "Use mempalace_status, mempalace_kg_stats and mempalace_graph_stats. Summarize: palace size, largest wings, "
+            "wings DUPLICATED by name (e.g. “x” and “wing_x”) with their drawers, rooms, graph facts and relations, and "
+            "recommend how to clean up and which structured facts are worth recording (preferences, decisions, projects).",
+            "", "mcp__mempalace__mempalace_status,mcp__mempalace__mempalace_kg_stats,mcp__mempalace__mempalace_graph_stats", "sonnet")
+    return out
+
+
+# ---- output -----------------------------------------------------------------------------------------
+def markdown(d: dict, x: dict) -> str:
+    u = d["usage"]
+    md = [f"# Report on working with Claude — last {d['days']} days (since {d['since']})", "",
+          f"_Generated {d['generated']} by `ws-report`. Cost = API equivalent._", "",
+          "| Cost | Turns | Sessions | Active hours | Median turn | p90 turn | Turns/session | Your wait to approve |",
+          "|---:|---:|---:|---:|---:|---:|---:|---:|",
+          f"| ${u['cost']:,.2f} | {u['turns']} | {u['sessions']} | {u['active_hours']} | {u['turn_med_min']} min | {u['turn_p90_min']} min | {u['turns_per_session']} | {u['wait_min']} min |", ""]
+    if x.get("findings"):
+        # Claude's headings go down two levels: “## 1) …” used to split the report into loose sections.
+        md += ["## Findings and suggestions (Claude)", "", re.sub(r"(?m)^(#{1,3})\s", lambda m: "#" * min(4, len(m.group(1)) + 2) + " ", x["findings"]), ""]
+    if d.get("ideas"):
+        labels = {"create": "Create", "improve": "Improve", "watch": "Watch"}
+        md += ["## What to improve and what to create", "", "| Type | What | Evidence |", "|---|---|---|"]
+        md += [f"| {labels.get(i['type'], i['type'])} | {i['title']} | {i['evidence']} |" for i in d["ideas"]] + [""]
+    te = d.get("trend")
+    if te and te.get("current"):
+        a, b = te["current"], te["previous"]
+
+        def change(x, y):
+            return "—" if not y else f"{'▲' if x > y else '▼' if x < y else '＝'} {abs(100 * (x - y) / y):.0f} %"
+        rows = [("Cost", f"${a['cost']:,.2f}", f"${b['cost']:,.2f}", change(a["cost"], b["cost"])),
+                 ("Your turns", a["turns"], b["turns"], change(a["turns"], b["turns"])),
+                 ("Sessions", a["sessions"], b["sessions"], change(a["sessions"], b["sessions"])),
+                 ("Input from cache", f"{a['cache_pct']} %", f"{b['cache_pct']} %", change(a["cache_pct"], b["cache_pct"])),
+                 ("Median turn", f"{a['dur_p50']} s", f"{b['dur_p50']} s", change(a["dur_p50"], b["dur_p50"])),
+                 ("p90 turn", f"{a['dur_p90']} s", f"{b['dur_p90']} s", change(a["dur_p90"], b["dur_p90"])),
+                 ("Cost in subagents", f"{a['sub_pct']} %", f"{b['sub_pct']} %", change(a["sub_pct"], b["sub_pct"])),
+                 ("Cost in automatic work (no message from you)", f"{a.get('auto_pct', 0)} %", f"{b.get('auto_pct', 0)} %", change(a.get("auto_pct", 0), b.get("auto_pct", 0)))]
+        md += ["## Last 7 days versus the previous 7", "", "| Metric | Now | Before | Change |", "|---|---:|---:|---:|"]
+        md += [f"| {m} | {x} | {y} | {c} |" for m, x, y, c in rows]
+        md += ["", "## Weekly trend", "", "| Week (Monday) | Cost | Turns | Sessions | Cache | Reasoning | Median turn | p90 turn |", "|---|---:|---:|---:|---:|---:|---:|---:|"]
+        md += [f"| {f['start']}{' (in progress)' if f.get('partial') else ''} | ${f['cost']:,.2f} | {f['turns']} | {f['sessions']} | {f['cache_pct']} % | {f['reasoning_pct']} % | {f['dur_p50']} s | {f['dur_p90']} s |"
+               for f in te["weeks"] if f["turns"]] + [""]
+    tk = d.get("tokens")
+    if tk:
+        md += ["## Tokens and words", "", "| New input | Cache written | Cache read | Output | Reasoning | Total | Per turn |", "|---:|---:|---:|---:|---:|---:|---:|",
+               f"| {tk['new_input']:,} | {tk['cache_written']:,} | {tk['cache_read']:,} | {tk['output']:,} | {tk['reasoning']:,} ({tk['reasoning_pct']} % of the output) | {tk['total']:,} | {tk['per_turn']:,} |",
+               "", "| Your words | Claude's words | Median prompt | Median answer | Claude's words per word of yours |", "|---:|---:|---:|---:|---:|",
+               f"| {tk['your_words']:,} | {tk['claude_words']:,} | {tk['prompt_median']} | {tk['response_median']} | {tk['claude_words_per_yours']} |", ""]
+    rc = d.get("resources")
+    if rc:
+        md += ["## Machine resources (Claude processes)", "", "| Day | Processes | CPU (min) | Average CPU | Peak RAM | Disk operations/s | Read | Written |", "|---|---:|---:|---:|---:|---:|---:|---:|"]
+        md += [f"| {x['day']} | {x['processes']} | {x['cpu_min']} | {x['cpu_pct']} % | {x['ram_peak_mb']:,} MB | {x['iops']} | {x['read_mb']:,} MB | {x['written_mb']:,} MB |" for x in rc["days"][-14:]]
+        md += ["", "| Project | CPU (min) | Average CPU | Max RAM of one process | Disk operations/s | Read | Written |", "|---|---:|---:|---:|---:|---:|---:|"]
+        md += [f"| {x['project']} | {x['cpu_min']} | {x['cpu_pct']} % | {x['ram_mb']:,} MB | {x['iops']} | {x['read_mb']:,} MB | {x['written_mb']:,} MB |" for x in rc["projects"]] + [""]
+    md += ["## Projects", "", "| Project | Cost | Hours | Turns | Model | +lines | Commits |", "|---|---:|---:|---:|---|---:|---:|"]
+    md += [f"| {p['key']} | ${p['cost']:,.2f} | {p['active_hours']} | {p['turns']} | {p['model']} | {p['lines_added']} | {p['commits']} |" for p in d["projects"]]
+    md += ["", "## Models", "", *[f"- {m['model']}: ${m['cost']:,.2f} ({m['pct']} %)" for m in d["models"]]]
+    if d["routing"]:
+        md += ["", "## Routing", "", ", ".join(f"{k}: {v}" for k, v in d["routing"].items())]
+    md += ["", "## Agents", "", "| Agent | Uses | Projects | Requested model | Min (median) |", "|---|---:|---|---|---:|"]
+    md += [f"| {a['type']} | {a['uses']} | {a['projects']} | {a['model']} | {a['min_median'] if a['min_median'] is not None else '—'} |" for a in d["agents"]] or ["| (no subagents) | | | | |"]
+    md += ["", "## Recurring prompts (command or skill candidates)", "", "| Starts with | Times | Projects |", "|---|---:|---:|"]
+    md += [f"| {r['phrase']} | {r['times']} | {r['projects']} |" for r in d["recurring"]] or ["| (none with 3 or more) | | |"]
+    md += ["", "## Most used slash commands", "", ", ".join(f"`{c['command']}` {c['times']}" for c in d["commands"]) or "—"]
+    rz = d.get("ratios")
+    if rz and rz.get("ratios"):
+        md += ["", "## Estimation ratios (unit of work → text, model, cost and machine)", "", "| Group | Ratio | Value | Unit | Computed over |", "|---|---|---:|---|---|"]
+        md += [f"| {x['group']} | {x['name']} | {x['value']:,} | {x['unit']} | {x['base']} |" for x in rz["ratios"]]
+    ot = d.get("otel")
+    if ot and ot.get("api"):
+        a, c = ot["api"], ot.get("code") or {}
+        s = lambda x: "—" if x is None else (f"{x / 1000:.1f} s" if x >= 1000 else f"{x:.0f} ms")  # noqa: E731
+        md += ["", "## API, permissions and active time (OpenTelemetry, local collector)", "",
+               "| Calls | Typical duration | p95 | First token | Errors | Out of retries | Cost |", "|---:|---:|---:|---:|---:|---:|---:|",
+               f"| {a['calls']:,} | {s(a['med_ms'])} | {s(a['p95_ms'])} | {s(a.get('ttft_med_ms'))} | {a['errors']} ({a['error_pct']} %) | {a['exhausted']} | ${a['cost']:,.2f} |",
+               "", f"Code according to Claude Code: +{c.get('lines_added', 0):,} / −{c.get('lines_removed', 0):,} lines · {c.get('commits', 0)} commits · {c.get('prs', 0)} PR. "
+               f"Active time: yours {sum(x['user_min'] for x in ot.get('active', [])) / 60:.1f} h, Claude's {sum(x['claude_min'] for x in ot.get('active', [])) / 60:.1f} h."]
+        if ot.get("errors"):
+            md += ["", "API errors by code: " + ", ".join(f"{e['code']}: {e['n']}" for e in ot["errors"])]
+        if ot.get("permissions"):
+            md += ["", "| Who decides the permission | Accepts | Rejects |", "|---|---:|---:|"] + [f"| {p['source']} | {p['accepts']} | {p['rejects']} |" for p in ot["permissions"]]
+        if ot.get("hooks"):
+            md += ["", "| Hook | Times | Median | p95 | Total |", "|---|---:|---:|---:|---:|"] + [f"| {h['event']} | {h['n']} | {s(h['med_ms'])} | {s(h['p95_ms'])} | {h['total_s']} s |" for h in ot["hooks"]]
+        if ot.get("subagents"):
+            md += ["", "| Subagent | Times | Typical duration | Tokens | Tools |", "|---|---:|---:|---:|---:|"] + [f"| {x['type']} | {x['n']} | {s(x['med_ms'])} | {x['tokens']:,} | {x['tools']} |" for x in ot["subagents"]]
+    eb = d.get("estimate_base")
+    if eb:
+        v = lambda x, f="{:,}": "—" if x is None else f.format(x)  # noqa: E731
+        md += ["", "## Estimation baseline (real data per project)", "",
+               "| Project | Active hours | Turns | Tokens | Your words | Claude's words | +lines | Commits | CPU (min) | Cost | Cost/hour | Turns/hour | Output tokens/hour | Cost per 100 lines |",
+               "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+        md += [f"| {e['project']} | {e['active_hours']} | {e['turns']} | {e['tokens']:,} | {e['your_words']:,} | {e['claude_words']:,} | {e['lines_added']:,} | {e['commits']} | {v(e['cpu_min'])} | "
+               f"${e['cost']:,.2f} | {v(e['cost_per_hour'], '${:,.2f}')} | {v(e['turns_per_hour'])} | {v(e['output_tokens_per_hour'])} | {v(e['cost_per_100_lines'], '${:,.2f}')} |" for e in eb]
+    hs = d.get("tools") or []
+    if hs:
+        md += ["", "## Operations: tools", "", "| Tool | Uses | With error | Median | p95 | Minutes | Approx. cost |", "|---|---:|---:|---:|---:|---:|---:|"]
+        md += [f"| {h.get('name')} | {h.get('uses', 0)} | {h.get('errors', 0)} | {(h.get('med_ms') or 0) / 1000:.1f} s | {(h.get('p95_ms') or 0) / 1000:.1f} s | {h.get('total_min', 0)} | ${h.get('cost', 0):,.2f} |" for h in hs]
+    for title, key, name in (("Terminal operations by type", "bash", "category"), ("MCP servers", "mcp", "server"), ("Skills used", "skills", "name"), ("Errors by type", "errors", "type")):
+        rows = d.get(key) or []
+        if rows:
+            md += ["", f"## {title}", "", ", ".join(f"{f.get(name) or f.get('name') or f.get('category') or '?'}: {f.get('uses', f.get('n', f.get('min', '')))}" for f in rows[:15])]
+    ap = d.get("learning")
+    if ap:
+        md += ["", "## What Claude has learned about you and what you have tailored", "",
+               "| Memories | New in the period | By type | Own slash commands | Own skills | Own agents | Rules (lines of CLAUDE.md) |", "|---:|---:|---|---:|---:|---:|---:|",
+               f"| {ap['memories']} | {ap['new_memories']} | {', '.join(f'{k}: {v}' for k, v in ap['by_type'].items()) or '—'} | {len(ap['own_commands'])} | {len(ap['own_skills'])} | {len(ap['own_agents'])} | {ap['rules_lines']} |"]
+        if ap["recent"]:
+            md += ["", "| Recent memory | Type | Date |", "|---|---|---|"] + [f"| {m['name']} | {m['type']} | {m['date']} |" for m in ap["recent"]]
+        for t, k in (("Your own commands", "own_commands"), ("Your own agents", "own_agents")):
+            if ap[k]:
+                md += ["", f"{t}: " + ", ".join(f"`{x}`" for x in ap[k][:30])]
+    mp = d.get("mempalace")
+    if mp:
+        di, hu = mp["diary"], mp["hub"]
+        tot = di.get("saved", 0) + di.get("failed", 0)
+        md += ["", "## MemPalace", "", "| Diary saved | Diary failed | Failure | Mined | Hub starts | Embedding errors | Size |", "|---:|---:|---:|---:|---:|---:|---:|",
+               f"| {di.get('saved', 0):,} | {di.get('failed', 0):,} | {100 * di.get('failed', 0) / tot if tot else 0:.0f} % | {di.get('mined', 0):,} | {hu.get('starts', 0)} | {hu.get('embedding_errors', 0)} | {mp['palace_mb']:,} MB |"]
+        if mp.get("by_day"):
+            md += ["", "| Day" + (" (approximate)" if mp.get("dates_approx") else "") + " | Saved | Failed | Mined |", "|---|---:|---:|---:|"]
+            md += [f"| {k} | {v.get('saved', 0)} | {v.get('failed', 0)} | {v.get('mined', 0)} |" for k, v in mp["by_day"].items()]
+    if x.get("memory"):
+        md += ["", x["memory"]]
+    rc = d.get("recall")
+    if rc:
+        de, la, wi = rc.get("decisions") or {}, rc.get("latency_ms") or {}, rc.get("would_inject_at") or {}
+        md += ["", "## recall", "", "| Decision | Times |", "|---|---:|"] + [f"| {k} | {v:,} |" for k, v in de.items()]
+        md += ["", f"Hook latency: median {la.get('p50', '—')} ms, p95 {la.get('p95', '—')} ms. Searches: {rc.get('searched', 0):,}."]
+        if wi:
+            md += ["", "| Threshold | Would inject |", "|---:|---:|"] + [f"| {k} | {v:,} |" for k, v in wi.items() if 0.69 < float(k) < 0.81]
+    return "\n".join(md) + "\n"
+
+
+def _svg_bars(title: str, points: list[tuple[str, float]], fmt) -> str:
+    """SVG bars without libraries: one per period, with the value printed on top and in the title."""
+    if not points or not any(v for _, v in points):
+        return ""
+    W, H, mi, mb, mt = 720, 170, 8, 20, 16
+    bw = (W - mi) / len(points); mx = max(v for _, v in points) or 1
+    g = ""
+    for i, (e, v) in enumerate(points):
+        h = (H - mb - mt) * v / mx; x = mi + i * bw; y = H - mb - h
+        g += (f'<rect x="{x + 2:.1f}" y="{y:.1f}" width="{max(1, bw - 4):.1f}" height="{h:.1f}" rx="2" fill="var(--acc)"><title>{html.escape(e)}: {html.escape(fmt(v))}</title></rect>'
+              + (f'<text x="{x + bw / 2:.1f}" y="{y - 3:.1f}" text-anchor="middle">{html.escape(fmt(v))}</text>' if bw > 40 else "")
+              + (f'<text x="{x + bw / 2:.1f}" y="{H - 5}" text-anchor="middle">{html.escape(e)}</text>' if len(points) <= 16 or i % 3 == 0 else ""))
+    return f'<figure><figcaption>{html.escape(title)}</figcaption><svg viewBox="0 0 {W} {H}" width="100%" role="img" aria-label="{html.escape(title)}">{g}</svg></figure>'
+
+
+def charts(d: dict) -> str:
+    te, rc, out = d.get("trend") or {}, d.get("resources") or {}, []
+    weeks = [f for f in te.get("weeks", [])]
+    short = lambda s: s[8:10] + "/" + s[5:7]  # noqa: E731
+    out.append(_svg_bars("Cost per week (Monday to Sunday, local time)", [(short(f["start"]), f["cost"]) for f in weeks], lambda v: f"${v:,.0f}"))
+    out.append(_svg_bars("Turns per week", [(short(f["start"]), f["turns"]) for f in weeks], lambda v: f"{v:,.0f}"))
+    out.append(_svg_bars("p90 turn per week (seconds)", [(short(f["start"]), f["dur_p90"]) for f in weeks], lambda v: f"{v:,.0f} s"))
+    days = rc.get("days", [])[-30:]
+    out.append(_svg_bars("Peak RAM per day (MB, all Claude processes)", [(short(x["day"]), x["ram_peak_mb"]) for x in days], lambda v: f"{v:,.0f}"))
+    out.append(_svg_bars("CPU per day (processor minutes)", [(short(x["day"]), x["cpu_min"]) for x in days], lambda v: f"{v:,.0f}"))
+    out.append(_svg_bars("Disk operations per second, per day", [(short(x["day"]), x["iops"]) for x in days], lambda v: f"{v:,.0f}"))
+    out = [o for o in out if o]
+    return ("<h2>Charts</h2><div class='charts'>" + "".join(out) + "</div>") if out else ""
+
+
+def _md_inline(t: str) -> str:
+    """Minimal, safe inline Markdown: escapes everything and then applies bold, italics and code."""
+    t = html.escape(t)
+    t = re.sub(r"`([^`]+)`", r"<code>\1</code>", t)
+    t = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", t)
+    return re.sub(r"(?<![\w*])_([^_]+)_(?![\w*])", r"<i>\1</i>", t)
+
+
+def _is_num(c: str) -> bool:
+    return bool(re.fullmatch(r"[−+\-]?\$?[\d.,]+\s?(%|s|ms|min|h|MB|GB|×|k|M)?|—|[▲▼＝] ?[\d.,]+ ?%", c.strip()))
+
+
+def _md_html(text: str) -> str:
+    """Markdown → HTML for the report body: headings, tables (numbers right-aligned), lists and paragraphs."""
+    out, bullets = [], []
+
+    def close_list():
+        if bullets:
+            out.append("<ul>" + "".join(f"<li>{x}</li>" for x in bullets) + "</ul>")
+            bullets.clear()
+
+    for block in re.split(r"\n\s*\n", text.strip()):
+        lines = [x for x in block.splitlines() if x.strip()]
+        if not lines:
+            continue
+        if lines[0].lstrip().startswith("|") and len(lines) > 1:
+            close_list()
+            rows = [[c.strip() for c in x.strip().strip("|").split("|")] for x in lines if not re.match(r"^\s*\|[-:| ]+\|\s*$", x)]
+            head, body = rows[0], rows[1:]
+            num = [bool(body) and all(_is_num(f[i]) for f in body if i < len(f) and f[i]) for i in range(len(head))]
+            td = lambda f: "".join(f'<td class="{"n" if i < len(num) and num[i] else ""}">{_md_inline(c)}</td>' for i, c in enumerate(f))  # noqa: E731
+            out.append('<div class="table-wrap"><table><thead><tr>' + "".join(f'<th class="{"n" if num[i] else ""}">{_md_inline(c)}</th>' for i, c in enumerate(head))
+                       + "</tr></thead><tbody>" + "".join(f"<tr>{td(f)}</tr>" for f in body) + "</tbody></table></div>")
+            continue
+        for x in lines:
+            s = x.strip()
+            m = re.match(r"^(#{1,4})\s+(.*)$", s)
+            if m:
+                close_list()
+                n = min(4, len(m.group(1)) + 1)
+                out.append(f"<h{n}>{_md_inline(m.group(2))}</h{n}>")
+            elif re.match(r"^([-*•]|\d+[.)])\s+", s):
+                bullets.append(_md_inline(re.sub(r"^([-*•]|\d+[.)])\s+", "", s)))
+            else:
+                close_list()
+                out.append(f"<p>{_md_inline(s)}</p>")
+        close_list()
+    return "".join(out)
+
+
+def _hbars(title: str, rows: list[tuple[str, float]], fmt, note: str = "") -> str:
+    """Horizontal bars (HTML and CSS): one per category, sorted, with the value printed."""
+    rows = [(e, v) for e, v in rows if v]
+    if not rows:
+        return ""
+    mx = max(v for _, v in rows) or 1
+    body = "".join(f'<div class="bh"><span class="bh-l" title="{html.escape(str(e))}">{html.escape(str(e))}</span>'
+                     f'<span class="bh-t"><i style="width:{max(1.5, 100 * v / mx):.1f}%"></i></span><span class="bh-v">{html.escape(fmt(v))}</span></div>'
+                     for e, v in rows[:10])
+    return f'<figure><figcaption>{html.escape(title)}</figcaption>{body}{f"<small>{html.escape(note)}</small>" if note else ""}</figure>'
+
+
+def distribution(d: dict) -> str:
+    """Where the cost, the time and the errors go: by project, model, agent, tool and command type."""
+    usd = lambda v: f"${v:,.0f}"  # noqa: E731
+    n = lambda v: f"{v:,.0f}"     # noqa: E731
+    out = [
+        _hbars("Cost by project", [(p["key"], p["cost"]) for p in d.get("projects") or []], usd),
+        _hbars("Cost by model", [(m["model"].replace("claude-", ""), m["cost"]) for m in d.get("models") or []], usd),
+        _hbars("Most used subagents (times)", [(a["type"], a["uses"]) for a in d.get("agents") or []], n),
+        _hbars("Most used tools (times)", [(h.get("name"), h.get("uses", 0)) for h in d.get("tools") or []], n),
+        _hbars("Terminal time by command type (minutes)", [(b.get("name"), b.get("total_min", 0)) for b in d.get("bash") or []], n),
+        _hbars("Tool errors by type", [(e.get("type"), e.get("n", 0)) for e in d.get("errors") or []], n),
+        _hbars("Active hours by project", [(p["key"], p["active_hours"]) for p in d.get("projects") or []], lambda v: f"{v:,.1f} h"),
+        _hbars("Model routing decisions", sorted((d.get("routing") or {}).items(), key=lambda x: -x[1]), n,
+                  "same = you were already on the suggested model · muted = you asked not to be asked"),
+    ]
+    out = [o for o in out if o]
+    return ('<h2 class="sep" id="distribution">Where the cost and the time go</h2><div class="charts">' + "".join(out) + "</div>") if out else ""
+
+
+# Group of each detail section (by how its title starts) and order of the groups on the page.
+GROUPS = (("claude", "What Claude says", ("Findings and suggestions",)),
+          ("week", "This week and trend", ("Last 7 days", "Weekly trend")),
+          ("cost", "Projects, models and agents", ("Projects", "Models", "Routing", "Agents")),
+          ("estimate", "For estimating", ("Estimation ratios", "Estimation baseline", "Tokens and words")),
+          ("operation", "Operation", ("API, permissions", "Operations", "Terminal operations", "MCP servers", "Skills used", "Errors by type",
+                                      "Most used slash commands", "Recurring prompts")),
+          ("machine", "Machine", ("Machine resources",)),
+          ("memory", "Memory and learning", ("What Claude has learned", "MemPalace", "recall")))
+
+
+def html_doc(md_text: str, d: dict) -> str:
+    """Self-contained HTML of the report: key figures, ideas, hour map, charts and the detail by sections."""
+    u = d["usage"]
+    te = d.get("trend") or {}
+    a, b = te.get("current") or {}, te.get("previous") or {}
+
+    def change(x, y, up_is_bad=True):
+        if not y:
+            return ""
+        p = 100 * (x - y) / y
+        cls = "neutral" if abs(p) < 0.5 else ("bad" if (p > 0) == up_is_bad else "good")
+        return f'<span class="delta {cls}">{"▲" if p > 0 else "▼"} {abs(p):.0f} % versus the previous 7 days</span>'
+
+    tiles = [("Equivalent cost", f"${u['cost']:,.0f}", f"{d['days']} days · " + (f"${a['cost']:,.0f} this week" if a else "")),
+             ("Your turns", f"{u['turns']:,}", f"{u['sessions']} sessions · {u['turns_per_session']} per session"),
+             ("Active hours", f"{u['active_hours']:,.0f}", "with some turn running"),
+             ("Typical turn", f"{u['turn_med_min']} min", f"one in ten goes over {u['turn_p90_min']} min"),
+             ("Waiting for your approval", f"{u['wait_min']:,.0f} min", "in permission dialogs")]
+    if a:
+        tiles.append(("Cost outside your turns", f"{a.get('sub_pct', 0) + a.get('auto_pct', 0):.0f} %",
+                      f"subagents {a.get('sub_pct', 0)} % · automatic work {a.get('auto_pct', 0)} % (7 days)"))
+    if a and b:
+        tiles[0] = (tiles[0][0], tiles[0][1], change(a.get("cost", 0), b.get("cost", 0)) or tiles[0][2])
+    kpis = "".join(f'<div class="kpi"><span>{html.escape(t)}</span><b>{html.escape(v)}</b><small>{s}</small></div>' for t, v, s in tiles)
+
+    labels = {"create": "Create", "improve": "Improve", "watch": "Watch"}
+    ideas = "".join(f'<div class="idea {html.escape(i["type"])}"><span class="chip">{labels.get(i["type"], i["type"])}</span><b>{_md_inline(i["title"])}</b>'
+                    f'<small>{_md_inline(i["evidence"])}</small></div>' for i in d.get("ideas") or [])
+
+    days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    mx = max([max(f) for f in d["map"]] + [1])
+    cells = "".join(f"<tr><th>{days[i]}</th>" + "".join(
+        f'<td style="background:rgba(196,100,58,{(0.12 + 0.88 * v / mx) if v else 0:.2f})" title="{days[i]} {h}:00 · {v} turns"></td>' for h, v in enumerate(f)) + "</tr>"
+        for i, f in enumerate(d["map"]))
+
+    # The detail: the Markdown by sections, without the header (it goes in the cards) or the ideas table (it goes on top).
+    parts = re.split(r"(?m)^## ", md_text)
+    by_group: dict[str, list[str]] = {g[0]: [] for g in GROUPS}
+    by_group["other"] = []
+    for sec in parts[1:]:
+        title, _, body = sec.partition("\n")
+        title = title.strip()
+        if title.startswith("What to improve and what to create"):
+            continue
+        group = next((g[0] for g in GROUPS if title.startswith(g[2])), "other")
+        body_html = _md_html(body)
+        width = max((row.count("<th") for row in re.findall(r"<thead>.*?</thead>", body_html, re.S)), default=0)
+        css = " ".join(c for c in ("ai" if group == "claude" else "", "wide" if width > 5 or group == "claude" else "") if c)
+        by_group[group].append(f'<section class="{css}"><h2>{_md_inline(title)}</h2>{body_html}</section>')
+    names = {g[0]: g[1] for g in GROUPS} | {"other": "Other"}
+    order = [g for g in [*names] if by_group.get(g)]
+    detail = "".join(f'<h2 class="sep" id="{g}">{html.escape(names[g])}</h2><div class="grid">{"".join(by_group[g])}</div>' for g in order)
+    nav = [("summary", "Summary"), ("ideas", "What to improve"), ("hours", "When you work"), ("trends", "Trends"), ("distribution", "Where it goes"),
+           *[(g, names[g]) for g in order]]
+    nav_html = "".join(f'<a href="#{i}">{html.escape(t)}</a>' for i, t in nav)
+
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Report on working with Claude</title><style>
+:root{{--bg:#f6f5f1;--fg:#1f1e1b;--mut:#6b675f;--line:#e3e0d8;--acc:#c4643a;--panel:#fff;--ok:#3f7d4e;--warn:#b07b1f;--bad:#b3402e}}
+@media (prefers-color-scheme:dark){{:root{{--bg:#161513;--fg:#ece9e2;--mut:#a39e93;--line:#34322d;--acc:#e08a5c;--panel:#1f1e1b;--ok:#7cbf8b;--warn:#e0b45c;--bad:#e58a78}}}}
+*{{box-sizing:border-box}} body{{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 "Segoe UI",system-ui,sans-serif}}
+main{{max-width:1180px;margin:0 auto;padding:28px 20px 48px;display:flex;flex-direction:column;gap:22px}}
+header h1{{font-size:24px;margin:0 0 2px;font-weight:600}} header p{{margin:0;color:var(--mut);font-size:13px}}
+h2{{font-size:16px;margin:0 0 10px;font-weight:600}} h3{{font-size:14px;margin:14px 0 6px}} h4{{font-size:13px;margin:10px 0 4px;color:var(--mut)}}
+section,.block{{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;min-width:0}}
+section.ai{{border-left:4px solid var(--acc)}} section p{{margin:6px 0;max-width:80ch}} section ul{{margin:6px 0;padding-left:20px;max-width:80ch}} li{{margin:3px 0}}
+.kpis{{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}}
+.kpi{{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;min-width:0}}
+.kpi span{{color:var(--mut);font-size:12.5px;display:block}} .kpi b{{font-size:28px;font-weight:600;font-variant-numeric:tabular-nums;display:block;line-height:1.2}}
+.kpi small{{color:var(--mut);font-size:12px}}
+.delta.bad{{color:var(--warn)}} .delta.good{{color:var(--ok)}} .delta.neutral{{color:var(--mut)}}
+.ideas{{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:12px}}
+.idea{{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--mut);border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;gap:4px;min-width:0}}
+.idea.create{{border-left-color:var(--ok)}} .idea.improve{{border-left-color:var(--warn)}} .idea.watch{{border-left-color:var(--bad)}}
+.idea small{{color:var(--mut);font-size:12.5px;overflow-wrap:anywhere}} .chip{{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}}
+.table-wrap{{overflow-x:auto;margin:8px 0}} table{{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}}
+th,td{{border-bottom:1px solid var(--line);padding:6px 10px 6px 0;text-align:left;vertical-align:top}} th{{color:var(--mut);font-weight:500;font-size:12px;white-space:nowrap}}
+td.n,th.n{{text-align:right;white-space:nowrap}} tr:last-child td{{border-bottom:0}} code{{background:var(--line);border-radius:4px;padding:0 4px;font-size:12.5px}}
+.map{{table-layout:fixed}} .map th{{font-size:11px;padding:2px;text-align:center}} .map td{{height:18px;border:2px solid var(--panel);border-radius:4px;padding:0}}
+.charts{{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:12px}} figure{{margin:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}}
+figcaption{{color:var(--mut);font-size:12.5px;margin-bottom:4px}} svg text{{fill:var(--mut);font-size:10px}}
+h2.sep{{margin:10px 0 -8px;font-size:15px;scroll-margin-top:56px}}
+nav{{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line);padding:8px 0;display:flex;gap:6px;flex-wrap:wrap;margin:-6px 0}}
+nav a{{color:var(--fg);text-decoration:none;font-size:12.5px;border:1px solid var(--line);border-radius:999px;padding:3px 11px;background:var(--panel)}} nav a:hover{{border-color:var(--acc)}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,470px),1fr));gap:14px;align-items:start}} .grid .wide{{grid-column:1/-1}}
+.bh{{display:grid;grid-template-columns:minmax(90px,34%) 1fr auto;gap:8px;align-items:center;font-size:12.5px;margin:5px 0}}
+.bh-l{{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}} .bh-t{{height:10px;background:var(--line);border-radius:5px;overflow:hidden}}
+.bh-t i{{display:block;height:100%;background:var(--acc);border-radius:5px}} .bh-v{{font-variant-numeric:tabular-nums;color:var(--mut);white-space:nowrap}}
+figure small{{color:var(--mut);font-size:11.5px;display:block;margin-top:6px}}
+</style></head><body><main>
+<header><h1>Report on working with Claude</h1><p>Last {d['days']} days (since {html.escape(d['since'])}) · generated {html.escape(d['generated'])} · cost = equivalent at API prices</p></header>
+<nav>{nav_html}</nav>
+<div class="kpis" id="summary">{kpis}</div>
+{'<h2 class="sep" id="ideas">What to improve and what to create</h2><div class="ideas">' + ideas + '</div>' if ideas else ''}
+<div class="block" id="hours"><h2>When you work (turns per hour and day)</h2><table class="map"><tr><th></th>{''.join(f'<th>{h}</th>' for h in range(24))}</tr>{cells}</table></div>
+{charts(d).replace('<h2>Charts</h2>', '<h2 class="sep" id="trends">Trends</h2>')}
+{distribution(d)}
+{detail}
+</main></body></html>"""
+
+
+def out_dir() -> Path:
+    out = DATA / "reports"; out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def windows_dir() -> Path | None:
+    try:
+        u = subprocess.run(["wslvar", "USERPROFILE"], capture_output=True, text=True, timeout=10).stdout.strip()  # nosec B603 B607
+        return Path(subprocess.run(["wslpath", "-u", u], capture_output=True, text=True, timeout=10).stdout.strip()) / "ws-telemetry" if u else None  # nosec B603 B607
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def main() -> int:
+    a = sys.argv[1:]
+    days = int(a[a.index("--days") + 1]) if "--days" in a else 30
+    d = compute(days)
+    if "--json" in a:
+        print(json.dumps(d, ensure_ascii=False, indent=1)); return 0
+    x = ai(d, "--ai-memory" in a) if ("--ai" in a or "--ai-memory" in a) else {}
+    md = markdown(d, x)
+    name = f"report-{dt.date.today().isoformat()}"
+    out = out_dir(); (out / f"{name}.md").write_text(md, encoding="utf-8"); (out / f"{name}.html").write_text(html_doc(md, d), encoding="utf-8")
+    final = out / f"{name}.html"
+    w = None if os.environ.get("WS_REPORT_NO_WINDOWS") else windows_dir()
+    if w:
+        try:
+            w.mkdir(parents=True, exist_ok=True)
+            for ext in ("md", "html"):
+                shutil.copyfile(out / f"{name}.{ext}", w / f"{name}.{ext}")
+            final = w / f"{name}.html"
+        except OSError:
+            pass
+    print(md if "--open" not in a else "")
+    print(f"Report: {final}")
+    if "--open" in a:
+        try:
+            subprocess.run(["explorer.exe", subprocess.run(["wslpath", "-w", str(final)], capture_output=True, text=True).stdout.strip()], timeout=15)  # nosec B603 B607
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

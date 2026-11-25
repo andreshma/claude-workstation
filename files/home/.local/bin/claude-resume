@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# claude-resume — lo usa tmux-resurrect al restaurar: retoma la última conversación de la carpeta
-# y, si no hay ninguna que retomar (nunca hubo mensajes, o solo sesiones con -p), abre Claude nuevo.
+# claude-resume — used by tmux-resurrect on restore: resumes the folder's last conversation and,
+# if there is none to resume (no messages ever, or only -p sessions), opens a new Claude.
 k="${PWD//[^A-Za-z0-9]/-}"
 if compgen -G "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$k/*.jsonl" >/dev/null; then
   claude --continue "$@" || exec claude "$@"

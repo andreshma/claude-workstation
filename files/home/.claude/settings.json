@@ -97,6 +97,7 @@
       "Read(~/.claude/.credentials.json)",
       "Read(~/.claude-personal/.credentials.json)",
       "Read(~/.config/anthropic/**)",
+      "Read(~/.config/anthropic-copilot/**)",
       "Read(~/.config/anthropic-copiloto/**)",
       "Read(~/.netrc)",
       "Read(~/.npmrc)",
@@ -105,6 +106,7 @@
       "Read(~/.config/git/credentials)",
       "Read(~/.terraform.d/**)",
       "Read(~/.config/ws-telegram/**)",
+      "Read(~/.local/share/ws-telemetry/otel/**)",
       "Read(~/.local/share/ws-telemetria/otel/**)",
       "Read(~/.bash_history)",
       "Read(/@WINHOME@/.ssh/**)",
@@ -272,7 +274,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/ws-trazas.sh",
+            "command": "~/.claude/hooks/ws-traces.sh",
             "timeout": 5
           }
         ]
@@ -284,7 +286,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/ws-sandbox-aviso.sh",
+            "command": "~/.claude/hooks/ws-sandbox-notice.sh",
             "timeout": 5
           }
         ]
@@ -311,7 +313,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/ws-trazas.sh",
+            "command": "~/.claude/hooks/ws-traces.sh",
             "timeout": 5
           }
         ]
@@ -323,7 +325,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/ws-sandbox-aviso.sh",
+            "command": "~/.claude/hooks/ws-sandbox-notice.sh",
             "timeout": 5
           }
         ]
@@ -340,7 +342,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/ws-trazas.sh",
+            "command": "~/.claude/hooks/ws-traces.sh",
             "timeout": 5
           }
         ]
@@ -381,7 +383,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/ws-trazas.sh",
+            "command": "~/.claude/hooks/ws-traces.sh",
             "timeout": 5
           }
         ]
@@ -426,7 +428,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/ws-trazas.sh",
+            "command": "~/.claude/hooks/ws-traces.sh",
             "timeout": 5
           }
         ]
@@ -457,7 +459,7 @@
             "args": [
               "--max",
               "1800",
-              "--tope",
+              "--timeout",
               "25",
               "60",
               "pwsh.exe",
@@ -466,7 +468,7 @@
               "C:\\Users\\@WIN_USER@\\source\\repos\\mempalace-ops\\mempalace-health.ps1"
             ],
             "timeout": 25,
-            "statusMessage": "Verificando salud de MemPalace..."
+            "statusMessage": "Checking MemPalace health..."
           }
         ]
       },
@@ -501,7 +503,7 @@
               "C:\\Users\\@WIN_USER@\\source\\repos\\recall\\start-recall.ps1"
             ],
             "timeout": 10,
-            "statusMessage": "Arrancando recall..."
+            "statusMessage": "Starting recall..."
           }
         ]
       },
@@ -509,7 +511,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/ws-trazas.sh",
+            "command": "~/.claude/hooks/ws-traces.sh",
             "timeout": 5
           }
         ]
@@ -554,7 +556,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/ws-trazas.sh",
+            "command": "~/.claude/hooks/ws-traces.sh",
             "timeout": 5
           }
         ]
@@ -573,7 +575,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/ws-trazas.sh",
+            "command": "~/.claude/hooks/ws-traces.sh",
             "timeout": 5
           }
         ]
@@ -592,7 +594,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/ws-trazas.sh",
+            "command": "~/.claude/hooks/ws-traces.sh",
             "timeout": 5
           }
         ]
@@ -611,7 +613,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/ws-trazas.sh",
+            "command": "~/.claude/hooks/ws-traces.sh",
             "timeout": 5
           }
         ]
@@ -668,7 +670,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "$HOME/.claude/hooks/ws-ruteo.sh",
+            "command": "$HOME/.claude/hooks/ws-routing.sh",
             "timeout": 5
           }
         ]
@@ -677,7 +679,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/ws-trazas.sh",
+            "command": "~/.claude/hooks/ws-traces.sh",
             "timeout": 5
           }
         ]
@@ -696,7 +698,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/ws-trazas.sh",
+            "command": "~/.claude/hooks/ws-traces.sh",
             "timeout": 5
           }
         ]
@@ -725,7 +727,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/ws-trazas.sh",
+            "command": "~/.claude/hooks/ws-traces.sh",
             "timeout": 5
           }
         ]
@@ -780,7 +782,7 @@
         "~/.claude/.credentials.json",
         "~/.claude-personal/.credentials.json",
         "~/.config/anthropic",
-        "~/.config/anthropic-copiloto",
+        "~/.config/anthropic-copilot",
         "~/.gnupg",
         "~/.netrc",
         "~/.npmrc",
@@ -789,7 +791,7 @@
         "~/.config/git/credentials",
         "~/.terraform.d",
         "~/.config/ws-telegram",
-        "~/.local/share/ws-telemetria/otel",
+        "~/.local/share/ws-telemetry/otel",
         "~/.bash_history",
         "/@WINHOME@/.ssh",
         "/@WINHOME@/.aws",

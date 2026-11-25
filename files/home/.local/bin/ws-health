@@ -1,36 +1,45 @@
 #!/usr/bin/env bash
 #
-# ws-health — chequeos de resiliencia de la estación: espacio en disco, snapshot de la
-# distro, guardado de tmux al día y kit sincronizado. Exit 1 si algo falla.
+# ws-health — resilience checks for the workstation: disk space, distro snapshot,
+# tmux save up to date and kit in sync. Exit 1 if anything fails.
 set -uo pipefail
 W=@WINHOME@
 fail=0
 ok()  { printf '%-46s OK\n' "$1"; }
-bad() { printf '%-46s FALTA  %s\n' "$1" "$2"; fail=1; }
+bad() { printf '%-46s FAIL   %s\n' "$1" "$2"; fail=1; }
 pct_free() { df -P "$1" | awk 'NR==2 { sub("%", "", $5); print 100 - $5 }'; }
 
-echo "== Resiliencia"
+echo "== Resilience"
 f="$(pct_free / 2>/dev/null)"; f="${f:-0}"
-if (( f >= 15 )); then ok "espacio libre en / ($f %)"; else bad "espacio libre en / ($f %)" "libera espacio (mínimo 15 %)"; fi
-# En C: cuenta el espacio absoluto: 15 % de un disco de 1 TB es demasiado margen.
+if (( f >= 15 )); then ok "free space on / ($f %)"; else bad "free space on / ($f %)" "free up space (minimum 15 %)"; fi
+# On C: absolute space is what counts: 15 % of a 1 TB disk is too much margin.
 g="$(df -BG --output=avail /mnt/c 2>/dev/null | tail -1 | tr -dc '0-9')"; g="${g:-0}"
-if (( g >= 50 )); then ok "espacio libre en /mnt/c ($g GB)"; else bad "espacio libre en /mnt/c ($g GB)" "libera espacio (mínimo 50 GB)"; fi
+if (( g >= 50 )); then ok "free space on /mnt/c ($g GB)"; else bad "free space on /mnt/c ($g GB)" "free up space (minimum 50 GB)"; fi
 
-# Basta el respaldo ligero diario (ws-backup-lite); el snapshot completo es opcional.
+# The daily light backup (ws-backup-lite) is enough; the full snapshot is optional.
 lite="$(find "${WS_BACKUP_DEST:-$W/WSL-Backups/lite}" -maxdepth 1 -name 'claude-lite-*.tar.*' ! -name '*.sha256' -printf '%T@\n' 2>/dev/null | sort -rn | head -1)"
 snap="$(find "$W/WSL-Backups" -maxdepth 1 -name 'Ubuntu-*.vhdx' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1)"
-if [[ -n "$lite" ]] && (( $(date +%s) - ${lite%%.*} < 2 * 86400 )); then ok "respaldo ligero de Claude (<2 días)"
-elif [[ -n "$snap" ]] && (( $(date +%s) - ${snap%%.*} < 8 * 86400 )); then ok "snapshot de la distro (<8 días)"
-else bad "respaldo ligero o snapshot" "corre ws-backup-lite (Menú → Estación)"; fi
+if [[ -n "$lite" ]] && (( $(date +%s) - ${lite%%.*} < 2 * 86400 )); then ok "light backup of Claude (<2 days)"
+elif [[ -n "$snap" ]] && (( $(date +%s) - ${snap%%.*} < 8 * 86400 )); then ok "distro snapshot (<8 days)"
+else bad "light backup or snapshot" "run ws-backup-lite (Menu → Workstation)"; fi
 
 last="$HOME/.local/share/tmux/resurrect/last"
 saved="$(grep -c '^window' "$last" 2>/dev/null)"; saved="${saved:-0}"
-open="$(tmux list-windows -a 2>/dev/null | wc -l)"
-if (( saved > 0 )) && (( open == 0 || saved == open )); then ok "guardado de tmux al día ($saved pestañas)"
-else bad "guardado de tmux al día" "$saved guardadas vs $open abiertas: Ctrl+b Ctrl+s"; fi
+# Linked sessions (monitor 2, the finder's find-peek-*) repeat the tabs of their group: each tab is counted once.
+open="$(tmux list-windows -a -F '#{window_id}' 2>/dev/null | sort -u | wc -l)"
+if (( saved > 0 )) && (( open == 0 || saved == open )); then ok "tmux save up to date ($saved tabs)"
+else bad "tmux save up to date" "$saved saved vs $open open: Ctrl+b Ctrl+s"; fi
+# The save runs every minute and tmux-recover --validate refreshes the date of a good save: an old date with tmux
+# running means the saving stopped, which nothing else would show until the next restart.
+if (( open > 0 )); then
+  age=$(( $(date +%s) - $(stat -c %Y "$(readlink -f "$last")" 2>/dev/null || echo 0) ))
+  up=$(( $(date +%s) - $(tmux display -p '#{start_time}' 2>/dev/null || date +%s) ))
+  if (( up < 300 || age < 300 )); then ok "tmux save confirmed in the last 5 min"
+  else bad "tmux save confirmed in the last 5 min" "last confirmed $(( age / 60 )) min ago: Ctrl+b Ctrl+s, then check continuum"; fi
+fi
 
 k="$HOME/code/claude-workstation"
 if [[ -d "$k/.git" && -z "$(git -C "$k" status --porcelain 2>/dev/null)" && -z "$(git -C "$k" log --oneline '@{u}..' 2>/dev/null)" ]]; then
-  ok "kit sin cambios pendientes"
-else bad "kit sin cambios pendientes" "export.sh, commit y push"; fi
+  ok "kit has no pending changes"
+else bad "kit has no pending changes" "export.sh, commit and push"; fi
 exit "$fail"

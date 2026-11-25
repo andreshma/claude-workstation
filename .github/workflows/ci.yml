@@ -1,6 +1,6 @@
-# CI del kit claude-workstation: Lint → SAST/secretos → Test en cada push y PR.
-# Build/DAST/Deploy no aplican: el kit son scripts y configuración que install.sh copia al HOME.
-# Acciones de terceros: ninguna. Las herramientas se instalan con versión fija y checksum.
+# CI for the claude-workstation kit: Lint → SAST/secrets → Test on every push and PR.
+# Build/DAST/Deploy do not apply: the kit is scripts and configuration that install.sh copies to HOME.
+# Third-party actions: none. Tools are installed with a pinned version and checksum.
 name: ci
 
 on:
@@ -9,7 +9,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read            # mínimo privilegio: solo leer el repo
+  contents: read            # least privilege: read the repo only
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -24,32 +24,32 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-      - name: Dependencias
+      - name: Dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq tmux >/dev/null
-      # Todos los scripts con shebang de bash/sh, del kit y de files/.
+      # Every script with a bash/sh shebang, from the kit and from files/.
       - name: shellcheck
         run: |
           mapfile -t f < <(git ls-files | while read -r p; do
             [[ -f "$p" ]] && head -c 64 "$p" | head -1 | grep -qE '^#!.*\b(bash|sh)\b' && echo "$p"; done)
           echo "Scripts: ${#f[@]}"
           shellcheck -S warning -x "${f[@]}"
-      # mapfile + una sola llamada: un `while … && …` deja el estado del último archivo (no Python = falla falsa).
-      - name: Python compila
+      # mapfile + a single call: a `while … && …` leaves the status of the last file (not Python = false failure).
+      - name: Python compiles
         run: |
           mapfile -t f < <(git ls-files | while read -r p; do [[ -f "$p" ]] && head -1 "$p" | grep -q '^#!.*python' && echo "$p"; done)
-          echo "Python: ${#f[@]} archivos"
+          echo "Python: ${#f[@]} files"
           (( ${#f[@]} == 0 )) || python3 -m py_compile "${f[@]}"
-      - name: JSON válido
+      - name: Valid JSON
         run: git ls-files '*.json' | xargs -r -n1 jq empty
-      # Solo sintaxis (source-file -n): no ejecuta hooks ni if-shell de la configuración, que dependen de tu máquina.
-      - name: tmux valida la configuración y los menús
+      # Syntax only (source-file -n): does not run the configuration's hooks or if-shell, which depend on your machine.
+      - name: tmux validates the configuration and the menus
         run: |
           export HOME="$PWD/files/home" TERM=xterm-256color
           conf="$HOME/.tmux.conf"
-          [[ -f "$conf" ]] || { echo "sin .tmux.conf en el kit"; exit 0; }
+          [[ -f "$conf" ]] || { echo "no .tmux.conf in the kit"; exit 0; }
           grep -vE '^[[:space:]]*run(-shell)?\b' "$conf" > /tmp/tmux.conf
-          # Un solo servidor, arrancado con reintentos (en el runner a veces muere al arrancar sin terminal);
-          # luego cada archivo se valida por separado con source-file -n (solo sintaxis).
+          # A single server, started with retries (on the runner it sometimes dies at startup without a terminal);
+          # then each file is validated separately with source-file -n (syntax only).
           for i in 1 2 3; do
             tmux -L ci -f /dev/null new-session -d -s ci "sleep 300" 2>/dev/null && tmux -L ci has-session -t ci 2>/dev/null && break
             sleep 1
@@ -62,10 +62,10 @@ jobs:
             tmux -L ci source-file -n "$m"; n=$((n + 1))
           done
           tmux -L ci kill-server
-          echo "tmux: configuración y $n menús ok"
+          echo "tmux: configuration and $n menus ok"
 
   sast:
-    name: SAST y secretos (bandit, gitleaks)
+    name: SAST and secrets (bandit, gitleaks)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -75,12 +75,12 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-      - name: bandit (severidad media o más)
+      - name: bandit (medium severity or higher)
         run: |
           python3 -m pip install --quiet "bandit==${BANDIT_VERSION}"
           mapfile -t f < <(git ls-files | while read -r p; do [[ -f "$p" ]] && head -1 "$p" | grep -q '^#!.*python' && echo "$p"; done)
           (( ${#f[@]} == 0 )) || python3 -m bandit -ll "${f[@]}"
-      - name: gitleaks (binario oficial verificado con checksum)
+      - name: gitleaks (official binary verified by checksum)
         run: |
           base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
           tgz="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
@@ -90,7 +90,7 @@ jobs:
           ./gitleaks dir --config .gitleaks.toml --redact --no-banner .
 
   test:
-    name: Pruebas del kit
+    name: Kit tests
     runs-on: ubuntu-24.04
     needs: [lint, sast]
     timeout-minutes: 15
@@ -98,32 +98,33 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-      - name: Dependencias
+      - name: Dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq tmux >/dev/null
       - name: tests/run.sh
         run: bash tests/run.sh
 
-  instalacion:
-    name: Instalación limpia (Ubuntu 24.04)
+  install:
+    name: Clean install (Ubuntu 24.04)
     runs-on: ubuntu-24.04
     needs: [lint]
     timeout-minutes: 20
-    # Primera versión: informa sin bloquear el merge; pasa a obligatoria cuando corra estable.
+    # First version: reports without blocking the merge; becomes required once it runs stably.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
-      - name: Dependencias
+      - name: Dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq tmux zstd >/dev/null
-      - name: install.sh en un HOME vacío
+      - name: install.sh in an empty HOME
         run: |
           export HOME="$RUNNER_TEMP/home"; mkdir -p "$HOME"
           git config --global user.email ci@example.invalid; git config --global user.name ci
-          bash install.sh --dry-run | tail -5
-          bash install.sh
-          echo "Instalados en ~/.local/bin: $(ls "$HOME/.local/bin" | wc -l)"
-      - name: ws-test sobre lo instalado
+          # No Windows side and no Claude Code on the runner: the user is given and the MCP servers are skipped.
+          bash install.sh --dry-run --win-user ci --no-mcp | tail -5
+          bash install.sh --win-user ci --no-mcp
+          echo "Installed in ~/.local/bin: $(ls "$HOME/.local/bin" | wc -l)"
+      - name: ws-test on the installed files
         run: |
           export HOME="$RUNNER_TEMP/home" PATH="$RUNNER_TEMP/home/.local/bin:$PATH" TERM=xterm-256color
           ws-test

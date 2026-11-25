@@ -1,84 +1,89 @@
 #!/usr/bin/env bash
 #
-# tmux-solo — "modo solo": Claude en modo auto SIN tu sandbox, para dejarlo trabajar solo.
-#   · los comandos corren sin sandbox y sin preguntarte uno por uno: el clasificador del
-#     modo auto revisa cada acción (perfil ~/.config/claude-solo/settings.json, solo esa sesión)
-#   · las reglas ask (terraform, kubectl, AWS, BD, git push…) TE SIGUEN PREGUNTANDO; deny,
-#     guard.sh y los rm peligrosos siguen bloqueados
-# Tus demás pestañas siguen con el sandbox. Tras reiniciar la estación, todo vuelve a normal.
+# tmux-solo — "solo mode": Claude in auto mode WITHOUT your sandbox, to let it work on its own.
+#   · commands run without the sandbox and without asking you one by one: the auto mode
+#     classifier reviews each action (profile ~/.config/claude-solo/settings.json, that session only)
+#   · the ask rules (terraform, kubectl, AWS, DB, git push…) STILL ASK YOU; deny,
+#     guard.sh and the dangerous rm commands stay blocked
+# Your other tabs keep the sandbox. After restarting the workstation, everything goes back to normal.
 #
-# Uso:
-#   tmux-solo esta [PANE]        pasa la pestaña actual a modo solo (retoma la conversación)
-#   tmux-solo normal [PANE]      la regresa a modo normal (retoma la conversación)
-#   tmux-solo nueva [CARPETA]    pestaña nueva en modo solo
-#   tmux-solo worktree [CARPETA] pestaña nueva en un worktree <repo>.wt/solo-<fecha> (rama solo/<fecha>)
+# Usage:
+#   tmux-solo this [PANE]        switches the current tab to solo mode (resumes the conversation)
+#   tmux-solo normal [PANE]      returns it to normal mode (resumes the conversation)
+#   tmux-solo new [FOLDER]      new tab in solo mode
+#   tmux-solo worktree [FOLDER]  new tab in a worktree <repo>.wt/solo-<date> (branch solo/<date>)
 set -euo pipefail
-perfil="$HOME/.config/claude-solo/settings.json"
-CMD_SOLO="claude --permission-mode auto --settings '$perfil'"
+profile="$HOME/.config/claude-solo/settings.json"
+CMD_SOLO="claude --permission-mode auto --settings '$profile'"
+# In an existing tab: claude-resume continues the folder's conversation and starts a new one when there is none
+# («claude -c» ends with «No conversation found to continue» in a tab where Claude never received a message).
 msg() { tmux display "$1"; }
-[[ -f "$perfil" ]] || { msg "Falta $perfil"; exit 1; }
+[[ -f "$profile" ]] || { msg "$profile is missing"; exit 1; }
 
-# claude_corre <pane> — ¿hay un Claude corriendo en el panel? Dos señales, basta una:
-#   1) el comando en primer plano no es una shell (el binario nativo de Claude se llama por su
-#      versión, p. ej. "2.1.325", no "claude");
-#   2) entre los descendientes del panel hay un proceso claude (o node ejecutando Claude).
-claude_corre() {
-  local raiz cur
+# claude_running <pane> — is there a Claude running in the pane? Two signals, one is enough:
+#   1) the foreground command is not a shell (Claude's native binary is named after its
+#      version, e.g. "2.1.325", not "claude");
+#   2) among the pane's descendants there is a claude process (or node running Claude).
+claude_running() {
+  local root cur
   cur="$(tmux display -p -t "$1" '#{pane_current_command}')"
   [[ "$cur" =~ ^(bash|zsh|sh|fish|dash)$ ]] || return 0
-  raiz="$(tmux display -p -t "$1" '#{pane_pid}')"
-  ps -e -o pid=,ppid=,comm=,args= | awk -v r="$raiz" '
-    { padre[$1] = $2
+  root="$(tmux display -p -t "$1" '#{pane_pid}')"
+  ps -e -o pid=,ppid=,comm=,args= | awk -v r="$root" '
+    { parent[$1] = $2
       if ($3 ~ /^claude$/ || $4 ~ /(^|\/)claude$/ || $4 ~ /\/claude\/versions\// || ($3 == "node" && $0 ~ /claude/)) c[$1] = 1 }
-    END { for (p in c) for (q = padre[p]; q > 1; q = padre[q]) if (q == r) { hay = 1; break }
-          exit !hay }'
+    END { for (p in c) for (q = parent[p]; q > 1; q = parent[q]) if (q == r) { found = 1; break }
+          exit !found }'
 }
 
-# reiniciar_claude <pane> <comando> — cierra el Claude del panel (si hay) y lanza el comando.
-reiniciar_claude() {
+# restart_claude <pane> <command> — closes the Claude in the pane (if any) and launches the command.
+restart_claude() {
   local pane="$1" cmd="$2" i=0
-  if claude_corre "$pane"; then
+  if claude_running "$pane"; then
+    # Ctrl+C first: it clears whatever is typed in the input box; otherwise «<text>/exit» is sent as a message and
+    # Claude never closes. If /exit still does not close it in 10 s, Ctrl+C twice (Claude's own way out).
     tmux send-keys -t "$pane" Escape; sleep 0.5
-    tmux send-keys -t "$pane" -l "/exit"; tmux send-keys -t "$pane" Enter
+    tmux send-keys -t "$pane" C-c; sleep 0.4
+    claude_running "$pane" && { tmux send-keys -t "$pane" -l "/exit"; tmux send-keys -t "$pane" Enter; }
     for (( i = 0; i < 40; i++ )); do
-      claude_corre "$pane" || break
+      claude_running "$pane" || break
+      (( i == 20 )) && { tmux send-keys -t "$pane" C-c; sleep 0.3; tmux send-keys -t "$pane" C-c; }
       sleep 0.5
     done
-    (( i < 40 )) || { msg "Claude no cerró; ciérralo tú (/exit) y vuelve a intentar"; exit 1; }
+    (( i < 40 )) || { msg "Claude did not close; close it yourself (/exit) and try again"; exit 1; }
   fi
   tmux send-keys -t "$pane" -l "$cmd"; tmux send-keys -t "$pane" Enter
 }
 
-accion="${1:-esta}"; shift || true
-case "$accion" in
-  esta|normal)
+action="${1:-this}"; shift || true
+case "$action" in
+  this|normal)
     pane="${1:-$(tmux display -p '#{pane_id}')}"
     win="$(tmux display -p -t "$pane" '#{window_id}')"
-    nombre="$(tmux display -p -t "$pane" '#W')"; nombre="${nombre#🤖}"
-    if [[ "$accion" == esta ]]; then
-      # -c retoma la conversación más reciente de esta carpeta.
-      reiniciar_claude "$pane" "${CMD_SOLO/claude /claude -c }"
-      tmux set -w -t "$win" @csolo 1; tmux rename-window -t "$win" "🤖$nombre"
-      msg "Modo solo en $nombre: auto, sin sandbox · lo crítico te lo pregunta"
+    name="$(tmux display -p -t "$pane" '#W')"; name="${name#🤖}"
+    if [[ "$action" == this ]]; then
+      restart_claude "$pane" "${CMD_SOLO/claude /claude-resume }"
+      tmux set -w -t "$win" @csolo 1; tmux rename-window -t "$win" "🤖$name"
+      msg "Solo mode on $name: auto, no sandbox · it asks you about anything critical"
     else
-      reiniciar_claude "$pane" "claude -c"
-      tmux set -wu -t "$win" @csolo; tmux rename-window -t "$win" "$nombre"
-      msg "$nombre de vuelta en modo normal (con sandbox)"
+      restart_claude "$pane" "claude-resume"
+      tmux set -wu -t "$win" @csolo; tmux rename-window -t "$win" "$name"
+      msg "$name back in normal mode (with sandbox)"
     fi
     ;;
-  nueva|worktree)
+  new|worktree)
     dir="${1:-$(tmux display -p '#{pane_current_path}')}"
-    nombre="$(basename "$dir")"
-    if [[ "$accion" == worktree ]]; then
-      raiz="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || { msg "$dir no es un repo git"; exit 1; }
+    name="$(basename "$dir")"
+    if [[ "$action" == worktree ]]; then
+      root="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || { msg "$dir is not a git repo"; exit 1; }
       stamp="$(date +%Y%m%d-%H%M)"
-      dir="$raiz.wt/solo-$stamp"
-      git -C "$raiz" worktree add -q -b "solo/$stamp" "$dir" >/dev/null 2>&1 || { msg "No pude crear el worktree $dir"; exit 1; }
-      nombre="$(basename "$raiz")@solo"
+      dir="$root.wt/solo-$stamp"
+      git -C "$root" worktree add -q -b "solo/$stamp" "$dir" >/dev/null 2>&1 || { msg "Could not create the worktree $dir"; exit 1; }
+      name="$(basename "$root")@solo"
     fi
-    win="$(tmux new-window -P -F '#{window_id}' -c "$dir" -n "🤖$nombre" "$CMD_SOLO; exec bash -l")"
+    win="$(tmux new-window -P -F '#{window_id}' -c "$dir" -n "🤖$name" "$CMD_SOLO; exec bash -l")"
     tmux set -w -t "$win" @csolo 1; tmux set -w -t "$win" automatic-rename off
-    msg "Claude solo en $nombre: escribe la tarea y déjalo trabajar"
+    msg "Solo Claude on $name: type the task and let it work"
     ;;
-  *) echo "uso: tmux-solo esta|normal|nueva|worktree [PANE|CARPETA]" >&2; exit 2 ;;
+  *) echo "usage: tmux-solo this|normal|new|worktree [PANE|FOLDER]" >&2; exit 2 ;;
 esac

@@ -1,0 +1,407 @@
+#!/usr/bin/env bash
+#
+# tmux-find — one finder for everything you can go to: open tabs, the ones active now, favorite folders and recent
+# Claude conversations. One list with four views and, on the right, always the same pane: the live screen of an
+# open tab, or the conversation (your latest requests and Claude's last answer) of what has no tab yet.
+# Ctrl+b f and Alt+s (all) · Ctrl+b a (active) · Ctrl+b F (favorites) · Ctrl+b j (recent) · Menu → f.
+#
+# Keys in the list:
+#   Tab / Shift+Tab  next / previous view          Alt+1 … Alt+4  all, active, favorites, recent
+#   Enter            open tab: go to it · favorite folder: open it (tmux-open --dir) · conversation: open a tab in
+#                    its group and resume THAT conversation
+#   Ctrl+S           quick reply: one line typed here is sent to that tab's Claude (empty cancels)
+#   Alt+Y / Alt+N    approve / reject the permission dialog that tab is showing (only in the «approve» state)
+#   Ctrl+O           open here: the tab, fully usable, inside this window; Ctrl+b d comes back to the list
+#   Ctrl+R refresh · Ctrl+X remove from favorites (favorites view) · Ctrl+Y copy the resume command (recent view)
+# The active view refreshes itself every 3 s when fzf supports --listen. Without fzf: prints the list and waits.
+#
+# Usage: tmux-find [--view all|active|favorites|recent] [--minutes N] [--days N]
+#        tmux-find --list [view]       the rows of a view: <ref><TAB>visible text<TAB>hidden extra
+#        tmux-find --preview <ref>     what the right pane shows for a row
+#        tmux-find --reply <ref> [text]   sends one line to the tab's Claude (asks for it when no text is given)
+#        tmux-find --approve <ref>     answers the open permission dialog with «1» (yes)
+#        tmux-find --reject <ref>      answers the open permission dialog with Escape (no)
+#        tmux-find --peek <ref>        shows the tab in this terminal through a temporary linked session
+# <ref>: tab:<session>:<window id> (open tab) · dir:<folder> (favorite without a tab) · conv:<file.jsonl>
+#        (conversation without a tab). A favorite or a conversation that already has a tab is listed as tab:… and
+#        carries its folder or its conversation file in the hidden extra field.
+# The views reuse the lists of tmux-active, tmux-favorites and tmux-recent; nothing is computed twice here.
+# Internal: --peek-start <ref> (creates the linked session and prints its name) · --peek-end <name> (removes it) ·
+#           WS_FIND_SRC_ALL|ACTIVE|FAVORITES|RECENT|TABS=<file> replaces what a provider prints (tests).
+set -uo pipefail
+TAB=$'\t'
+BIN="$(dirname "$0")"
+VIEWS=(all active favorites recent)
+PEEK_PREFIX="find-peek-"
+MIN=15 DAYS=7
+PEEK_HINT="Open here · Ctrl+b d comes back to the finder"
+PEEK_INNER=()   # tmux command of the inner popup server while «open here» has its prefix turned off
+
+#######################################
+# Output of a provider command; WS_FIND_SRC_<NAME> (a file with captured output) replaces it.
+# Arguments: $1 provider name (ALL, ACTIVE, FAVORITES, RECENT, TABS), the rest is the command
+#######################################
+src() {
+  local v="WS_FIND_SRC_$1"; shift
+  if [[ -n "${!v:-}" ]]; then cat -- "${!v}"; else "$@" 2>/dev/null; fi
+}
+
+# Open tabs: group<TAB>session<TAB>window id<TAB>folder. Linked sessions (monitor 2, open here) repeat the tabs of
+# their group: every consumer keeps only the rows where group == session.
+tabs() {
+  local fmt="#{?session_grouped,#{session_group},#{session_name}}${TAB}#{session_name}${TAB}#{window_id}"
+  src TABS tmux list-windows -a -F "$fmt${TAB}#{pane_current_path}"
+}
+
+#######################################
+# View «all»: every open tab. First the ones waiting for you or with an error (⚠), then the ones with an alert (!),
+# then the stalled ones (⏳) and last by most recent activity.
+# The @cmain values compared below are stored identifiers written by tmux-state.sh.
+#######################################
+rows_all() {
+  local fmt="#{?session_grouped,#{session_group},#{session_name}}${TAB}#{session_name}${TAB}#{window_id}"
+  fmt+="${TAB}#{window_index}${TAB}#{window_name}${TAB}#{?#{@cs},#{@cs},-}${TAB}#{?#{@cctx},#{@cctx}%,}"
+  fmt+="${TAB}#{window_bell_flag}${TAB}#{@cstall}${TAB}#{@cmain}${TAB}#{window_activity}"
+  src ALL tmux list-windows -a -F "$fmt" | awk -F "$TAB" -v OFS="$TAB" '
+    $1 != $2 { next }
+    {
+      p = 3; m = " "
+      if ($10 == "needs you" || $10 == "your turn" || $10 == "API error") { p = 0; m = "⚠" }
+      else if ($8 == 1) { p = 1; m = "!" }
+      else if ($9 == 1) { p = 2; m = "⏳" }
+      text = sprintf("%s \033[36m%-10.10s\033[0m %3s  %-30s %-16s %5s", \
+                     m, "[" $2 "]", $4, substr($5, 1, 30), substr($6, 1, 16), $7)
+      print p, $11, "tab:" $2 ":" $3, text, ""
+    }' | sort -t "$TAB" -k1,1n -k2,2nr | cut -f3-
+}
+
+# View «active»: the rows of tmux-active (session:window id<TAB>text).
+rows_active() {
+  src ACTIVE "$BIN/tmux-active" --list --minutes "$MIN" |
+    awk -F "$TAB" -v OFS="$TAB" 'NF >= 2 && $1 ~ /^[^:]+:@[0-9]+$/ { print "tab:" $1, $2, "" }'
+}
+
+# View «favorites»: the rows of tmux-favorites (folder<TAB>text); the ones with an open tab become tab:… rows.
+rows_favorites() {
+  { tabs | sed 's/^/T\t/'; src FAVORITES "$BIN/tmux-favorites" --list | sed 's/^/F\t/'; } |
+    awk -F "$TAB" -v OFS="$TAB" '
+      $1 == "T" { if ($2 == $3 && !($5 in tab)) tab[$5] = $3 ":" $4; next }
+      $1 == "F" && NF >= 3 { print (($2 in tab) ? "tab:" tab[$2] : "dir:" $2), $3, $2 }'
+}
+
+# View «recent»: the rows of tmux-recent (go|open<TAB>tab|folder<TAB>id<TAB>file<TAB>text).
+rows_recent() {
+  src RECENT "$BIN/tmux-recent" --list --days "$DAYS" |
+    awk -F "$TAB" -v OFS="$TAB" '
+      NF < 5 { next }
+      $1 == "go" && $2 ~ /^[^:]+:@[0-9]+$/ { print "tab:" $2, $5, $4; next }
+      $1 == "open" { print "conv:" $4, $5, $4 }'
+}
+
+list_rows() {
+  case "$1" in
+    all) rows_all ;; active) rows_active ;; favorites) rows_favorites ;; recent) rows_recent ;;
+    *) echo "tmux-find: unknown view «$1» (all, active, favorites, recent)" >&2; return 2 ;;
+  esac
+}
+
+#######################################
+# Splits a ref into KIND and, for tab: refs, SESSION and WID; for the others, REST (folder or file).
+# Returns 1 when the ref is not one of the three kinds.
+#######################################
+parse_ref() {
+  KIND="${1%%:*}"; REST="${1#*:}"; SESSION=""; WID=""
+  case "$KIND" in
+    tab) SESSION="${REST%:*}"; WID="${REST##*:}"; [[ "$WID" =~ ^@[0-9]+$ && -n "$SESSION" && "$SESSION" != "$REST" ]] ;;
+    dir|conv) [[ -n "$REST" && "$REST" != "$1" ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+# need_tab <ref> <what> — the actions on a running Claude only make sense on an open tab.
+need_tab() {
+  if ! parse_ref "$1" || [[ "$KIND" != tab ]]; then
+    echo "$2: only on open tabs (this row has no tab yet: Enter opens it)"; return 2
+  fi
+  tmux list-panes -t "$WID" >/dev/null 2>&1 || { echo "That tab is no longer open"; return 1; }
+}
+
+tab_name() { tmux display -p -t "$WID" '#{window_index} #{window_name}' 2>/dev/null; }
+# Index of the tab in its session: «session:index» names it without ambiguity when linked sessions share it.
+tab_index() {
+  tmux list-windows -t "=$SESSION" -F '#{window_id} #{window_index}' 2>/dev/null |
+    awk -v w="$WID" '$1 == w { print $2; exit }'
+}
+
+# Pane with Claude in the tab (same rule as the model routing: ws-routing.sh).
+claude_pane() {
+  if ! declare -F routing_claude_pane >/dev/null; then
+    # shellcheck source=/dev/null
+    source "$HOME/.local/lib/ws-routing.sh" 2>/dev/null || return 1
+  fi
+  routing_claude_pane "$WID"
+}
+
+# A real Claude dialog with options is on screen (the ❯ cursor on a numbered option), as ws-telegram checks it.
+dialog_open() {
+  tmux capture-pane -p -t "$1" 2>/dev/null | tail -n 25 | grep -qE '^[[:space:]│]*❯[[:space:]]*[0-9]+\.'
+}
+
+#######################################
+# Right pane. tab: the live screen · conv: the conversation · dir: its latest conversation, else git log + listing.
+#######################################
+preview() {
+  local f
+  parse_ref "$1" || { echo "Nothing to show for: $1"; return 1; }
+  case "$KIND" in
+    tab) tmux capture-pane -ep -t "$WID" 2>/dev/null | tail -n 60 ;;
+    conv) "$BIN/tmux-recent" --show "$REST" ;;
+    dir)
+      [[ -d "$REST" ]] || { echo "That folder no longer exists: $REST"; return 0; }
+      if f="$("$BIN/tmux-recent" --latest "$REST" 2>/dev/null)" && [[ -n "$f" ]]; then "$BIN/tmux-recent" --show "$f"
+      else
+        git -C "$REST" log --oneline -8 2>/dev/null; echo
+        # shellcheck disable=SC2012  # a listing for the eye, as the favorites list showed it
+        ls -p "$REST" 2>/dev/null | head -40
+      fi ;;
+  esac
+}
+
+#######################################
+# Quick reply: one line to the tab's Claude. Like the model switch (ws-routing.sh, routing_switch), it clears what
+# is typed in Claude's input box first with Ctrl+C, but only when Claude is waiting: while it works, Ctrl+C would
+# interrupt it, so the line is typed after whatever is there and stays queued.
+# Never types into a permission dialog (the text would pick options) or into a tab without Claude (a shell would
+# run it).
+# Arguments: $1 ref, $2 text (optional: asked with read -e when missing)
+#######################################
+reply() {
+  local name pane text
+  need_tab "$1" "Quick reply" || return
+  name="$(tab_name)"; pane="$(claude_pane)"
+  [[ -n "$pane" ]] || { echo "No Claude running in $name: nothing was sent"; return 1; }
+  waiting_approval() { [[ "$(tmux show -wqv -t "$WID" @cphase 2>/dev/null)" == permission ]] || dialog_open "$pane"; }
+  if waiting_approval; then
+    echo "$name is waiting for your approval: Alt+Y approves, Alt+N rejects. Nothing was sent"; return 1
+  fi
+  if (( $# >= 2 )); then text="$2"; else read -e -r -p "Reply to $name (empty cancels)> " text || text=""; fi
+  [[ -n "${text//[[:space:]]/}" ]] || { echo "Cancelled: nothing was sent"; return 0; }
+  # Claude may have opened a dialog while you were typing.
+  if waiting_approval; then echo "$name started waiting for your approval meanwhile: nothing was sent"; return 1; fi
+  tmux capture-pane -p -t "$pane" 2>/dev/null | grep -qi "esc to interrupt" ||
+    { tmux send-keys -t "$pane" C-c; sleep 0.4; }
+  tmux send-keys -t "$pane" -l -- "$text" || { echo "Could not type into $name"; return 1; }
+  sleep 0.2; tmux send-keys -t "$pane" Enter
+  echo "Sent to $name: ${text:0:60}"
+}
+
+#######################################
+# Answers the permission dialog a tab is showing, with the same key presses as the Telegram buttons (ws-telegram):
+# the option number «1» approves, Escape rejects. Only in the «permission» phase and with the dialog on screen.
+# Arguments: $1 ref, $2 approve|reject
+#######################################
+answer() {
+  local name pane phase
+  need_tab "$1" "Approve and reject" || return
+  name="$(tab_name)"; phase="$(tmux show -wqv -t "$WID" @cphase 2>/dev/null)"
+  [[ "$phase" == permission ]] ||
+    { echo "$name is not waiting for approval (state: ${phase:-none}): nothing was sent"; return 1; }
+  pane="$(claude_pane)"
+  [[ -n "$pane" ]] || { echo "No Claude running in $name: nothing was sent"; return 1; }
+  dialog_open "$pane" || { echo "$name shows no dialog with options right now: nothing was sent"; return 1; }
+  if [[ "$2" == approve ]]; then tmux send-keys -t "$pane" 1; echo "Approved in $name (option 1)"
+  else tmux send-keys -t "$pane" Escape; echo "Rejected in $name (Escape)"; fi
+}
+
+#######################################
+# Open here, step 1: a temporary session grouped with the tab's session (as tmux-monitor2 does), with that tab
+# selected. A grouped session has its own current window: your own client does not move.
+# Outputs: the name of the temporary session
+#######################################
+peek_start() {
+  local idx n i=0
+  need_tab "$1" "Open here" >&2 || return
+  idx="$(tab_index)"
+  [[ -n "$idx" ]] || { echo "That tab is no longer open" >&2; return 1; }
+  n="$PEEK_PREFIX$$"; while tmux has-session -t "=$n" 2>/dev/null; do i=$((i + 1)); n="$PEEK_PREFIX$$-$i"; done
+  tmux new-session -d -t "=$SESSION" -s "$n" || return 1
+  tmux select-window -t "=$n:$idx" 2>/dev/null
+  tmux set-hook -t "=$n" client-attached "display-message -d 6000 '$PEEK_HINT'" 2>/dev/null
+  echo "$n"
+}
+
+# Open here, last step: removes the temporary session (only the ones this script creates).
+peek_end() {
+  [[ "$1" == "$PEEK_PREFIX"* ]] || { echo "tmux-find: «$1» is not a session of «open here»" >&2; return 2; }
+  tmux kill-session -t "=$1" 2>/dev/null; return 0
+}
+
+#######################################
+# Open here: attaches this terminal to the temporary session and removes it on the way out (also when the popup
+# is closed or the script is killed: trap). Three cases:
+#   · inside a finder popup (WS_POPUP_SESSION): this terminal is a pane of the inner «popup» tmux server, which
+#     would take Ctrl+b for itself. While the tab is shown, the prefix of THAT popup session is turned off, so
+#     Ctrl+b reaches the tab's tmux and everything works as in a normal tab; Ctrl+b d detaches and returns here.
+#   · in a pane of your tmux (run by name): attaching in place would show the session inside itself, so the tab
+#     goes to a popup of your tmux; Ctrl+b d closes it.
+#   · outside tmux: a plain attach.
+# destroy-unattached is set once attached (a second safety net; set before attaching it could remove the session).
+#######################################
+peek() {
+  local n name sock
+  n="$(peek_start "$1")" || return
+  parse_ref "$1"; name="$(tab_name)"; sock="${TMUX:-}"; sock="${sock%%,*}"
+  restore() {
+    (( ${#PEEK_INNER[@]} )) || return 0
+    "${PEEK_INNER[@]}" set -u -t "=$WS_POPUP_SESSION" prefix 2>/dev/null
+    "${PEEK_INNER[@]}" set -u -t "=$WS_POPUP_SESSION" status-right 2>/dev/null
+  }
+  # shellcheck disable=SC2064  # the session name is fixed now on purpose
+  trap "restore; peek_end '$n'" EXIT
+  trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+  if [[ -n "${WS_POPUP_SESSION:-}" && -n "${TMUX:-}" ]]; then
+    PEEK_INNER=(env -u TMUX tmux -L popup)
+    "${PEEK_INNER[@]}" set -t "=$WS_POPUP_SESSION" prefix None 2>/dev/null
+    "${PEEK_INNER[@]}" set -t "=$WS_POPUP_SESSION" status-right " $name · $PEEK_HINT " 2>/dev/null
+    env -u TMUX tmux -S "$sock" attach -t "=$n" \; set destroy-unattached on
+  elif [[ -n "${TMUX:-}" ]]; then
+    tmux display-popup -E -w 92% -h 88% -T " $name · Ctrl+b d: back " \
+      "env -u TMUX tmux -S '$sock' attach -t '=$n' \\; set destroy-unattached on"
+  else
+    tmux attach -t "=$n" \; set destroy-unattached on
+  fi
+  restore; peek_end "$n"; trap - EXIT HUP INT TERM
+}
+
+# Enter on a row.
+go() {
+  local idx
+  parse_ref "$1" || return 1
+  case "$KIND" in
+    tab)
+      idx="$(tab_index)"
+      tmux switch-client -t "=$SESSION" 2>/dev/null
+      if [[ -n "$idx" ]]; then tmux select-window -t "=$SESSION:$idx" 2>/dev/null
+      else tmux select-window -t "$WID" 2>/dev/null; fi ;;
+    dir)
+      if [[ ! -d "$REST" ]]; then
+        echo "That folder no longer exists: $REST (Ctrl+X removes it from favorites)"; read -rsn1; return 1
+      fi
+      exec "$BIN/tmux-open" --dir "$REST" ;;
+    conv) "$BIN/tmux-recent" --open "$REST" || { read -rsn1; return 1; } ;;
+  esac
+}
+
+#######################################
+# Header: the views with the current one highlighted, the keys and the result of the last action.
+# Arguments: $1 view, $2 message (optional), $3 number of rows
+#######################################
+header() {
+  local v i=0 line="View:" keys=""
+  for v in "${VIEWS[@]}"; do
+    i=$((i + 1))
+    if [[ "$v" == "$1" ]]; then line+=$' \e[7m '"$i $v"$' \e[0m'; else line+="  $i $v "; fi
+  done
+  case "$1" in
+    favorites) keys=" · Ctrl+X remove from favorites" ;;
+    recent) keys=" · Ctrl+Y copy the resume command" ;;
+  esac
+  printf '%s\n' "$line" "Tab / Shift+Tab view · Alt+1…4 jump · Ctrl+R refresh · Esc close" "Enter go or open$keys" \
+    "On an open tab: Ctrl+S reply · Alt+Y approve · Alt+N reject"
+  printf '%s' "                Ctrl+O open it here (Ctrl+b d comes back to this list)"
+  if [[ -n "${2:-}" ]]; then printf '\n\e[33m%s\e[0m' "$2"
+  elif [[ "${3:-1}" == 0 ]]; then
+    case "$1" in
+      active) printf '\n\e[2mNothing active in the last %s min.\e[0m' "$MIN" ;;
+      favorites) printf '\n\e[2mNo favorites yet. In a tab, Ctrl+b * marks it (or Menu → Tabs and session).\e[0m' ;;
+      recent) printf '\n\e[2mNo conversations in the last %s days.\e[0m' "$DAYS" ;;
+    esac
+  fi
+}
+
+#######################################
+# The list. fzf closes on every action key and is opened again on the resulting view with the same query: the
+# list is always fresh after an action and the script needs no state file.
+# Arguments: $1 initial view
+#######################################
+interactive() {
+  local view="$1" query="" msg="" rows out rc key sel ref extra n i self port extra_opts
+  self="$(printf '%q' "$0")"
+  while :; do
+    rows="$(list_rows "$view")"
+    n=0; [[ -n "$rows" ]] && n="$(wc -l <<<"$rows")"
+    extra_opts=()
+    # fzf ≥ 0.36: --listen lets the active view be refreshed from outside every 3 s (the key keeps others out).
+    if [[ "$view" == active ]] && command -v curl >/dev/null && fzf --help 2>/dev/null | grep -q -- '--listen'; then
+      port=$(( 20000 + RANDOM % 20000 )); export FZF_API_KEY="$RANDOM$RANDOM$RANDOM$$"
+      extra_opts=(--listen "127.0.0.1:$port")
+      ( sleep 3; while kill -0 $$ 2>/dev/null; do
+          curl -s -XPOST "127.0.0.1:$port" -H "x-api-key: $FZF_API_KEY" \
+            -d "reload($self --list active --minutes $MIN)" >/dev/null 2>&1 || break; sleep 3; done ) >/dev/null 2>&1 &
+    fi
+    # --height=100%: FZF_DEFAULT_OPTS of the interactive shell (shell.sh) asks for 40 %; the finder uses it all.
+    out="$(printf '%s' "$rows" | fzf --ansi --delimiter="$TAB" --with-nth=2 --no-sort --reverse --cycle --height=100% \
+      "${extra_opts[@]}" --print-query --query "$query" --prompt "$view> " --header "$(header "$view" "$msg" "$n")" \
+      --expect=tab,btab,alt-1,alt-2,alt-3,alt-4,ctrl-s,ctrl-o,alt-y,alt-n,ctrl-x,ctrl-y \
+      --bind "ctrl-r:reload($self --list $view --minutes $MIN --days $DAYS)" \
+      --preview "$self --preview {1}" --preview-window 'right,50%,wrap')"; rc=$?
+    (( rc == 0 || rc == 1 )) || return 0          # Esc, Ctrl+C or an fzf error: close
+    query="$(sed -n 1p <<<"$out")"; key="$(sed -n 2p <<<"$out")"; sel="$(sed -n 3p <<<"$out")"
+    ref="${sel%%"$TAB"*}"; extra="${sel##*"$TAB"}"; msg=""
+    case "$key" in
+      tab|btab)
+        for i in "${!VIEWS[@]}"; do [[ "${VIEWS[$i]}" == "$view" ]] && break; done
+        if [[ "$key" == tab ]]; then i=$(( (i + 1) % ${#VIEWS[@]} ))
+        else i=$(( (i + ${#VIEWS[@]} - 1) % ${#VIEWS[@]} )); fi
+        view="${VIEWS[$i]}"; continue ;;
+      alt-[1-4]) view="${VIEWS[$(( ${key#alt-} - 1 ))]}"; continue ;;
+    esac
+    [[ -n "$sel" ]] || continue
+    case "$key" in
+      "") go "$ref" && return 0 ;;
+      ctrl-s) clear; msg="$("$0" --reply "$ref")" ;;
+      alt-y) msg="$("$0" --approve "$ref")" ;;
+      alt-n) msg="$("$0" --reject "$ref")" ;;
+      ctrl-o) clear; msg="$("$0" --peek "$ref" 2>&1 >/dev/tty)" ;;
+      ctrl-x)
+        if [[ "$view" == favorites && -n "$extra" ]]; then
+          "$BIN/tmux-favorites" --remove "$extra" && msg="Removed from favorites: $(basename "$extra")"
+        else msg="Ctrl+X removes a favorite: only in the favorites view"; fi ;;
+      ctrl-y)
+        if [[ "$view" == recent && "$extra" == *.jsonl ]]; then
+          extra="$(basename "$extra" .jsonl)"
+          printf 'claude --resume %s' "$extra" | "$BIN/ws-copy" 2>/dev/null; msg="Copied: claude --resume $extra"
+        else msg="Ctrl+Y copies the resume command: only in the recent view"; fi ;;
+    esac
+  done
+}
+
+view=all; mode=""; args=()
+while (( $# )); do
+  # After «--reply <ref>» the next argument is the text, whatever it looks like.
+  if [[ "$mode" == --reply && ${#args[@]} -ge 1 ]]; then args+=("$1"); shift; continue; fi
+  case "$1" in
+    --view) view="${2:?view}"; shift ;;
+    --minutes) MIN="${2:?minutes}"; shift ;;
+    --days) DAYS="${2:?days}"; shift ;;
+    --list|--preview|--reply|--approve|--reject|--peek|--peek-start|--peek-end) mode="$1" ;;
+    *) args+=("$1") ;;
+  esac
+  shift
+done
+[[ "$MIN" =~ ^[0-9]+$ && "$DAYS" =~ ^[0-9]+$ ]] || { echo "tmux-find: --minutes and --days take a number" >&2; exit 2; }
+
+case "$mode" in
+  --list) list_rows "${args[0]:-$view}"; exit ;;
+  --preview) preview "${args[0]:?ref}"; exit ;;
+  --reply) reply "${args[0]:?ref}" "${args[@]:1:1}"; exit ;;
+  --approve) answer "${args[0]:?ref}" approve; exit ;;
+  --reject) answer "${args[0]:?ref}" reject; exit ;;
+  --peek) peek "${args[0]:?ref}"; exit ;;
+  --peek-start) peek_start "${args[0]:?ref}"; exit ;;
+  --peek-end) peek_end "${args[0]:?session}"; exit ;;
+esac
+
+[[ " ${VIEWS[*]} " == *" $view "* ]] || { list_rows "$view"; exit 2; }
+command -v fzf >/dev/null || { list_rows "$view" | cut -f2; read -rsn1; exit 0; }
+interactive "$view"

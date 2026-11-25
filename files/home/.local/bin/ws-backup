@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# ws-backup — copia a Windows las conversaciones de Claude (~/.claude/projects) y la bitácora
-# (~/.claude/audit). Incremental, sin borrar nada del destino; como máximo cada 15 minutos.
-# Lo invoca tmux-backup después de cada guardado de tmux-resurrect.
+# ws-backup — copies Claude's conversations (~/.claude/projects) and the audit log
+# (~/.claude/audit) to Windows. Incremental, deletes nothing at the destination; at most every 15 minutes.
+# Called by tmux-backup after every tmux-resurrect save.
 dst=@WINHOME@/.claude-wsl-backup
 stamp="$dst/.last"
 if [ -f "$stamp" ] && [ $(( $(date +%s) - $(stat -c %Y "$stamp") )) -lt 900 ]; then exit 0; fi

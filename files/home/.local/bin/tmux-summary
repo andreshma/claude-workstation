@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""tmux-summary <window> — quick summary of a tab: where we are, what we are doing and where we left off.
+
+Opened by double-clicking the tab, with Ctrl+b i or from the menu (Session and tab → Summary).
+Everything comes from local data: git, the state Claude publishes on the tab and its transcript.
+  [r]  3-line AI summary (Haiku, through the copilot; text without secrets; cached)
+  tmux-summary --text <window>  no colours or keys (used by the ws-telegram daily summary)
+  [g]  go to that tab          any other key: close
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import subprocess  # nosec B404: only tmux, git and ant with fixed arguments
+import sys
+import termios
+import time
+import tty
+from pathlib import Path
+
+HOME = Path.home()
+CLAUDE = Path(os.environ.get("CLAUDE_CONFIG_DIR", HOME / ".claude"))
+CACHE = HOME / ".cache/ws-summary"
+B, D, C, Y, G, R0 = "\033[1m", "\033[2m", "\033[36m", "\033[33m", "\033[32m", "\033[0m"
+
+
+def sh(*args: str) -> str:
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=10).stdout.strip()  # nosec B603
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def tmux(fmt: str, target: str) -> str:
+    return sh("tmux", "display", "-p", "-t", target, fmt)
+
+
+def claude_pane(window: str) -> str:
+    """Pane with Claude (the native binary is named after its version); if there is none, the active one."""
+    for line in sh("tmux", "list-panes", "-t", window, "-F", "#{pane_id} #{pane_current_command}").splitlines():
+        pid, _, cmd = line.partition(" ")
+        if re.fullmatch(r"(\d+\.){2}\d+|claude", cmd):
+            return pid
+    return tmux("#{pane_id}", window)
+
+
+def transcript(folder: str) -> Path | None:
+    """The most recent conversation of that folder (Claude names the folder with everything non-alphanumeric replaced by -)."""
+    d = CLAUDE / "projects" / re.sub(r"[^A-Za-z0-9]", "-", folder)
+    files = sorted(d.glob("*.jsonl"), key=lambda f: f.stat().st_mtime) if d.is_dir() else []
+    return files[-1] if files else None
+
+
+def text_of(m: dict) -> str:
+    c = (m.get("message") or {}).get("content")
+    if isinstance(c, str):
+        return c
+    return "\n".join(b.get("text", "") for b in c or [] if isinstance(b, dict) and b.get("type") == "text")
+
+
+def read_log(f: Path) -> dict:
+    prompts, answers, tasks, turns, last = [], [], None, 0, ""
+    with open(f, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            last = o.get("timestamp") or last
+            m = o.get("message") or {}
+            if o.get("type") == "user" and isinstance(m.get("content"), (str, list)):
+                t = text_of(o).strip()
+                if t and not t.startswith("<") and not any(isinstance(b, dict) and b.get("type") == "tool_result" for b in m.get("content") or [] if isinstance(m.get("content"), list)):
+                    prompts.append(t); turns += 1
+            elif o.get("type") == "assistant":
+                t = text_of(o).strip()
+                if t:
+                    answers.append(t)
+                for b in m.get("content") or []:
+                    if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "TodoWrite":
+                        tasks = (b.get("input") or {}).get("todos") or tasks
+    return {"prompts": prompts, "answers": answers, "tasks": tasks or [], "turns": turns, "last": last}
+
+
+def ago(ts: str) -> str:
+    try:
+        t = time.mktime(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
+    except ValueError:
+        return ""
+    m = int((time.time() - t) // 60)
+    return f"{m} min ago" if m < 60 else f"{m // 60} h {m % 60} min ago" if m < 1440 else f"{m // 1440} days ago"
+
+
+def short(t: str, n: int) -> str:
+    t = re.sub(r"\s+", " ", t).strip()
+    return t if len(t) <= n else t[: n - 1] + "…"
+
+
+def ai_summary(f: Path, data: dict) -> str:
+    """3 lines with Haiku through the copilot (ai-shell.sh): goal, what was done, next step. Cached per file version."""
+    st = f.stat()
+    key = hashlib.sha256(f"{f}:{st.st_mtime_ns}".encode()).hexdigest()[:20]
+    c = CACHE / f"{key}.txt"
+    if c.exists():
+        return c.read_text(encoding="utf-8")
+    parts = [f"User: {short(p, 400)}" for p in data["prompts"][-6:]] + [f"Claude: {short(r, 600)}" for r in data["answers"][-6:]]
+    system = ("Summarize this software work conversation in the language the user writes in, in exactly 3 lines starting "
+               "with 'Goal:', 'Done:' and 'Next:'. At most 25 words per line. No sensitive data.")
+    script = ('source ~/.config/tmux-claude/ai-shell.sh 2>/dev/null; _ai_load_key; '
+              '_ai_redact | _ai_api "$1" 220 20')
+    try:
+        r = subprocess.run(["bash", "-c", script, "summary", system], input="\n".join(parts),  # nosec B603 B607
+                           capture_output=True, text=True, timeout=30)
+        out = r.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    if not out:
+        return "Could not generate it (is the copilot configured? ws-copilot status)."
+    CACHE.mkdir(parents=True, exist_ok=True); os.chmod(CACHE, 0o700)
+    c.write_text(out, encoding="utf-8")
+    return out
+
+
+def read_key() -> str:
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        return sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def main() -> int:
+    global B, D, C, Y, G, R0
+    text_only = len(sys.argv) > 1 and sys.argv[1] == "--text"
+    if text_only:
+        B = D = C = Y = G = R0 = ""
+        del sys.argv[1]
+    window = sys.argv[1] if len(sys.argv) > 1 else sh("tmux", "display", "-p", "#{window_id}")
+    p = claude_pane(window)
+    name = tmux("#{window_index} #{window_name}", window)
+    folder = tmux("#{pane_current_path}", p)
+    branch = sh("git", "-C", folder, "branch", "--show-current")
+    changes = len([l for l in sh("git", "-C", folder, "status", "--porcelain").splitlines() if l.strip()])
+    commit = sh("git", "-C", folder, "log", "-1", "--format=%h %s (%cr)")
+    st = {k: tmux(f"#{{{k}}}", window) for k in ("@cs", "@cmodel", "@cctx", "@ccost", "@cdet", "@cturn_txt")}
+
+    print(f"\n {B}{name}{R0}   {D}{folder}{R0}")
+    print(f" {C}Branch{R0} {branch or '—'}   {C}Uncommitted changes{R0} {changes}   {C}Last commit{R0} {commit or '—'}")
+    if st["@cmodel"]:
+        print(f" {C}Claude{R0} {st['@cs'] or '—'}{(' · ' + st['@cdet']) if st['@cdet'] else ''}{(' · turn ' + st['@cturn_txt']) if st['@cturn_txt'] else ''} · {st['@cmodel']} · context {st['@cctx'] or '—'}% · ${st['@ccost'] or '0'}")
+    f = transcript(folder)
+    if not f:
+        print(f"\n {D}No Claude conversation in this folder.{R0}")
+        data = None
+    else:
+        data = read_log(f)
+        print(f" {C}Conversation{R0} {data['turns']} turns · last message {ago(data['last'])}")
+        pending = [t for t in data["tasks"] if t.get("status") != "completed"]
+        if data["tasks"]:
+            done_count = len(data["tasks"]) - len(pending)
+            print(f"\n {B}What we are doing{R0}  {D}(Claude's tasks: {done_count}/{len(data['tasks'])} done){R0}")
+            for t in pending[:6]:
+                mark = f"{Y}▶{R0}" if t.get("status") == "in_progress" else "·"
+                print(f"   {mark} {short(t.get('content') or t.get('activeForm') or '', 90)}")
+        elif data["prompts"]:
+            print(f"\n {B}What we are doing{R0}  {D}(first request of the conversation){R0}\n   {short(data['prompts'][0], 180)}")
+        print(f"\n {B}Where we left off{R0}")
+        if data["prompts"]:
+            print(f"   {G}You:{R0} {short(data['prompts'][-1], 200)}")
+        if data["answers"]:
+            print(f"   {G}Claude:{R0} {short(data['answers'][-1][-400:], 300)}")
+    if text_only:
+        return 0
+    print(f"\n {D}[r] AI summary   [g] go to the tab   any other key: close{R0}", end="", flush=True)
+    k = read_key()
+    if k == "r" and f and data:
+        print(f"\n\n {B}Summary{R0}  {D}(Haiku){R0}")
+        for line in ai_summary(f, data).splitlines():
+            print(f"   {line}")
+        print(f"\n {D}[g] go to the tab   any other key: close{R0}", end="", flush=True)
+        k = read_key()
+    if k == "g":
+        sh("tmux", "select-window", "-t", window)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

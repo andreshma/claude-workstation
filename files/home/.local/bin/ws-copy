@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+#
+# ws-copy — copies stdin to the Windows clipboard keeping accented characters (clip.exe expects UTF-16LE).
+# Used by the popups (popup.conf) on mouse release; also works in pipes: command | ws-copy
+set -uo pipefail
+if command -v clip.exe >/dev/null 2>&1; then
+  iconv -f utf-8 -t utf-16le | clip.exe
+else
+  cat > /dev/null   # no Windows (tests): discards without error
+fi

@@ -1,128 +1,146 @@
 #!/usr/bin/env bash
 #
-# ws-personal — versiona en un repo git PRIVADO tu configuración personal: lo que NO va al kit del equipo
-# (segmentos de la barra, presupuestos, ajustes de ruteo y Telegram, plantillas propias, tu CLAUDE.md…).
-# Nace de perder mempalace-tmux.sh por no estar en git. ADR-011.
+# ws-personal — versions your personal configuration in a PRIVATE git repo: what does NOT go into the team kit
+# (status bar segments, budgets, routing and Telegram settings, your own templates, your CLAUDE.md…).
+# Born from losing mempalace-tmux.sh because it was not in git. ADR-011.
 #
-# Uso:
-#   ws-personal init [--github]   crea ~/code/estacion-personal (git); con --github también el repo privado
-#                                 <tu-usuario>/estacion-personal y lo enlaza (gh, pregunta antes)
-#   ws-personal sync [--silencioso]  copia las rutas de incluir.txt al repo, busca secretos, commit y push
-#   ws-personal estado            qué cambió desde el último commit y cuándo fue el último push
-#   ws-personal agregar <ruta>    agrega una ruta (relativa a ~) a incluir.txt y sincroniza
-#   ws-personal restaurar         copia del repo a ~ (pregunta; respalda lo que reemplaza como .bak.<fecha>)
-# El repo: ~/code/estacion-personal (WS_PERSONAL_DIR). Qué se versiona: su archivo incluir.txt (una ruta por línea,
-# relativa a ~; carpetas con / al final). Nunca: credenciales, tokens, .credentials.json, ws-telegram/config.
-# Seguridad: antes de cada commit, gitleaks (si está) y ws-redactar; si algo parece secreto, no hay commit.
-# tmux-fondo corre `ws-personal sync --silencioso` una vez al día.
+# Usage:
+#   ws-personal init [--github]   creates ~/code/workstation-personal (git); with --github also the private repo
+#                                 <your-user>/workstation-personal and links it (gh, asks first)
+#   ws-personal sync [--quiet]  copies the paths in include.txt to the repo, scans for secrets, commit and push
+#   ws-personal status            what changed since the last commit and when the last push was
+#   ws-personal add <path>        adds a path (relative to ~) to include.txt and syncs
+#   ws-personal restore           copies from the repo to ~ (asks; what it replaces is copied first to
+#                                 ~/.local/share/ws-kit/backup.<date>/, like install.sh does)
+# The repo: ~/code/workstation-personal (WS_PERSONAL_DIR). What is versioned: its include.txt file (one path per line,
+# relative to ~; folders end with /). Never: credentials, tokens, .credentials.json, ws-telegram/config.
+# Security: before every commit, gitleaks (if installed) and ws-redact; if anything looks like a secret, no commit.
+# tmux-background runs `ws-personal sync --quiet` once a day.
 set -uo pipefail
-R="${WS_PERSONAL_DIR:-$HOME/code/estacion-personal}"
-INC="$R/incluir.txt"
-silencio=0
-msg() { (( silencio )) || echo "$@"; }
+# Names before the rename, still used when they are what exists on disk: the repo ~/code/estacion-personal,
+# its incluir.txt and .git/ws-ultimo-sync. Nothing in the user's repo is renamed.
+R="${WS_PERSONAL_DIR:-}"
+if [[ -z "$R" ]]; then
+  R="$HOME/code/workstation-personal"; [[ ! -d "$R" && -d "$HOME/code/estacion-personal" ]] && R="$HOME/code/estacion-personal"
+fi
+INC="$R/include.txt"; [[ ! -f "$INC" && -f "$R/incluir.txt" ]] && INC="$R/incluir.txt"
+LAST_SYNC="$R/.git/ws-last-sync"
+quiet=0
+msg() { (( quiet )) || echo "$@"; }
 die() { echo "✖ $*" >&2; exit 1; }
-PROHIBIDO='(^|/)(\.credentials\.json|credentials|\.env|.*\.pem|.*\.key|id_rsa.*|id_ed25519.*|ws-telegram/config|.*token.*|.*secret.*)$'
+FORBIDDEN='(^|/)(\.credentials\.json|credentials|\.env|.*\.pem|.*\.key|id_rsa.*|id_ed25519.*|ws-telegram/config|.*token.*|.*secret.*)$'
 
-incluir_defecto() {
+# .config/ws-local/roots.txt (your own folder roots, read by tmux-open) is already inside .config/ws-local/; it is
+# listed by name too, so it stays versioned if the folder line is ever removed.
+default_include() {
   cat <<'EOF'
-# Rutas (relativas a ~) que ws-personal versiona. Carpetas con / al final. «#» = comentario.
+# Paths (relative to ~) that ws-personal versions. Folders end with /. "#" = comment.
 .config/ws-local/
-.config/ws-telemetria/presupuestos.conf
-.config/ws-ruteo/ajustes.conf
-.config/ws-ruteo/modelos.conf
-.config/ws-telegram/ajustes
-.config/tmux-claude/plantillas/
+.config/ws-local/roots.txt
+.config/ws-telemetry/budgets.conf
+.config/ws-routing/settings.conf
+.config/ws-routing/models.conf
+.config/ws-telegram/settings
+.config/tmux-claude/templates/
 .config/tmux-claude/roots.txt
 .claude/CLAUDE.md
 EOF
 }
 
-rutas() { grep -vE '^[[:space:]]*(#|$)' "$INC" | sed 's/[[:space:]]*$//'; }
-
-copiar_al_repo() {   # ~ → repo/home (solo lo listado; lo que ya no existe en ~ se borra del repo)
-  local r o d
-  rm -rf "$R/home.nuevo"; mkdir -p "$R/home.nuevo"
-  while IFS= read -r r; do
-    [[ "$r" == /* || "$r" == *..* ]] && { msg "  omito   $r (debe ser relativa a ~ y sin ..)"; continue; }
-    o="$HOME/$r"; [[ -e "$o" ]] || continue
-    if [[ -d "$o" ]]; then
-      d="$R/home.nuevo/${r%/}"; mkdir -p "$d"
-      ( cd "$o" && find . -type f ! -name '*.bak.*' ! -name '*.tmp' -print0 ) | while IFS= read -r -d '' f; do
-        [[ "${r%/}/${f#./}" =~ $PROHIBIDO ]] && continue
-        install -D -m "$(stat -c %a "$o/${f#./}")" "$o/${f#./}" "$d/${f#./}"   # conserva +x (segmentos)
-      done
-    else
-      [[ "$r" =~ $PROHIBIDO ]] && { msg "  omito   $r (parece credencial)"; continue; }
-      install -D -m "$(stat -c %a "$o")" "$o" "$R/home.nuevo/$r"
-    fi
-  done < <(rutas)
-  rm -rf "${R:?}/home"; mv "$R/home.nuevo" "$R/home"
+# Paths listed before the rename are read with the name they have now in ~ (the installer moved them).
+paths() {
+  grep -vE '^[[:space:]]*(#|$)' "$INC" | sed -E -e 's/[[:space:]]*$//' \
+    -e 's#^\.config/ws-telemetria/presupuestos\.conf$#.config/ws-telemetry/budgets.conf#' \
+    -e 's#^\.config/ws-ruteo/ajustes\.conf$#.config/ws-routing/settings.conf#' \
+    -e 's#^\.config/ws-ruteo/modelos\.conf$#.config/ws-routing/models.conf#' \
+    -e 's#^\.config/ws-telegram/ajustes$#.config/ws-telegram/settings#' \
+    -e 's#^\.config/tmux-claude/plantillas(/|$)#.config/tmux-claude/templates\1#'
 }
 
-secretos() {   # 0 = limpio
-  local f hall=0
+copy_to_repo() {   # ~ → repo/home (only what is listed; what no longer exists in ~ is removed from the repo)
+  local r o d
+  rm -rf "$R/home.new"; mkdir -p "$R/home.new"
+  while IFS= read -r r; do
+    [[ "$r" == /* || "$r" == *..* ]] && { msg "  skipped $r (must be relative to ~ and without ..)"; continue; }
+    o="$HOME/$r"; [[ -e "$o" ]] || continue
+    if [[ -d "$o" ]]; then
+      d="$R/home.new/${r%/}"; mkdir -p "$d"
+      ( cd "$o" && find . -type f ! -name '*.bak.*' ! -name '*.tmp' -print0 ) | while IFS= read -r -d '' f; do
+        [[ "${r%/}/${f#./}" =~ $FORBIDDEN ]] && continue
+        install -D -m "$(stat -c %a "$o/${f#./}")" "$o/${f#./}" "$d/${f#./}"   # keeps +x (segments)
+      done
+    else
+      [[ "$r" =~ $FORBIDDEN ]] && { msg "  skipped $r (looks like a credential)"; continue; }
+      install -D -m "$(stat -c %a "$o")" "$o" "$R/home.new/$r"
+    fi
+  done < <(paths)
+  rm -rf "${R:?}/home"; mv "$R/home.new" "$R/home"
+}
+
+scan_secrets() {   # 0 = clean
+  local f found=0
   if command -v gitleaks >/dev/null; then
-    gitleaks detect --no-git --no-banner --redact -s "$R/home" >/dev/null 2>&1 || { echo "✖ gitleaks encontró posibles secretos en $R/home (gitleaks detect --no-git -s $R/home -v)" >&2; hall=1; }
+    gitleaks detect --no-git --no-banner --redact -s "$R/home" >/dev/null 2>&1 || { echo "✖ gitleaks found possible secrets in $R/home (gitleaks detect --no-git -s $R/home -v)" >&2; found=1; }
   fi
   while IFS= read -r -d '' f; do
-    if ! cmp -s "$f" <(ws-redactar < "$f" 2>/dev/null || cat "$f"); then echo "✖ posible secreto en ${f#"$R/home/"} (ws-redactar lo taparía)" >&2; hall=1; fi
+    if ! cmp -s "$f" <(ws-redact < "$f" 2>/dev/null || cat "$f"); then echo "✖ possible secret in ${f#"$R/home/"} (ws-redact would mask it)" >&2; found=1; fi
   done < <(find "$R/home" -type f -print0)
-  return $hall
+  return $found
 }
 
 sync() {
-  [[ -d "$R/.git" ]] || die "Primero: ws-personal init"
-  copiar_al_repo
-  secretos || { echo "  No hice commit. Quita el secreto (o saca esa ruta de incluir.txt) y repite." >&2; return 1; }
+  [[ -d "$R/.git" ]] || die "First: ws-personal init"
+  copy_to_repo
+  scan_secrets || { echo "  No commit made. Remove the secret (or take that path out of $(basename "$INC")) and try again." >&2; return 1; }
   git -C "$R" add -A
-  if git -C "$R" diff --cached --quiet; then msg "  (sin cambios)"; else
-    git -C "$R" -c core.hooksPath=/dev/null commit -q -m "chore(personal): sincronizar configuración $(date +%F)" && msg "  commit  $(git -C "$R" log -1 --format=%s)"
+  if git -C "$R" diff --cached --quiet; then msg "  (no changes)"; else
+    git -C "$R" -c core.hooksPath=/dev/null commit -q -m "chore(personal): sync configuration $(date +%F)" && msg "  commit  $(git -C "$R" log -1 --format=%s)"
   fi
-  git -C "$R" config ws.gate.allowMain true   # repos creados antes de esta versión
+  git -C "$R" config ws.gate.allowMain true   # repos created before this version
   if git -C "$R" remote get-url origin >/dev/null 2>&1; then
-    timeout 60 git -C "$R" push -q -u origin HEAD 2>/dev/null && msg "  push    $(git -C "$R" remote get-url origin)" || echo "⚠ No pude hacer push (¿sin red o sin sesión de gh?)" >&2
-  else msg "  nota    sin remoto: ws-personal init --github para tenerlo fuera de esta PC"; fi
-  date +%s > "$R/.git/ws-ultimo-sync"
+    timeout 60 git -C "$R" push -q -u origin HEAD 2>/dev/null && msg "  push    $(git -C "$R" remote get-url origin)" || echo "⚠ Could not push (no network or no gh session?)" >&2
+  else msg "  note    no remote: ws-personal init --github to keep it off this PC"; fi
+  date +%s > "$LAST_SYNC"
 }
 
-case "${1:-estado}" in
+case "${1:-status}" in
   init)
     mkdir -p "$R"; cd "$R" || exit 1
-    [[ -d .git ]] || { git init -q -b main && msg "  listo   repo local $R"; }
-    # Repo personal de una sola persona: la compuerta (ws-gate) permite push directo a main aquí.
+    [[ -d .git ]] || { git init -q -b main && msg "  done    local repo $R"; }
+    # Single-person personal repo: the gate (ws-gate) allows direct push to main here.
     git config ws.gate.allowMain true
-    [[ -f "$INC" ]] || { incluir_defecto > "$INC"; msg "  listo   incluir.txt (edítalo para agregar o quitar rutas)"; }
-    [[ -f README.md ]] || printf '# estacion-personal\n\nConfiguración personal de la estación (no va al kit del equipo). La maneja `ws-personal` (ADR-011).\n\n- Qué se versiona: `incluir.txt`\n- Copia: `home/` refleja `~`\n- Restaurar en otra PC: `ws-personal restaurar`\n' > README.md
-    printf 'home.nuevo/\n*.bak.*\n' > .gitignore
+    [[ -f "$INC" ]] || { default_include > "$INC"; msg "  done    include.txt (edit it to add or remove paths)"; }
+    [[ -f README.md ]] || printf '# workstation-personal\n\nPersonal workstation configuration (it does not go into the team kit). Managed by `ws-personal` (ADR-011).\n\n- What is versioned: `include.txt`\n- Copy: `home/` mirrors `~`\n- Restore on another PC: `ws-personal restore`\n' > README.md
+    printf 'home.new/\n*.bak.*\n' > .gitignore
     sync
     if [[ "${2:-}" == --github ]] && ! git remote get-url origin >/dev/null 2>&1; then
-      command -v gh >/dev/null || die "Falta gh (ws-tools install gh)"
-      u="$(gh api user -q .login 2>/dev/null)" || die "Sin sesión de gh: gh auth login"
-      read -r -p "¿Crear el repo PRIVADO $u/estacion-personal en GitHub y subir? [s/N] " s
-      [[ "$s" =~ ^[sS]$ ]] || exit 0
-      gh repo create "$u/estacion-personal" --private --source "$R" --remote origin --push \
-        --description "Configuración personal de la estación tmux + Claude (ws-personal)" && msg "  listo   github.com/$u/estacion-personal (privado)"
-      [[ "$(gh repo view "$u/estacion-personal" --json visibility -q .visibility 2>/dev/null)" == PRIVATE ]] || echo "⚠ Revisa: el repo NO quedó privado" >&2
+      command -v gh >/dev/null || die "gh is missing (ws-tools install gh)"
+      u="$(gh api user -q .login 2>/dev/null)" || die "No gh session: gh auth login"
+      read -r -p "Create the PRIVATE repo $u/workstation-personal on GitHub and push? [y/N] " s
+      [[ "$s" =~ ^([yY]([eE][sS])?|[sS]([iI]|í|Í)?)$ ]] || exit 0
+      gh repo create "$u/workstation-personal" --private --source "$R" --remote origin --push \
+        --description "Personal configuration of the tmux + Claude workstation (ws-personal)" && msg "  done    github.com/$u/workstation-personal (private)"
+      [[ "$(gh repo view "$u/workstation-personal" --json visibility -q .visibility 2>/dev/null)" == PRIVATE ]] || echo "⚠ Check: the repo did NOT end up private" >&2
     fi ;;
-  sync) [[ "${2:-}" == --silencioso ]] && silencio=1; sync ;;
-  estado)
-    [[ -d "$R/.git" ]] || { echo "Sin repo personal (ws-personal init)"; exit 0; }
-    echo "Repo: $R · remoto: $(git -C "$R" remote get-url origin 2>/dev/null || echo 'ninguno')"
-    u="$(cat "$R/.git/ws-ultimo-sync" 2>/dev/null)"
-    if [[ -n "$u" ]]; then echo "Último sync: $(date -d "@$u" '+%F %H:%M')"; else echo "Último sync: nunca"; fi
-    echo "Rutas: $(rutas | wc -l) · último commit: $(git -C "$R" log -1 --format='%cr — %s' 2>/dev/null)"
-    copiar_al_repo; git -C "$R" status --short -- home | head -20 ;;
-  agregar)
-    r="${2:?ruta relativa a ~}"; [[ -e "$HOME/$r" ]] || die "No existe ~/$r"
+  sync) [[ "${2:-}" == --quiet ]] && quiet=1; sync ;;
+  status)
+    [[ -d "$R/.git" ]] || { echo "No personal repo (ws-personal init)"; exit 0; }
+    echo "Repo: $R · remote: $(git -C "$R" remote get-url origin 2>/dev/null || echo 'none')"
+    u="$(cat "$LAST_SYNC" 2>/dev/null || cat "$R/.git/ws-ultimo-sync" 2>/dev/null)"
+    if [[ -n "$u" ]]; then echo "Last sync: $(date -d "@$u" '+%F %H:%M')"; else echo "Last sync: never"; fi
+    echo "Paths: $(paths | wc -l) · last commit: $(git -C "$R" log -1 --format='%cr — %s' 2>/dev/null)"
+    copy_to_repo; git -C "$R" status --short -- home | head -20 ;;
+  add)
+    r="${2:?path relative to ~}"; [[ -e "$HOME/$r" ]] || die "Not found: ~/$r"
     grep -qxF "$r" "$INC" || echo "$r" >> "$INC"; sync ;;
-  restaurar)
-    [[ -d "$R/home" ]] || die "No hay nada que restaurar en $R/home"
-    echo "Se copiará a ~ (lo que exista se respalda como .bak.<fecha>):"; ( cd "$R/home" && find . -type f | sed 's#^\./#  ~/#' )
-    read -r -p "¿Restaurar? [s/N] " s; [[ "$s" =~ ^[sS]$ ]] || exit 0
-    st="$(date +%Y%m%d-%H%M%S)"
+  restore)
+    [[ -d "$R/home" ]] || die "Nothing to restore in $R/home"
+    st="$(date +%Y%m%d-%H%M%S)"; bk="$HOME/.local/share/ws-kit/backup.$st"
+    echo "This will be copied to ~ (whatever it replaces is copied first to ${bk/#"$HOME"/\~}):"; ( cd "$R/home" && find . -type f | sed 's#^\./#  ~/#' )
+    read -r -p "Restore? [y/N] " s; [[ "$s" =~ ^([yY]([eE][sS])?|[sS]([iI]|í|Í)?)$ ]] || exit 0
     ( cd "$R/home" && find . -type f -print0 ) | while IFS= read -r -d '' f; do
-      d="$HOME/${f#./}"; [[ -f "$d" ]] && ! cmp -s "$R/home/${f#./}" "$d" && cp -p "$d" "$d.bak.$st"
-      install -D -m "$(stat -c %a "$R/home/${f#./}")" "$R/home/${f#./}" "$d"; echo "  listo   ~/${f#./}"
+      d="$HOME/${f#./}"; [[ -f "$d" ]] && ! cmp -s "$R/home/${f#./}" "$d" && install -D -p "$d" "$bk/${f#./}"
+      install -D -m "$(stat -c %a "$R/home/${f#./}")" "$R/home/${f#./}" "$d"; echo "  done    ~/${f#./}"
     done ;;
-  *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

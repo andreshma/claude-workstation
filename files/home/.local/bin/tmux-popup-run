@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+#
+# tmux-popup-run — runs a floating window's command inside its own tmux session
+# (separate server "-L popup"), so the popup can be used like a normal tab:
+# wheel = scroll, drag = select and copy to the Windows clipboard, Ctrl+b [ and / =
+# search, Shift+click = open URL. The menus prepend it to the command of each display-popup.
+#
+# Usage (inside display-popup): tmux-popup-run [--persistent] command [args...]
+#   --persistent  on closing with Ctrl+b d the session stays alive and is resumed next time
+#                  (without the option, every open starts clean to show fresh data)
+# The scripts running inside still talk to the outer tmux (external TMUX), so they
+# can switch tabs, read states or open windows as before.
+set -uo pipefail
+persistent=0
+if [[ "${1:-}" == --persistent ]]; then persistent=1; shift; fi
+(( $# )) || { echo "usage: tmux-popup-run [--persistent] command [args...]" >&2; exit 2; }
+
+outer="${TMUX:-}"
+pane="${TMUX_PANE:-$(tmux display -p '#{pane_id}' 2>/dev/null || true)}"
+conf="$HOME/.config/tmux-claude/popup.conf"
+name="f$(printf '%s' "$*" | md5sum | cut -c1-8)"
+cmd="$(printf '%q ' "$@")"
+T=(tmux -L popup -f "$conf")
+
+(( persistent )) || "${T[@]}" kill-session -t "$name" 2>/dev/null
+# env -u TMUX: tmux refuses to nest sessions if it sees TMUX. Inside, the external TMUX is restored.
+env -u TMUX "${T[@]}" new-session -A -s "$name" -c "$PWD" \
+  "env TMUX='$outer' TMUX_PANE='$pane' WS_POPUP_SESSION='$name' $cmd"
+rc=$?
+# The popup server ends with its last session and tmux leaves its socket file behind: it is removed when tmux itself
+# says no server is there (never on a timeout or another error, and never while a persistent popup keeps it alive).
+# A server that is still shutting down answers something else for an instant: asked again, up to three times.
+sock="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/popup"
+for _ in 1 2 3; do
+  [[ -S "$sock" ]] || break
+  r="$(env -u TMUX timeout 5 tmux -S "$sock" list-sessions 2>&1)" && break
+  if [[ "$r" == "no server running"* ]]; then rm -f -- "$sock"; break; fi
+  sleep 0.2
+done
+exit "$rc"

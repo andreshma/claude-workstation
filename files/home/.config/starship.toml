@@ -1,7 +1,7 @@
-# starship.toml — prompt de la estación: dónde estás parado antes de ejecutar algo.
-# Muestra carpeta, rama, contexto de Kubernetes, suscripción de Azure y perfil de AWS;
-# en rojo con ⚠ PROD si el contexto parece de producción (mismo criterio que el guard).
-# Sin git_status: en repos de /mnt/c es lento. Fuente: kit claude-workstation.
+# starship.toml — workstation prompt: where you stand before running anything.
+# Shows folder, branch, Kubernetes context, Azure subscription and AWS profile;
+# in red with ⚠ PROD if the context looks like production (same criterion as the guard).
+# No git_status: it is slow in repos under /mnt/c. Source: claude-workstation kit.
 "$schema" = "https://starship.rs/config-schema.json"
 add_newline = false
 command_timeout = 500
@@ -36,7 +36,7 @@ format = "[aws $profile( $region)]($style) "
 style = "208"
 
 [custom.prod]
-description = "⚠ PROD si la suscripción de Azure o el perfil de AWS parecen de producción"
+description = "⚠ PROD if the Azure subscription or the AWS profile looks like production"
 when = '''
 p="$AWS_PROFILE"
 f="$HOME/.azure/azureProfile.json"

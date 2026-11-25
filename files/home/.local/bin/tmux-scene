@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+#
+# tmux-scene — picks the screensaver scene from a list (instead of stepping through them one by one).
+# Menu → Appearance → s.
+#   Enter: sets it and shows it right away (any key returns) · Ctrl+F: only sets it · «random»: a different
+#   one each time. The list comes from the scenes tmux-saver has, so it includes the new ones.
+# Usage: tmux-scene   ·   tmux-scene --list   (name<TAB>description; tests)
+set -uo pipefail
+TAB=$'\t'
+SAVER="$HOME/.local/bin/tmux-saver"
+declare -A DESC=(
+  [boreal]="Northern lights over mountains, reflected in a lake (shading engine; needs python3-numpy)"
+  [clouds]="Flight over a sea of clouds at sunset (shading engine; needs python3-numpy)"
+  [blackhole]="A black hole with its disk of glowing gas (shading engine; needs python3-numpy)"
+  [pond]="Raindrops open rings on a pond under the moon (shading engine; needs python3-numpy)"
+  [fire]="Flames rising across the whole screen (shading engine; needs python3-numpy)"
+  [tunnel]="An endless tunnel of light (shading engine; needs python3-numpy)"
+  [fractal]="A Julia fractal that changes shape (shading engine; needs python3-numpy)"
+  [gallery]="Your images and animated GIFs turned into characters (chafa). Folder: ~/.config/tmux-claude/gallery"
+  [ocean]="Sunset over the sea, with the sun's glitter on the waves (shading engine; needs python3-numpy)"
+  [planet]="A ringed gas giant spins in front of the stars (shading engine; needs python3-numpy)"
+  [donut]="A spinning colored donut, with light and shine (shading engine; needs python3-numpy)"
+  [lava]="Lava lamp: blobs that merge and split (shading engine; needs python3-numpy)"
+  [flight]="Low flight over mountains, valleys and lakes (shading engine; needs python3-numpy)"
+  [peaks]="Mountain range at night: moon, pines, a reflecting lake and shooting stars (ASCII art)"
+  [aurora]="Northern lights over a snowy forest (ASCII art)"
+  [snowfall]="Cabin with its windows lit, smoke and falling snow (ASCII art)"
+  [sailboat]="A sailboat crosses the sea under the moon (ASCII art)"
+  [fish]="Seabed: fish, jellyfish, seaweed and bubbles (ASCII art)"
+  [pipes]="Colored pipes that grow and fill the screen"
+  [battle]="Battle in space: two fleets, beams and explosions (ASCII art)"
+  [campfire]="Campfire next to the tent, with sparks and the forest around it (ASCII art)"
+  [cherry]="Cherry tree in bloom at sunset; the petals fall with the wind (ASCII art)"
+  [rain]="Rain over the city at night, with lightning and reflections on the street (ASCII art)"
+  [galaxy]="A spinning spiral galaxy (ASCII art)"
+  [nebula]="Flowing clouds of colored gas (ASCII art)"
+  [hyperspace]="The stars rush past at full speed (ASCII art)"
+)
+
+scenes() { sed -n 's/^SCENES=(\(.*\))[[:space:]]*$/\1/p' "$SAVER" 2>/dev/null | tr ' ' '\n' | grep -vx -e '' -e random; }
+list_rows() {
+  local current e; current="$(tmux show -gqv @saver_scene 2>/dev/null)"
+  printf 'random\t%s A different one each time\n' "$([[ -z "$current" ]] && echo '✓' || echo ' ')"
+  while read -r e; do printf '%s\t%s %s\n' "$e" "$([[ "$e" == "$current" ]] && echo '✓' || echo ' ')" "${DESC[$e]:-$e}"; done < <(scenes)
+}
+[[ "${1:-}" == --list ]] && { list_rows; exit 0; }
+command -v fzf >/dev/null || { list_rows; read -rsn1; exit 0; }
+out="$(list_rows | fzf --delimiter="$TAB" --with-nth=1,2 --reverse --no-sort --expect=ctrl-f --prompt 'scene> ' \
+           --header 'Enter: set it and show it now (any key returns) · Ctrl+F: only set it · Esc closes')" || exit 0
+key="$(head -1 <<<"$out")"; e="$(sed -n 2p <<<"$out" | cut -f1)"
+[[ -n "$e" ]] || exit 0
+# The choice is saved to the preferences (it used to stay only in tmux and the screensaver kept the old scene).
+"$SAVER" --pin "$e" >/dev/null || exit 0
+if [[ "$e" == random ]]; then tmux display "Screensaver: random scene"; exit 0; fi
+if [[ "$key" == ctrl-f ]]; then tmux display "Screensaver: scene «$e»"
+else tmux run-shell -b -d 0.4 'tmux lock-client'; fi   # once the popup has closed: the screensaver with that scene

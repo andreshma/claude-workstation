@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 #
-# ws-tools — inventario de herramientas de la estación en WSL (qué hay, qué versión, qué
-# falta) e instalación por herramienta o por grupo desde fuentes oficiales: apt (repos
-# firmados), pipx (PyPI) o binarios de GitHub verificados contra el checksum de su release.
+# ws-tools — inventory of the workstation's tools in WSL (what is there, which version, what
+# is missing) and installation per tool or per group from official sources: apt (signed
+# repos), pipx (PyPI) or GitHub binaries verified against the checksum of their release.
 #
-# Uso:
-#   ws-tools                                 inventario
-#   ws-tools install <grupo|herramienta>...  grupos: base nube aws contenedores calidad
+# Usage:
+#   ws-tools                                 inventory
+#   ws-tools install <group|tool>...         groups: base cloud aws containers quality
 #                                            python web rust sql dev
-#   ws-tools install --force ...             instala aunque C: tenga menos de 10 GB libres
+#   ws-tools install --force ...             installs even if C: has less than 10 GB free
 set -uo pipefail
 MIN_FREE_GB=10
 AGG_VER=v1.9.0
 AGG_SHA=ddcbf6ca044c8ac3a434dcb9ee89fb9e3be87209982b7c2adb55f782e8f0f390
 
-# nombre|grupo|comando de versión|cómo se instala (apt:paquete, pipx:paquete, fn:función, manual:texto)
-# El comando de versión no puede llevar "|" (es el separador de campos).
+# name|group|version command|how to install (apt:package, pipx:package, fn:function, manual:text)
+# The version command cannot contain "|" (it is the field separator).
 TOOLS=(
   "tmux|base|tmux -V|apt:tmux"
   "git|base|git --version|apt:git"
@@ -37,29 +37,29 @@ TOOLS=(
   "agg|base|agg --version|fn:agg"
   "starship|base|starship --version|fn:starship"
   "wslu|base|wslview --version|apt:wslu"
-  "az|nube|az version --query '\"azure-cli\"' -o tsv|fn:az"
-  "bicep|nube|$HOME/.azure/bin/bicep --version|fn:bicep"
-  "azd|nube|azd version|fn:azd"
-  "kubectl|nube|kubectl version --client|fn:aks"
-  "kubelogin|nube|kubelogin --version|fn:aks"
-  "kubectx|nube|command -v kubectx|apt:kubectx"
-  "helm|nube|helm version --short|fn:helm"
-  "k9s|nube|k9s version --short|fn:k9s"
-  "terraform|nube|terraform version|fn:terraform"
-  "tflint|nube|tflint --version|fn:tflint"
+  "az|cloud|az version --query '\"azure-cli\"' -o tsv|fn:az"
+  "bicep|cloud|$HOME/.azure/bin/bicep --version|fn:bicep"
+  "azd|cloud|azd version|fn:azd"
+  "kubectl|cloud|kubectl version --client|fn:aks"
+  "kubelogin|cloud|kubelogin --version|fn:aks"
+  "kubectx|cloud|command -v kubectx|apt:kubectx"
+  "helm|cloud|helm version --short|fn:helm"
+  "k9s|cloud|k9s version --short|fn:k9s"
+  "terraform|cloud|terraform version|fn:terraform"
+  "tflint|cloud|tflint --version|fn:tflint"
   "aws|aws|aws --version|fn:awscli"
-  "docker|contenedores|docker --version|manual:Docker Desktop → Settings → Resources → WSL integration → Ubuntu"
-  "compose|contenedores|docker compose version|manual:viene con Docker Desktop"
-  "scout|contenedores|docker scout --help >/dev/null 2>&1 && echo disponible|manual:viene con Docker Desktop (docker scout cves <imagen>)"
-  "hadolint|contenedores|hadolint --version|fn:hadolint"
-  "checkov|calidad|checkov --version|pipx:checkov"
-  "pre-commit|calidad|pre-commit --version|pipx:pre-commit"
-  "k6|calidad|k6 version|fn:k6"
-  "osv-scanner|calidad|osv-scanner --version|fn:osv"
-  "markitdown|calidad|markitdown --version|pipx:markitdown[all]"
-  "pandoc|calidad|pandoc --version|apt:pandoc"
-  "pdfimages|calidad|pdfimages -v 2>&1|apt:poppler-utils"
-  "yamllint|calidad|yamllint --version|apt:yamllint"
+  "docker|containers|docker --version|manual:Docker Desktop → Settings → Resources → WSL integration → Ubuntu"
+  "compose|containers|docker compose version|manual:comes with Docker Desktop"
+  "scout|containers|docker scout --help >/dev/null 2>&1 && echo available|manual:comes with Docker Desktop (docker scout cves <image>)"
+  "hadolint|containers|hadolint --version|fn:hadolint"
+  "checkov|quality|checkov --version|pipx:checkov"
+  "pre-commit|quality|pre-commit --version|pipx:pre-commit"
+  "k6|quality|k6 version|fn:k6"
+  "osv-scanner|quality|osv-scanner --version|fn:osv"
+  "markitdown|quality|markitdown --version|pipx:markitdown[all]"
+  "pandoc|quality|pandoc --version|apt:pandoc"
+  "pdfimages|quality|pdfimages -v 2>&1|apt:poppler-utils"
+  "yamllint|quality|yamllint --version|apt:yamllint"
   "python3|python|python3 -m venv --help >/dev/null && python3 --version|apt:python3-venv"
   "chafa|base|chafa --version | head -1|apt:chafa"
   "numpy|python|python3 -c 'import numpy; print(numpy.__version__)'|apt:python3-numpy"
@@ -67,7 +67,7 @@ TOOLS=(
   "ruff|python|ruff --version|fn:ruff"
   "node-lts|web|node -e 'process.exit(+process.versions.node.split(\".\")[0] % 2)' && node --version|fn:fnm"
   "pnpm|web|pnpm --version|fn:pnpm"
-  "angular|web|command -v ng|manual:por proyecto con npx ng …, o npm i -g @angular/cli con el Node de fnm"
+  "angular|web|command -v ng|manual:per project with npx ng …, or npm i -g @angular/cli with the fnm Node"
   "rustup|rust|rustup --version|fn:rustup"
   "cargo|rust|cargo --version|fn:rustup"
   "psql|sql|psql --version|apt:postgresql-client"
@@ -75,12 +75,12 @@ TOOLS=(
   "mysql|sql|mysql --version|apt:mariadb-client"
   "sqlcmd|sql|sqlcmd --version|fn:sqlcmd"
   "dotnet|dev|dotnet --version|apt:dotnet-sdk-8.0"
-  "pwsh.exe|dev|pwsh.exe -NoLogo -NoProfile -Command \$PSVersionTable.PSVersion.ToString()|manual:PowerShell 7 en Windows (opcional; el popup usa 5.1)"
+  "pwsh.exe|dev|pwsh.exe -NoLogo -NoProfile -Command \$PSVersionTable.PSVersion.ToString()|manual:PowerShell 7 on Windows (optional; the popup uses 5.1)"
 )
 
 field() { cut -d'|' -f"$2" <<<"$1"; }
-# version_of <comando> — primera línea de su salida; falla si el comando falla. Lee toda la
-# salida antes de recortarla: con pipefail, cortar la tubería (grep -m1) daba falsos FALTA.
+# version_of <command> — first line of its output; fails if the command fails. Reads the whole
+# output before trimming it: with pipefail, cutting the pipe (grep -m1) gave false MISSING.
 version_of() {
   local out; out="$(timeout 8 bash -c "$1" 2>/dev/null)" || return 1
   out="$(grep -m1 . <<<"$out")"; [[ -n "$out" ]] || return 1
@@ -89,33 +89,33 @@ version_of() {
 
 inventory() {
   local t n g v how ok=0 miss=0
-  printf '%-12s %-13s %-6s %s\n' HERRAMIENTA GRUPO ESTADO "VERSIÓN / CÓMO INSTALAR"
+  printf '%-12s %-13s %-7s %s\n' TOOL GROUP STATUS "VERSION / HOW TO INSTALL"
   for t in "${TOOLS[@]}"; do
     n="$(field "$t" 1)"; g="$(field "$t" 2)"; how="$(field "$t" 4)"
     if v="$(version_of "$(field "$t" 3)")" && [[ -n "$v" ]]; then
-      printf '%-12s %-13s \033[32m%-6s\033[0m %s\n' "$n" "$g" OK "$v"; ok=$((ok + 1))
+      printf '%-12s %-13s \033[32m%-7s\033[0m %s\n' "$n" "$g" OK "$v"; ok=$((ok + 1))
     else
-      printf '%-12s %-13s \033[31m%-6s\033[0m %s\n' "$n" "$g" FALTA "${how#*:}"; miss=$((miss + 1))
+      printf '%-12s %-13s \033[31m%-7s\033[0m %s\n' "$n" "$g" MISSING "${how#*:}"; miss=$((miss + 1))
     fi
   done
-  printf '\n%d instaladas, %d faltan. Instala con: ws-tools install <grupo|herramienta>\n' "$ok" "$miss"
+  printf '\n%d installed, %d missing. Install with: ws-tools install <group|tool>\n' "$ok" "$miss"
 }
 
-# --- instaladores (fn:) --------------------------------------------------------
-apt_repo() { # apt_repo <nombre> <url de la llave> <línea deb con KEYRING>
+# --- installers (fn:) ----------------------------------------------------------
+apt_repo() { # apt_repo <name> <key url> <deb line with KEYRING>
   local kr="/usr/share/keyrings/$1.gpg"
   [[ -f "/etc/apt/sources.list.d/$1.list" ]] && return 0
   curl -fsSL "$2" | sudo gpg --dearmor --yes -o "$kr"
   echo "${3//KEYRING/$kr}" | sudo tee "/etc/apt/sources.list.d/$1.list" >/dev/null
   sudo apt-get update -qq
 }
-gh_latest() { # gh_latest <repo> <asset> <archivo de checksums> <destino>
+gh_latest() { # gh_latest <repo> <asset> <checksums file> <destination>
   local base="https://github.com/$1/releases/latest/download" d exp act; d="$(mktemp -d)"
-  if ! curl -fsSL -o "$d/$2" "$base/$2" || ! curl -fsSL -o "$d/sums" "$base/$3"; then echo "  no pude descargar $2"; rm -rf "$d"; return 1; fi
+  if ! curl -fsSL -o "$d/$2" "$base/$2" || ! curl -fsSL -o "$d/sums" "$base/$3"; then echo "  could not download $2"; rm -rf "$d"; return 1; fi
   exp="$(awk -v f="$2" '$2 == f || $2 == "*" f { print $1; exit }' "$d/sums")"
   [[ -n "$exp" ]] || exp="$(awk 'NF == 1 { print $1; exit }' "$d/sums")"
   act="$(sha256sum "$d/$2" | cut -d' ' -f1)"
-  if [[ -z "$exp" || "$exp" != "$act" ]]; then echo "  checksum de $2 no coincide; no se instala"; rm -rf "$d"; return 1; fi
+  if [[ -z "$exp" || "$exp" != "$act" ]]; then echo "  checksum of $2 does not match; not installing"; rm -rf "$d"; return 1; fi
   cp "$d/$2" "$4"; rm -rf "$d"
 }
 fn_agg() {
@@ -170,16 +170,16 @@ fn_starship() {
 fn_ruff() { uv tool install ruff; }
 fn_rustup() {
   curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh &&
-    sh /tmp/rustup-init.sh -y --profile default && echo "  Abre una terminal nueva para tener cargo en el PATH."
+    sh /tmp/rustup-init.sh -y --profile default && echo "  Open a new terminal to have cargo in the PATH."
 }
 fn_fnm() {
   local dir="$HOME/.local/share/fnm"
   curl -fsSL https://fnm.vercel.app/install -o /tmp/fnm-install.sh && bash /tmp/fnm-install.sh --skip-shell --install-dir "$dir" || return 1
   grep -q 'fnm env' "$HOME/.bashrc" ||
-    printf '\n# Node LTS con fnm (usa /tmp si /run/user/$UID aún no existe al arrancar WSL)\nexport PATH="%s:$PATH"\n_fnm_rt="${XDG_RUNTIME_DIR:-}"; [ -d "$_fnm_rt" ] || { _fnm_rt="/tmp/fnm-$UID"; mkdir -p "$_fnm_rt" && chmod 700 "$_fnm_rt"; }\neval "$(XDG_RUNTIME_DIR="$_fnm_rt" fnm env --use-on-cd --shell bash)"; unset _fnm_rt\n' "$dir" >> "$HOME/.bashrc"
-  "$dir/fnm" install --lts && "$dir/fnm" default lts-latest && echo "  Abre una terminal nueva para usar el Node LTS."
+    printf '\n# Node LTS with fnm (uses /tmp if /run/user/$UID does not exist yet when WSL starts)\nexport PATH="%s:$PATH"\n_fnm_rt="${XDG_RUNTIME_DIR:-}"; [ -d "$_fnm_rt" ] || { _fnm_rt="/tmp/fnm-$UID"; mkdir -p "$_fnm_rt" && chmod 700 "$_fnm_rt"; }\neval "$(XDG_RUNTIME_DIR="$_fnm_rt" fnm env --use-on-cd --shell bash)"; unset _fnm_rt\n' "$dir" >> "$HOME/.bashrc"
+  "$dir/fnm" install --lts && "$dir/fnm" default lts-latest && echo "  Open a new terminal to use the Node LTS."
 }
-fn_pnpm() { npm install -g pnpm || echo "  Si falla por permisos, instala antes el Node de fnm (ws-tools install node-lts)."; }
+fn_pnpm() { npm install -g pnpm || echo "  If it fails on permissions, install the fnm Node first (ws-tools install node-lts)."; }
 fn_sqlcmd() {
   if [[ ! -f /etc/apt/sources.list.d/microsoft-prod.list ]]; then
     curl -fsSL "https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/packages-microsoft-prod.deb" -o /tmp/pmp.deb &&
@@ -192,16 +192,16 @@ fn_azd() { curl -fsSL https://aka.ms/install-azd.sh -o /tmp/install-azd.sh && ba
 install_tools() {
   local force=0 want=() t n g how apt=() pipx=() fns=() manual=()
   for a in "$@"; do [[ "$a" == --force ]] && force=1 || want+=("$a"); done
-  (( ${#want[@]} )) || { echo "Indica grupos o herramientas: base nube calidad dev | terraform helm …"; return 2; }
+  (( ${#want[@]} )) || { echo "Give groups or tools: base cloud quality dev | terraform helm …"; return 2; }
   local free; free="$(df -BG --output=avail /mnt/c 2>/dev/null | tail -1 | tr -dc 0-9)"
   if (( force == 0 && ${free:-0} < MIN_FREE_GB )); then
-    echo "C: tiene ${free:-?} GB libres (mínimo $MIN_FREE_GB). El disco de Ubuntu crece en C:; libera espacio o usa --force."
+    echo "C: has ${free:-?} GB free (minimum $MIN_FREE_GB). The Ubuntu disk grows on C:; free up space or use --force."
     return 1
   fi
   for t in "${TOOLS[@]}"; do
     n="$(field "$t" 1)"; g="$(field "$t" 2)"; how="$(field "$t" 4)"
     [[ " ${want[*]} " == *" $n "* || " ${want[*]} " == *" $g "* ]] || continue
-    version_of "$(field "$t" 3)" | grep -q . && continue        # ya está
+    version_of "$(field "$t" 3)" | grep -q . && continue        # already installed
     case "$how" in
       apt:*)    apt+=("${how#apt:}") ;;
       pipx:*)   pipx+=("${how#pipx:}") ;;
@@ -211,14 +211,14 @@ install_tools() {
   done
   (( ${#apt[@]} ))  && { echo "==> apt: ${apt[*]}"; sudo apt-get install -y "${apt[@]}"; }
   (( ${#pipx[@]} )) && { echo "==> pipx: ${pipx[*]}"; for p in "${pipx[@]}"; do pipx install "$p"; done; pipx ensurepath >/dev/null; }
-  for f in "${fns[@]}"; do echo "==> $f"; "fn_$f" || echo "  falló $f"; done
-  (( ${#manual[@]} )) && { echo "==> A mano:"; printf '  %s\n' "${manual[@]}"; }
+  for f in "${fns[@]}"; do echo "==> $f"; "fn_$f" || echo "  $f failed"; done
+  (( ${#manual[@]} )) && { echo "==> By hand:"; printf '  %s\n' "${manual[@]}"; }
   echo; inventory
 }
 
 case "${1:-}" in
-  ""|inventario|check) inventory ;;
+  ""|inventory|check) inventory ;;
   install) shift; install_tools "$@" ;;
   -h|--help) sed -n '3,11p' "$0" ;;
-  *) echo "uso: ws-tools [install <grupo|herramienta>...]" >&2; exit 2 ;;
+  *) echo "usage: ws-tools [install <group|tool>...]" >&2; exit 2 ;;
 esac

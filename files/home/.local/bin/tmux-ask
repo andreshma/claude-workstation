@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+#
+# tmux-ask — quick question to Claude in a popup, without polluting the tab's context. Ctrl+b ?
+#   Type the question and press Enter. End the line with «+p» to include the pane's last 60 lines (redacted).
+#   The answer is shown on screen; c copies it, Enter or q closes.
+# Model: Haiku by default (WS_ASK_MODEL=sonnet|opus for another). No tools and no saved session:
+# it cannot touch files or run anything. Each question is counted (without its text) in the telemetry.
+# Usage: tmux-ask [pane]
+set -uo pipefail
+p="${1:-}"
+model="${WS_ASK_MODEL:-haiku}"
+command -v claude >/dev/null || { echo "Cannot find claude in PATH."; sleep 2; exit 1; }
+printf '\e[1mQuick question to Claude (%s)\e[0m · end with +p to include the pane screen · Esc/Ctrl+C exits\n\n' "$model"
+read -e -r -p '› ' q || exit 0
+[[ -n "${q// /}" ]] || exit 0
+ctx=""
+if [[ "$q" == *+p && -n "$p" ]]; then
+  q="${q%+p}"
+  ctx="$(tmux capture-pane -p -J -t "$p" -S -60 2>/dev/null | sed -e 's/[[:space:]]*$//' | ws-redact)"
+fi
+printf '\n\e[2mthinking…\e[0m\r'
+r="$( { [[ -n "$ctx" ]] && printf 'Context (my terminal screen):\n```\n%s\n```\n\n' "$ctx"; printf '%s\n' "$q"; } \
+      | env -u TMUX_PANE -u TMUX timeout 120 claude -p --model "$model" --tools "" --no-session-persistence \
+          --append-system-prompt "Answer in the language of the question, brief and direct; if it is a command, put it in a code block." 2>&1)" \
+  || r="✖ No answer (${r:0:200})"
+d="$HOME/.local/share/ws-telemetry/asks"; mkdir -p "$d" && chmod 700 "$d"
+jq -nc --arg m "$model" --argjson c "${#q}" --argjson x "$([[ -n "$ctx" ]] && echo true || echo false)" \
+  '{ts: (now | todate), model: $m, chars: $c, with_screen: $x}' >> "$d/$(date +%F).jsonl" 2>/dev/null
+clear; printf '\e[1m› %s\e[0m\n\n%s\n\n\e[2mc copies · Enter or q closes\e[0m' "$q" "$r"
+read -rsn1 k
+if [[ "$k" == c ]]; then printf '%s' "$r" | ws-copy 2>/dev/null || printf '%s' "$r" | tmux load-buffer -w -; fi

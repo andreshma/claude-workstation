@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+#
+# ws-backup-cloud — ENCRYPTED (age) copy of the light backup to OneDrive, and its recovery test.
+#
+# Usage:
+#   ws-backup-cloud setup        installs age if missing, creates the key, stores the private one in Windows
+#                                 Credential Manager and shows it to you ONCE for your password manager
+#   ws-backup-cloud [--if-due]  encrypts the last light backup and copies it to OneDrive (keeps 7; --if-due: if
+#                                 the last copy is more than 20 h old). ws-telegram triggers it hourly.
+#   ws-backup-cloud test         decrypts the last OneDrive copy into a temp folder and checks the tar is healthy
+#   ws-backup-cloud fetch [file] [destination]   decrypts a copy so ws-restore-lite can restore it
+#   ws-backup-cloud status
+#
+# Why this way: the light backup contains conversations (they may hold client code or data); it only goes to
+# the cloud encrypted. The private key lives in Credential Manager (ws/age-backup) and in YOUR password
+# manager: if you lose the laptop, without that external copy the cloud backups cannot be opened.
+# Destination: <organization OneDrive ("OneDrive - Name") | OneDrive>\Backups\workstation-wsl (change it in ~/.config/ws-backup/cloud.conf: dest=…).
+set -uo pipefail
+export PATH="$HOME/.local/bin:$PATH"
+CONF="$HOME/.config/ws-backup"
+PUB="$CONF/cloud-recipient"
+KEEP=7
+die() { echo "✖ $*" >&2; exit 1; }
+
+win_home() {
+  local p=""; command -v wslvar >/dev/null && p="$(wslvar USERPROFILE 2>/dev/null || true)"
+  [[ -n "$p" ]] || p="$( (cd /mnt/c 2>/dev/null && cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null) | tr -d '\r')"
+  [[ -n "$p" ]] && wslpath -u "$p" 2>/dev/null
+}
+WH="$(win_home)"
+LOCAL="${WS_BACKUP_DEST:-$WH/WSL-Backups/lite}"
+# Default folder inside a OneDrive root. Copies made before the rename live in Respaldos\estacion-wsl: while
+# that folder exists and the new one does not, it stays in use (the encrypted copies are not moved).
+onedrive_dir() {
+  if [[ -d "$1/Respaldos/estacion-wsl" && ! -d "$1/Backups/workstation-wsl" ]]; then printf '%s' "$1/Respaldos/estacion-wsl"
+  else printf '%s' "$1/Backups/workstation-wsl"; fi
+}
+dest_dir() {
+  local d; d="$(sed -nE 's/^(dest|destino)=//p' "$CONF/cloud.conf" 2>/dev/null | tail -1)"   # destino=: the key before the rename
+  if [[ -z "$d" ]]; then
+    local org; org="$(compgen -G "$WH/OneDrive - *" | head -1)"   # the organization's OneDrive, if any
+    if [[ -n "$org" && -d "$org" ]]; then d="$(onedrive_dir "$org")"
+    elif [[ -d "$WH/OneDrive" ]]; then d="$(onedrive_dir "$WH/OneDrive")"; fi
+  fi
+  printf '%s' "$d"
+}
+latest() { find "$1" -maxdepth 1 -name "$2" ! -name '*.sha256' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-; }
+# Name of the private key in Credential Manager: age-backup. Setups made before the rename stored it as
+# age-respaldo: it is read from there while age-backup does not exist (the key is never moved or deleted).
+secret_name() {
+  if ! ws-secret has age-backup 2>/dev/null && ws-secret has age-respaldo 2>/dev/null; then echo age-respaldo
+  else echo age-backup; fi
+}
+identity() {   # 0600 temp file with the private key; the caller deletes it
+  local t; t="$(mktemp)"; chmod 600 "$t"
+  ws-secret get "$(secret_name)" > "$t" 2>/dev/null; [[ -s "$t" ]] || { rm -f "$t"; return 1; }
+  printf '%s' "$t"
+}
+
+setup() {
+  command -v age >/dev/null || { echo "Installing age (official Ubuntu package)…"; sudo apt-get install -y -qq age >/dev/null || die "could not install age"; }
+  mkdir -p "$CONF" && chmod 700 "$CONF"
+  if [[ -s "$PUB" ]] && ws-secret has "$(secret_name)" 2>/dev/null; then echo "✔ Already configured (public key in $PUB)."; return; fi
+  local t key; t="$(mktemp -d)"; chmod 700 "$t"
+  age-keygen -o "$t/key" 2>/dev/null || die "age-keygen failed"
+  key="$(grep '^AGE-SECRET-KEY-' "$t/key")"; age-keygen -y "$t/key" > "$PUB"
+  printf '%s\n' "$key" | ws-secret set age-backup >/dev/null || { rm -rf "$t"; die "could not store the key in Windows"; }
+  rm -rf "$t"
+  echo
+  echo "⚠ Save this private key in your password manager NOW (without it the cloud backups cannot be opened"
+  echo "  if you lose this laptop). It will not be shown again:"
+  echo; echo "  $key"; echo
+  read -rp "Have you saved it? [y/N] " r; [[ "$r" =~ ^([yY]([eE][sS])?|[sS]([iI]|í|Í)?)$ ]] || echo "  You can see it again with: ws-secret get age-backup"
+  clear 2>/dev/null || true
+  echo "✔ Configured. Destination: $(dest_dir)"; backup
+}
+
+backup() {
+  [[ -s "$PUB" ]] || die "first: ws-backup-cloud setup"
+  command -v age >/dev/null || die "age is missing (ws-backup-cloud setup)"
+  local d src name out; d="$(dest_dir)"; [[ -n "$d" ]] || die "OneDrive not found; set dest= in $CONF/cloud.conf"
+  mkdir -p "$d" || die "cannot write to $d"
+  if [[ "${1:-}" == --if-due ]]; then
+    local u; u="$(latest "$d" 'claude-lite-*.age')"
+    [[ -n "$u" ]] && (( $(date +%s) - $(stat -c %Y "$u") < 20 * 3600 )) && exit 0
+  fi
+  src="$(latest "$LOCAL" 'claude-lite-*.tar.*')"; [[ -n "$src" ]] || die "no light backup in $LOCAL (ws-backup-lite --now)"
+  name="$(basename "$src")"; name="${name%.age}.age"; out="$d/$name"
+  [[ -f "$out" ]] && { echo "✔ Already in the cloud: $name"; return; }
+  if [[ "$src" == *.age ]]; then cp "$src" "$out.tmp"; else age -R "$PUB" -o "$out.tmp" "$src" || { rm -f "$out.tmp"; die "age failed"; }; fi
+  mv "$out.tmp" "$out" && (cd "$d" && sha256sum "$name" > "$name.sha256")
+  # Rotation: only the 7 most recent
+  find "$d" -maxdepth 1 -name 'claude-lite-*.age' -printf '%T@ %p\n' | sort -rn | tail -n +$((KEEP + 1)) | cut -d' ' -f2- \
+    | while IFS= read -r v; do rm -f "$v" "$v.sha256"; done
+  echo "✔ Encrypted copy in the cloud: $name ($(du -h "$out" | cut -f1))"
+}
+
+run_test() {
+  local d f id n; d="$(dest_dir)"; f="$(latest "$d" 'claude-lite-*.age')"
+  [[ -n "$f" ]] || { echo "✖ No copies in the cloud ($d)"; return 1; }
+  (cd "$d" && sha256sum -c --quiet "$(basename "$f").sha256") || { echo "✖ The checksum does not match: $(basename "$f")"; return 1; }
+  id="$(identity)" || { echo "✖ Private key not found (ws/age-backup)"; return 1; }
+  n="$(age -d -i "$id" "$f" 2>/dev/null | zstd -dc 2>/dev/null | tar -t 2>/dev/null | wc -l)"; rm -f "$id"
+  (( n > 0 )) || { echo "✖ Could not decrypt, or the tar is damaged: $(basename "$f")"; return 1; }
+  echo "✔ The cloud copy decrypts and is healthy: $(basename "$f") ($n files, $(( ($(date +%s) - $(stat -c %Y "$f")) / 3600 )) h)"
+}
+
+fetch() {
+  local d f id dest; d="$(dest_dir)"; f="${1:-$(latest "$d" 'claude-lite-*.age')}"; dest="${2:-$LOCAL}"
+  [[ -f "$f" ]] || f="$d/$f"; [[ -f "$f" ]] || die "$1 not found"
+  id="$(identity)" || die "private key not found: ws-secret set age-backup (paste the one from your password manager)"
+  mkdir -p "$dest"; age -d -i "$id" -o "$dest/$(basename "${f%.age}")" "$f"; local rc=$?; rm -f "$id"
+  (( rc == 0 )) || die "could not decrypt"
+  (cd "$dest" && sha256sum "$(basename "${f%.age}")" > "$(basename "${f%.age}").sha256")
+  echo "✔ Decrypted to $dest/$(basename "${f%.age}"). Next: ws-restore-lite (test) and ws-restore-lite --restore"
+}
+
+case "${1:-}" in
+  setup) setup ;;
+  test) run_test ;;
+  fetch) shift; fetch "$@" ;;
+  status)
+    echo "Public key: $([[ -s "$PUB" ]] && echo yes || echo "no (ws-backup-cloud setup)") · private key in Windows: $(ws-secret has "$(secret_name)" 2>/dev/null && echo yes || echo no)"
+    echo "Destination: $(dest_dir)"
+    f="$(latest "$(dest_dir)" 'claude-lite-*.age')"; [[ -n "$f" ]] && echo "Last copy: $(basename "$f") ($(( ($(date +%s) - $(stat -c %Y "$f")) / 3600 )) h)" || echo "No copies yet" ;;
+  ""|--if-due|--now) backup "${1:-}" ;;
+  *) sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

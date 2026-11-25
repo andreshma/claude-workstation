@@ -1,52 +1,58 @@
 #!/usr/bin/env bash
 #
-# tmux-claude-restart <pane> — reinicia Claude Code en esa pane retomando su conversación
-# (/exit y luego claude-resume). Sirve para que tome cambios de settings, hooks o agentes.
-# Si en la pane ya hay un shell, solo arranca claude-resume. Si Claude no sale en 15 s,
-# avisa y no escribe nada más.
+# tmux-claude-restart <pane> — restarts Claude Code in that pane, resuming its conversation
+# (/exit and then claude-resume). Use it so Claude picks up changes to settings, hooks or agents.
+# If the pane already has a shell, it only starts claude-resume. If Claude does not exit in 15 s,
+# it says so and types nothing else.
 #
-# tmux-claude-restart --todas [--tambien-ocupadas]
-#   Sale y vuelve a entrar en TODAS las pestañas con Claude, cada una retomando su conversación. Para que tomen la
-#   configuración nueva tras instalar o actualizar (reglas, hooks, telemetría). Por defecto NO toca las que están
-#   trabajando o esperando una respuesta tuya en un diálogo (pensando, herramienta, compactando, permiso, pregunta):
-#   las cuenta y las deja igual. Respeta el nivel de protección de cada pestaña (completo o puro); las que están en
-#   modo solo se dejan igual. --tambien-ocupadas las reinicia también (interrumpe lo que estén haciendo).
-#   --lista solo muestra qué haría.
+# tmux-claude-restart --all [--include-busy]
+#   Exits and re-enters ALL the tabs with Claude, each one resuming its conversation, so they pick up the new
+#   configuration after installing or updating (rules, hooks, telemetry). By default it does NOT touch the ones that
+#   are working or waiting for your answer in a dialog (thinking, tool, compacting, permission, question):
+#   it counts them and leaves them alone. It respects each tab's protection level (full or bare); the ones in
+#   solo mode are left alone. --include-busy restarts those too (interrupts whatever they are doing).
+#   --list only shows what it would do.
 set -uo pipefail
 
-todas() {
-  local forzar=0 lista=0 n=0 ocup=0 solo=0 pane fase nivel csolo cmd nom T=$'\t' pids=()
-  for a in "$@"; do case "$a" in --tambien-ocupadas) forzar=1 ;; --lista) lista=1 ;; esac; done
-  # «-» en los campos vacíos: tmux 3.4 junta tabuladores seguidos al leer.
-  while IFS="$T" read -r pane fase nivel csolo cmd nom; do
+restart_all() {
+  local force=0 list=0 n=0 busy=0 solo=0 pane phase level csolo cmd name T=$'\t' pids=()
+  for a in "$@"; do case "$a" in --include-busy) force=1 ;; --list) list=1 ;; esac; done
+  # «-» in the empty fields: tmux 3.4 collapses consecutive tabs when reading.
+  while IFS="$T" read -r pane phase level csolo cmd name; do
     [[ -n "$pane" ]] || continue
-    case "$cmd" in bash|zsh|sh|dash|fish) continue ;; esac          # ahí no corre Claude
-    if (( ! forzar )) && [[ "$fase" =~ ^(pensando|herramienta|compactando|permiso|pregunta)$ ]]; then
-      ocup=$((ocup + 1)); (( lista )) && echo "ocupada  $nom ($fase)"; continue
+    case "$cmd" in bash|zsh|sh|dash|fish) continue ;; esac          # Claude is not running there
+    if (( ! force )) && [[ "$phase" =~ ^(thinking|tool|compacting|permission|question)$ ]]; then
+      busy=$((busy + 1)); (( list )) && echo "busy     $name ($phase)"; continue
     fi
-    if [[ "$csolo" != - ]]; then solo=$((solo + 1)); (( lista )) && echo "solo     $nom (se deja igual)"; continue; fi
+    if [[ "$csolo" != - ]]; then solo=$((solo + 1)); (( list )) && echo "solo     $name (left as is)"; continue; fi
     n=$((n + 1))
-    if (( lista )); then echo "reinicia $nom$([[ "$nivel" != - ]] && echo " (nivel $nivel)")"; continue; fi
-    if [[ "$nivel" == completo || "$nivel" == puro ]]; then "$HOME/.local/bin/tmux-nivel" "$nivel" "$pane" >/dev/null 2>&1 &
+    if (( list )); then echo "restart  $name$([[ "$level" != - ]] && echo " (level $level)")"; continue; fi
+    if [[ "$level" == full || "$level" == bare ]]; then "$HOME/.local/bin/tmux-level" "$level" "$pane" >/dev/null 2>&1 &
     else "$0" "$pane" >/dev/null 2>&1 & fi
     pids+=("$!")
-  done < <(tmux list-panes -a -F "#{pane_id}${T}#{?#{@cfase},#{@cfase},-}${T}#{?#{@cnivel},#{@cnivel},-}${T}#{?#{@csolo},1,-}${T}#{pane_current_command}${T}#{window_index} #{window_name}${T}#{?#{==:#{@cpane},#{pane_id}},si,no}" 2>/dev/null \
-            | awk -F"$T" -v OFS="$T" '$7 == "si" { print $1, $2, $3, $4, $5, $6 }')
-  (( lista )) && return 0
+  done < <(tmux list-panes -a -F "#{pane_id}${T}#{?#{@cphase},#{@cphase},-}${T}#{?#{@clevel},#{@clevel},-}${T}#{?#{@csolo},1,-}${T}#{pane_current_command}${T}#{window_index} #{window_name}${T}#{?#{==:#{@cpane},#{pane_id}},yes,no}" 2>/dev/null \
+            | awk -F"$T" -v OFS="$T" '$7 == "yes" { print $1, $2, $3, $4, $5, $6 }')
+  (( list )) && return 0
   (( ${#pids[@]} )) && wait "${pids[@]}" 2>/dev/null
-  tmux display -d 6000 "Claude reiniciado en $n pestaña(s)$( (( ocup )) && echo " · $ocup ocupada(s) se quedaron igual" )$( (( solo )) && echo " · $solo en modo solo sin tocar" )"
+  tmux display -d 6000 "Claude restarted in $n tab(s)$( (( busy )) && echo " · $busy busy left as is" )$( (( solo )) && echo " · $solo in solo mode untouched" )"
 }
 
-if [[ "${1:-}" == --todas ]]; then shift; todas "$@"; exit 0; fi
+if [[ "${1:-}" == --all ]]; then shift; restart_all "$@"; exit 0; fi
 
 p="${1:?pane}"
 cmd() { tmux display -p -t "$p" '#{pane_current_command}'; }
 is_shell() { case "$(cmd)" in bash|zsh|sh|dash) return 0 ;; *) return 1 ;; esac; }
 
 if ! is_shell; then
+  # Ctrl+C first: it clears whatever is typed in the input box; otherwise «<text>/exit» is sent as a message and
+  # Claude never closes. If /exit still does not close it in 10 s, Ctrl+C twice (Claude's own way out).
   tmux send-keys -t "$p" Escape; sleep 0.3
-  tmux send-keys -t "$p" '/exit' Enter
-  for _ in $(seq 30); do sleep 0.5; is_shell && break; done
-  is_shell || { tmux display -d 4000 "Claude no salió; reinícialo a mano con /exit"; exit 1; }
+  tmux send-keys -t "$p" C-c; sleep 0.4
+  is_shell || tmux send-keys -t "$p" '/exit' Enter
+  for n in $(seq 30); do
+    sleep 0.5; is_shell && break
+    (( n == 20 )) && { tmux send-keys -t "$p" C-c; sleep 0.3; tmux send-keys -t "$p" C-c; }
+  done
+  is_shell || { tmux display -d 4000 "Claude did not exit; restart it by hand with /exit"; exit 1; }
 fi
 tmux send-keys -t "$p" 'claude-resume' Enter

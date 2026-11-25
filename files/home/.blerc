@@ -1,16 +1,16 @@
-# ~/.blerc — configuración de ble.sh (editor de línea con sugerencias y colores).
-# Sugerencia en gris desde el historial: → (o Ctrl+F) la acepta completa, Alt+F una palabra.
+# ~/.blerc — ble.sh configuration (line editor with suggestions and colors).
+# Gray suggestion from history: → (or Ctrl+F) accepts all of it, Alt+F one word.
 
-# Sugerencias automáticas: aparecen tras una pausa corta para no distraer.
+# Automatic suggestions: they appear after a short pause so they do not distract.
 bleopt complete_auto_delay=300
 bleopt complete_auto_history=1
 
-# Sin campana ni parpadeos; el menú de completado no ocupa media pantalla.
+# No bell and no flashing; the completion menu does not take half the screen.
 bleopt edit_abell=
 bleopt edit_vbell=
 bleopt complete_menu_maxlines=10
 
-# Colores discretos: la sugerencia en gris tenue y los errores (comando inexistente) en rojo.
+# Discreet colors: the suggestion in dim gray and errors (nonexistent command) in red.
 ble-face -s auto_complete fg=242
 ble-face -s command_function fg=33
 ble-face -s syntax_error fg=203,bold

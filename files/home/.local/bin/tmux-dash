@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 #
-# tmux-dash — tablero de todas las pestañas, por grupo (sesión tmux): estado de Claude, modelo, contexto, costo,
-# rama, cambios sin commit y etiqueta (Ctrl+b E); el estado lleva su tiempo, qué hace y cuánto lleva el turno. Ctrl+b D. Las sesiones espejo/monitor 2 (enlazadas) no se repiten.
-#   ↑/↓ o escribir para filtrar · Enter va a esa pestaña · Ctrl+R actualiza · Esc cierra
+# tmux-dash — dashboard of all tabs, by group (tmux session): Claude state, model, context, cost,
+# branch, uncommitted changes and label (Ctrl+b E); the state carries its time, what it is doing and how long the turn has run. Ctrl+b D. Mirror/monitor 2 (linked) sessions are not repeated.
+#   ↑/↓ or type to filter · Enter goes to that tab · Ctrl+R refreshes · Esc closes
 #
-# Rápido con muchas pestañas: git se consulta en paralelo, con tiempo límite de 2 s por carpeta y sin bloqueos
-# (en /mnt/c cada `git status` puede tardar segundos); el resultado se guarda 60 s. Lo que no alcanza sale «…».
-# Uso interno: tmux-dash --filas (lo usa fzf para actualizar con Ctrl+R).
+# Fast with many tabs: git is queried in parallel, with a 2 s timeout per folder and without locks
+# (on /mnt/c each `git status` can take seconds); the result is cached for 60 s. Whatever times out shows «…».
+# Internal use: tmux-dash --rows (fzf uses it to refresh with Ctrl+R).
 set -uo pipefail
 TAB=$'\t'
 CACHE="${XDG_RUNTIME_DIR:-/tmp}/tmux-dash-$(id -u)"; mkdir -p "$CACHE" 2>/dev/null && chmod 700 "$CACHE"
 
-clave() { printf '%s' "$1" | md5sum | cut -c1-12; }
-git_info() {   # carpeta → "rama<TAB>cambios" (en caché 60 s)
-  local d="$1" c b n; c="$CACHE/$(clave "$d")"
+key() { printf '%s' "$1" | md5sum | cut -c1-12; }
+git_info() {   # folder → "branch<TAB>changes" (cached 60 s)
+  local d="$1" c b n; c="$CACHE/$(key "$d")"
   if [[ -f "$c" ]] && (( $(date +%s) - $(stat -c %Y "$c") < 60 )); then cat "$c"; return; fi
   b="$(GIT_OPTIONAL_LOCKS=0 timeout 2 git -C "$d" branch --show-current 2>/dev/null)" || b=""
   if [[ -z "$b" ]] && ! GIT_OPTIONAL_LOCKS=0 timeout 1 git -C "$d" rev-parse --git-dir >/dev/null 2>&1; then
@@ -24,30 +24,30 @@ git_info() {   # carpeta → "rama<TAB>cambios" (en caché 60 s)
 }
 
 #######################################
-# Una fila por pestaña: "<destino><TAB><texto visible>"; destino = sesión:id-de-ventana (oculto en fzf).
+# One row per tab: "<target><TAB><visible text>"; target = session:window-id (hidden in fzf).
 #######################################
-filas() {
-  local f=() l s idx nom cs mo ctx cost dir id gi rama cam etq grp det tur
-  [[ -x "$HOME/.local/bin/tmux-estado" ]] && "$HOME/.local/bin/tmux-estado" --todas
-  mapfile -t f < <(tmux list-windows -a -F "#{session_name}${TAB}#{window_index}${TAB}#{window_name}${TAB}#{?#{@cs},#{@cs},-}${TAB}#{?#{@cmodel},#{@cmodel},-}${TAB}#{?#{@cctx},#{@cctx}%,-}${TAB}#{?#{@ccost},\$#{@ccost},-}${TAB}#{pane_current_path}${TAB}#{window_id}${TAB}#{?#{@etq},#{@etq},-}${TAB}#{?session_grouped,#{session_group},#{session_name}}${TAB}#{?#{@cdet},#{@cdet},-}${TAB}#{?#{@cturno_txt},#{@cturno_txt},-}" 2>/dev/null)
+rows() {
+  local f=() l s idx name cs mo ctx cost dir id gi branch changes label grp det turn
+  [[ -x "$HOME/.local/bin/tmux-status" ]] && "$HOME/.local/bin/tmux-status" --all
+  mapfile -t f < <(tmux list-windows -a -F "#{session_name}${TAB}#{window_index}${TAB}#{window_name}${TAB}#{?#{@cs},#{@cs},-}${TAB}#{?#{@cmodel},#{@cmodel},-}${TAB}#{?#{@cctx},#{@cctx}%,-}${TAB}#{?#{@ccost},\$#{@ccost},-}${TAB}#{pane_current_path}${TAB}#{window_id}${TAB}#{?#{@label},#{@label},-}${TAB}#{?session_grouped,#{session_group},#{session_name}}${TAB}#{?#{@cdet},#{@cdet},-}${TAB}#{?#{@cturn_txt},#{@cturn_txt},-}" 2>/dev/null)
   for l in "${f[@]}"; do IFS="$TAB" read -r _ _ _ _ _ _ _ dir _ <<<"$l"; git_info "$dir" >/dev/null & done
   wait
   for l in "${f[@]}"; do
-    IFS="$TAB" read -r s idx nom cs mo ctx cost dir id etq grp det tur <<<"$l"
-    [[ "$s" == "$grp" ]] || continue   # sesión enlazada (monitor 2): ya sale con su grupo
-    gi="$(git_info "$dir")"; rama="${gi%%"$TAB"*}"; cam="${gi#*"$TAB"}"
+    IFS="$TAB" read -r s idx name cs mo ctx cost dir id label grp det turn <<<"$l"
+    [[ "$s" == "$grp" ]] || continue   # linked session (monitor 2): already listed with its group
+    gi="$(git_info "$dir")"; branch="${gi%%"$TAB"*}"; changes="${gi#*"$TAB"}"
     printf '%s:%s\t\033[36m%-9.9s\033[0m %-18.18s %-22.22s %-26.26s %-6s %-12.12s %-5s %-8s %-18.18s %-4s %s\n' \
-      "$s" "$id" "[$s]" "$idx $nom" "$cs" "${det#-}" "${tur#-}" "$mo" "$ctx" "$cost" "$rama" "$cam" "${etq#-}"
+      "$s" "$id" "[$s]" "$idx $name" "$cs" "${det#-}" "${turn#-}" "$mo" "$ctx" "$cost" "$branch" "$changes" "${label#-}"
   done
 }
 
-[[ "${1:-}" == --filas ]] && { filas; exit 0; }
+[[ "${1:-}" == --rows ]] && { rows; exit 0; }
 
-if ! command -v fzf >/dev/null; then filas | cut -f2-; read -rsn1; exit 0; fi
-encabezado="$(printf '%-9s %-18s %-22s %-26s %-6s %-12s %-5s %-8s %-18s %-4s %s' GRUPO PESTAÑA ESTADO 'QUÉ HACE' TURNO MODELO CTX COSTO RAMA CAMB ETIQUETA)"
-sel="$(filas | fzf --ansi --delimiter="$TAB" --with-nth=2 --no-sort --reverse --cycle \
-        --header="$encabezado"$'\n'"Enter va a la pestaña · Ctrl+R actualiza · Esc cierra · escribe para filtrar" \
-        --bind "ctrl-r:reload(rm -f '$CACHE'/*; '$0' --filas)" --prompt 'pestaña> ')" || exit 0
-destino="${sel%%"$TAB"*}"
-tmux switch-client -t "=${destino%%:*}" 2>/dev/null
-tmux select-window -t "${destino#*:}" 2>/dev/null
+if ! command -v fzf >/dev/null; then rows | cut -f2-; read -rsn1; exit 0; fi
+header="$(printf '%-9s %-18s %-22s %-26s %-6s %-12s %-5s %-8s %-18s %-4s %s' GROUP TAB STATE 'DOING' TURN MODEL CTX COST BRANCH CHG LABEL)"
+sel="$(rows | fzf --ansi --delimiter="$TAB" --with-nth=2 --no-sort --reverse --cycle \
+        --header="$header"$'\n'"Enter goes to the tab · Ctrl+R refreshes · Esc closes · type to filter" \
+        --bind "ctrl-r:reload(rm -f '$CACHE'/*; '$0' --rows)" --prompt 'tab> ')" || exit 0
+target="${sel%%"$TAB"*}"
+tmux switch-client -t "=${target%%:*}" 2>/dev/null
+tmux select-window -t "${target#*:}" 2>/dev/null

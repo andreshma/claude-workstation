@@ -2,50 +2,69 @@
 
 claude-workstation has three test entry points and a set of static checks. They test different things on purpose:
 
-| Suite | Tests | Needs | Touches your machine? |
+| Suite | Tests | Needs | Touches your machine |
 |---|---|---|---|
 | `tests/run.sh` | The **kit**: `export.sh`, `install.sh`, the payload's JSON and shell lint, and the guard | bash, jq, git; shellcheck optional | No: temporary homes only |
 | `tests/guard.sh` | The PreToolUse guard (`files/home/.claude/hooks/guard.sh`) | bash, jq, git | No: a temporary home and repository |
-| `ws-test` | The **installed** workstation: the scripts in `~/.local/bin` and the installed tmux configuration | tmux, jq, git, an installed station | No: an isolated home, isolated tmux sockets and a simulated Claude |
-
-```bash
-bash tests/run.sh      # exit 0 = all passed; prints "<n> ok, <m> fallidas"
-bash tests/guard.sh    # prints "guard: <n> ok, <m> fallidas"
-ws-test                # deterministic behavior tests of what is installed
-ws-test --ia           # the same plus non-deterministic checks against the real Claude (uses a little usage)
-ws-test --lista        # names of the tests
-```
-
-Test output is in Spanish, like the rest of the interface: `ok`, `FALLA` (failure), `aviso` (warning).
+| `ws-test` | The **installed** workstation: the scripts in `~/.local/bin` and the installed tmux configuration | tmux, jq, git, an installed workstation | No: an isolated home, isolated tmux sockets and a simulated Claude |
 
 ## Contents
 
-- [`tests/run.sh`: the kit](#testsrunsh-the-kit)
-- [`tests/guard.sh`: the guard](#testsguardsh-the-guard)
-- [`ws-test`: the installed workstation](#ws-test-the-installed-workstation)
+- [Commands](#commands)
+- [What the suites cover](#what-the-suites-cover)
+- [What is not covered](#what-is-not-covered)
 - [Static checks](#static-checks)
-- [Other verification commands](#other-verification-commands)
-- [CI](#ci)
+- [Continuous integration](#continuous-integration)
+- [Manual checks](#manual-checks)
 - [Before opening a pull request](#before-opening-a-pull-request)
 
-## `tests/run.sh`: the kit
+## Commands
 
-The script copies `lib.sh`, `export.sh`, `install.sh`, `manifest.txt` and `secrets-allow.txt` into a temporary
-directory, builds a small sample home, and runs the real scripts against temporary `HOME` values. Nothing is read from
-or written to your home.
+```bash
+bash tests/run.sh      # exit 0 = all passed; prints "<n> ok, <m> failed"
+bash tests/guard.sh    # prints "guard: <n> ok, <m> failed"
+ws-test                # deterministic behavior tests of what is installed
+ws-test --ai           # the same plus non-deterministic checks against the real Claude (uses a little usage)
+ws-test --list        # names of the tests
+```
 
-| Section | What it checks |
+Test output uses three words: `ok`, `FAIL` and `warn`.
+
+## What the suites cover
+
+### `tests/run.sh`: the kit
+
+The script copies `lib.sh`, `migrate.sh`, `renames.tsv`, `export.sh`, `install.sh`, `manifest.txt` and
+`secrets-allow.txt` into a temporary directory, builds a small sample home, and runs the real scripts against temporary
+`HOME` values. Nothing is read from or written to your home.
+
+| Section (as printed) | What it checks |
 |---|---|
 | 1) export | Files and directories of the manifest are exported; execute permissions are kept; `*.bak.*` files are skipped; user MCP servers are exported; a file listed in `secrets-allow.txt` does not block the export; personal paths become `@WINHOME@` and `@HOME@`; the Windows user name does not remain in the kit |
-| 2) bloqueo de secretos (secret blocking) | An export with a storage account key fails and leaves no partial `files/`; a detection pattern in a file that is not in `secrets-allow.txt` also blocks |
-| 3) install en una máquina nueva (new machine) | `--dry-run` writes nothing and lists what is new; the installed result equals the source; without a Windows user the installer refuses and names `--win-user`; scripts stay executable; the kit's lines are added to `.bashrc`; templates are rendered with the target machine's paths; `REPOS` follows the target user |
-| 4) idempotencia y no planchar (idempotence, no clobbering) | A second install reports nothing new or changed; `.bashrc` has no duplicates; a modified file is reported as `cambia` and backed up before being replaced |
-| 5) export real del repo (the real payload) | `files/home/.claude/settings.json` and `files/mcp-servers.json` are valid JSON; every file under `files/home` with a bash or sh shebang passes `shellcheck -S warning` (skipped when shellcheck is not installed) |
-| 6) guard de PreToolUse | Runs `tests/guard.sh` as one check |
+| 2) secret blocking | An export with a storage account key fails and leaves no partial `files/`; a detection pattern in a file that is not in `secrets-allow.txt` also blocks |
+| 3) install on a new machine | `--dry-run` writes nothing and lists what is new; the installed result equals the source; without a Windows user the installer refuses and names `--win-user`; scripts stay executable; the kit's lines are added to `.bashrc`; templates are rendered with the target machine's paths; `REPOS` follows the target user |
+| 4) idempotency and no overwriting | A second install reports nothing new or changed; `.bashrc` has no duplicates; a modified file is reported as `changed` and copied to `~/.local/share/ws-kit/backup.<date>/` before being replaced, with nothing left next to it; the header names the backup folder once; the newest 10 backup folders are kept and `pre-english.<date>` and `backup.legacy` are never deleted; `--prune-backups` moves the `*.bak.<date>` copies of manifest paths, of `.bashrc` and of the pre-3.0 names to `backup.legacy/`, counts them, leaves other files alone and respects `--dry-run` |
+| 6) real export of the repo | `files/home/.claude/settings.json` and `files/mcp-servers.json` are valid JSON; every file under `files/home` with a bash or sh shebang passes `shellcheck -S warning` (skipped when shellcheck is not installed) |
+| 7) PreToolUse guard | Runs `tests/guard.sh` as one check |
 
-Section 5 produces one check per script, so the total grows with the payload.
+Section 6 produces one check per script, so the total grows with the payload.
 
-## `tests/guard.sh`: the guard
+Section 5 tests the migration from the names used before 3.0 (`migrate.sh`, `renames.tsv`) against a sample home laid
+out with the old names. The suite puts a silent `reg.exe` first in `PATH`, so the real Windows registry is never read:
+
+| Case | What it checks |
+|---|---|
+| Preview | `install.sh --dry-run` lists what would be moved, wrapped and set aside, and writes nothing |
+| Data | A file or folder of kind `data` ends up under its new name with its content; when the old and the new name both exist, neither is touched and a warning is printed |
+| Wrappers | An old command of kind `shim` is set aside under `~/.local/share/ws-kit/pre-english.<date>/` and replaced by an executable wrapper that runs the new command with the same arguments |
+| Set aside | An old kit file of kind `drop` is moved to the set-aside folder and not deleted |
+| `.bashrc` | The line that loads `cuentas.sh` is rewritten once to `accounts.sh`, with a backup in `~/.local/share/ws-kit/backup.<date>/` |
+| Windows handler | With a fake `reg.exe` and `wslpath`: the registered `.ps1` then accepts `focus` and `foco`, calls `tmux-goto`, keeps its CRLF line endings and has a `.bak.<date>` copy next to it (it lives on the Windows side); `--dry-run` and a second run change nothing; without `reg.exe` nothing fails |
+| Language | A migrated home gets `es` in `~/.config/tmux-claude/lang`; a new home gets no file |
+| Idempotency | A second install migrates nothing |
+| `--remove-shims` | Deletes the wrappers and leaves a file with the same name that is not a wrapper |
+
+### `tests/guard.sh`: the guard
 
 The script feeds the hook the JSON that Claude Code would send for a tool call and checks the exit code (2 = blocked,
 0 = allowed). It uses a temporary home with a stub `audit.sh` and a temporary git repository, first on `main` and then
@@ -53,23 +72,25 @@ on a feature branch.
 
 | Group | Cases | Examples |
 |---|---|---|
-| Must block (on `main`) | 25 | `git push origin +rama`, `git push -fu origin x`, a bare `git push`, `git push origin HEAD:refs/heads/main`, `git -C . push origin main`, `git commit --no-verify`, `git -c core.hooksPath=/dev/null commit`, `git config ws.gate.allowMain true`, `curl … \| sudo -E bash`, `bash <(curl …)`, `ws-secret get …`, `az vm delete … --subscription mi-prod-01`, `kubectl --context aks-prod delete pod x`, `helm uninstall x --kube-context prd-1` |
-| Must pass (on a feature branch) | 17 | `echo "git push --force"`, `grep -r 'git push origin main' .`, `git push --force-with-lease origin feat/x`, a commit message that mentions `--no-verify`, `kubectl --context aks-dev delete pod x`, `az vm delete … --subscription dev-01`, `ws-secret set nombre` |
+| Must block (on `main`) | 25 | `git push --force origin x`, `git push -fu origin x`, a bare `git push`, `git push origin HEAD:refs/heads/main`, `git -C . push origin main`, `git commit --no-verify`, `git -c core.hooksPath=/dev/null commit`, `git config ws.gate.allowMain true`, `curl … \| sudo -E bash`, `bash <(curl …)`, `ws-secret get …`, `az vm delete … --subscription my-prod-01`, `kubectl --context aks-prod delete pod x`, `helm uninstall x --kube-context prd-1` |
+| Must pass (on a feature branch) | 17 | `echo "git push --force"`, `grep -r 'git push origin main' .`, `git push --force-with-lease origin feat/x`, a commit message that mentions `--no-verify`, `kubectl --context aks-dev delete pod x`, `az vm delete … --subscription dev-01`, `ws-secret set name` |
+| Must block (PowerShell and git internals) | 11 | `pwsh.exe -EncodedCommand …`, PowerShell that downloads and runs, copying a file into `.git/hooks/`, `sed -i` on `.git/config`, a `Write` to `.git/hooks/pre-push` or `.git/config` |
+| Must pass (PowerShell and git internals) | 6 | `pwsh.exe -NoProfile -Command "Get-Process …"`, `cat .git/config`, `ls .git/hooks`, a `Write` to `.gitignore` |
 | Fail closed | 1 | Input that is not JSON must block |
 | Normal write | 1 | A `Write` with ordinary content must pass |
 
 When you change `guard.sh`, add the bypass you fixed to the first list and a legitimate look-alike to the second.
 
-## `ws-test`: the installed workstation
+### `ws-test`: the installed workstation
 
 `ws-test` is itself part of the payload (`files/home/.local/bin/ws-test`). It tests **what is installed in your home**,
-not the files in the repository: to test a change, install it first (`bash install.sh`) or let `ws-actualizar` do it.
+not the files in the repository: to test a change, install it first (`bash install.sh`) or let `ws-kit-update` do it.
 
-### Isolation
+#### Isolation
 
 | What | How |
 |---|---|
-| Home | A temporary `HOME` that receives a copy of `~/.local/bin`, `~/.tmux.conf` and the `tmux-claude`, `claude-solo` and `ws-telemetria` configuration folders. Your real home is only read for that copy. |
+| Home | A temporary `HOME` that receives a copy of `~/.local/bin`, `~/.tmux.conf` and the `tmux-claude`, `claude-solo` and `ws-telemetry` configuration folders. Your real home is only read for that copy. |
 | tmux | `TMUX` and `TMUX_PANE` are unset and each test gets its own socket directory through `TMUX_TMPDIR`, so no test can talk to your real session. Cleanup kills only the servers on those sockets. |
 | Claude | A fake `claude` executable, named by version like the native binary, that records how it was started, answers `--version`, `auth status` and `-p`, and exits on `/exit`. The real `claude` is removed from the copied `bin`. |
 | API | A fake `ant` CLI that returns a canned completion; only an empty credentials file exists. |
@@ -77,53 +98,60 @@ not the files in the repository: to test a change, install it first (`bash insta
 | Windows side | Destinations for backups and reports are redirected to temporary folders. |
 
 The deterministic run costs no Claude usage and exits 1 if any test fails. The summary line is
-`Resultado: <n> ok · <n> avisos · <n> fallas`.
+`Result: <n> ok · <n> warnings · <n> failed`.
 
-### What it covers
+#### Sections
 
-There are 26 test functions, each printing a section:
+There are 28 test functions. Each prints a section header, except the usage and telemetry test:
 
 | Section (as printed) | Covers |
 |---|---|
-| Configuración de tmux y menús | The installed `.tmux.conf` and menus load in a real tmux server |
-| Menús: lo que prometen existe (sin abrir tmux) | Every script and shell function a menu calls is installed; every `Ctrl+b X` shortcut a menu announces exists; the help does not announce retired options; each menu pauses the status refresh while open and restores it |
-| Reiniciar Claude en todas las pestañas | `tmux-claude-restart --todas`: free tabs restart, busy ones are left alone |
-| Modo solo | `tmux-solo`: start arguments, the tab flag, returning to normal |
-| Cuentas de Claude | `claude-cuenta`: the personal account shares conversations and not credentials; switching a tab resumes the same conversation; refusal when both accounts are in the same organization; a pinned project (and its worktrees) wins over the default account |
-| Persistencia de pestañas | No save in the first minutes after start; tabs are restored only when the session came back empty |
-| Ventanas flotantes interactivas | Pop-ups hosted by `tmux-flot-run` |
-| Respaldo y restauración | A backup is created, the restore test passes, and the backup carries no credentials |
-| Protector de pantalla | Every `tmux-arte` scene draws, also on a small screen and in 256 colors; the scene menu and `tmux-arte` name the same scenes; a retired saved scene falls back to random; the screensaver appears with a tab in «te toca» and does not with a permission dialog open; choosing a scene saves it |
-| Terminal: ble.sh, completado y copiloto | Shell helpers and the terminal copilot against the fake API |
-| Consumo y telemetría | `ws-telemetria`: turns, costs, dashboard generation |
-| Exportar trabajo a otro Claude y aprender de ti | `ws-traspaso`, `ws-aprender` |
-| Informe completo (ws-informe) | Agents, recurring prompts, tokens, words, weekly trend and estimation baseline are measured; HTML and Markdown are generated without prompt text |
-| Colector local de OpenTelemetry (ws-otel) | Starts in the background and listens on `127.0.0.1` only; accepts logs, metrics and traces as JSON and rejects protobuf and other paths; stores with mode 0600, secrets masked; `WS_OTEL_CONTENIDO=0` stores no text or identity; the dashboard aggregates latency, errors by code, permissions and active time; stops |
-| Protección por pestaña: completo, normal, puro | Generated profiles: `completo` drops the excluded commands and keeps rules and guard; `puro` has no sandbox and no `allow`/`ask` and keeps `deny` and the guard; the shipped settings have no wildcard `az` allow rules and contain the floor's `deny` rules |
-| Menús y UX: activas, escenas, monitor, cambio de modelo | `tmux-activas`, `tmux-escena`, `tmux-hud`, model switching |
-| Estado detallado de Claude | Phases, elapsed time, detail, «te toca», and self-correction so a state does not stay stuck |
-| Configuración personal versionada (ws-personal) | Sync and restore of the personal repository |
-| Barra: segmentos personales y ws-cache | Personal bar segments and the `ws-cache` behavior |
-| tmux: CI/PR en la barra, plantillas, grabación, historial y enjambre | `tmux-rama`, `tmux-plantilla`, `tmux-grabar`, `tmux-historial`, `tmux-enjambre` |
-| tmux: panel → Claude, paleta, avísame, extraer, etiquetas, enfoque, logs | The `Ctrl+b e`, palette, notify-when-done, extract, label, focus and log features |
-| Trazas, estimación, reporte semanal y presupuestos | `ws-trazas.sh` output and the commands that read it |
-| Ruteo de modelos (cr + hook) | Routing rules, the hook, the confirmation |
-| Telegram: avisos y respuesta con botones (API simulada) | Notifications with the dialog's options; buttons from another chat are ignored; one-time codes; running a proposed command and returning its output; dangerous commands arrive without a button; alerts are not repeated; a wrong PIN sends nothing and a correct one delivers the reply |
-| Grupos de pestañas y traer conversaciones | Tab groups and `tmux-traer` |
-| Tapas del sandbox en tus repos (solo lectura) | Read-only check of sandbox placeholder files in your repositories |
+| tmux configuration and menus | The installed `.tmux.conf` and menus load in a real tmux server |
+| Menus: what they promise exists (without opening tmux) | Every script and shell function a menu calls is installed; every `Ctrl+b X` shortcut a menu announces exists; the help does not announce retired options; each menu pauses the status refresh while open and restores it |
+| Restart Claude in all tabs | `tmux-claude-restart --all`: idle tabs restart, busy ones are left alone |
+| Solo mode | `tmux-solo`: start arguments, the tab flag, returning to normal; a tab without a conversation gets a new Claude with the same flags |
+| Claude accounts | `claude-account`: the personal account shares conversations and not credentials; switching a tab resumes the same conversation, or starts a new one when the tab never had any; refusal when both accounts are in the same organization; a pinned project (and its worktrees) wins over the default account |
+| Tab persistence | No save in the first minutes after start; tabs are restored only when the session came back empty |
+| Interactive floating windows | Popups hosted by `tmux-popup-run`; the popup server's socket file is removed when its last window closes |
+| Backup and restore | A backup is created, the restore test passes, and the backup carries no credentials |
+| Screensaver | Every `tmux-art` scene draws, also on a small screen and in 256 colors; the scene menu and `tmux-art` name the same scenes; a retired saved scene falls back to random; the screensaver appears with a tab in "waiting for you" and does not with a permission dialog open; choosing a scene saves it |
+| Terminal: ble.sh, completion and copilot | Shell helpers and the terminal copilot against the fake API |
+| No header (`test_telemetry`) | `ws-telemetry`: turns, costs, dashboard generation |
+| Export work to another Claude and learn from you | `ws-handoff`, `ws-learn` |
+| Full report (ws-report) | Agents, recurring prompts, tokens, words, weekly trend and estimation baseline are measured; HTML and Markdown are generated without prompt text |
+| Local OpenTelemetry collector (ws-otel) | Starts in the background and listens on `127.0.0.1` only; accepts logs, metrics and traces as JSON and rejects protobuf and other paths; stores with mode 0600, secrets masked; `WS_OTEL_CONTENT=0` stores no text or identity; the dashboard aggregates latency, errors by code, permissions and active time; stops |
+| Protection per tab: full, normal, bare | Generated profiles: `full` drops the excluded commands and keeps rules and guard; `bare` has no sandbox and no `allow`/`ask` and keeps `deny` and the guard; the shipped settings have no wildcard `az` allow rules and contain the floor's `deny` rules |
+| Menus and UX: active tabs, scenes, monitor, model switch | `tmux-active`, `tmux-scene`, `tmux-hud`, model switching |
+| Finder: tabs, active, favorites and recent conversations in one list (tmux-find) | The four views in one row format; the preview of a tab, a conversation and a folder; quick reply (clears the input, never types into a dialog or a shell); approve and reject only in the permission phase; "open here" creates a grouped session and removes it; the old entry points open the finder |
+| Detailed Claude state (phase, time, what it is doing, without getting stuck) | Phases, elapsed time, detail, "waiting for you", and self-correction so a state does not stay stuck |
+| Versioned personal configuration (ws-personal) | Sync and restore of the personal repository; `ws-local/roots.txt` is versioned by default; a restore copies what it replaces to `~/.local/share/ws-kit/backup.<date>/` |
+| Status bar: personal segments and ws-cache | Personal bar segments and the `ws-cache` behavior |
+| tmux: CI/PR in the status bar, templates, recording, history and swarm | `tmux-branch`, `tmux-template`, `tmux-record`, `tmux-history`, `tmux-swarm` |
+| tmux: pane → Claude, palette, notify me, extract, labels, focus, logs | The `Ctrl+b e`, palette, notify-when-done, extract, label, focus and log features |
+| Traces, estimation, weekly report and budgets | `ws-traces.sh` output and the commands that read it; `estimate --by` with the old values; the `traces` view of `ws-telemetry sql` (simulated DuckDB) |
+| Model routing (cr + hook) | Routing rules, the hook, the confirmation |
+| Telegram: notifications and answering with buttons (simulated API) | Notifications with the dialog's options; buttons from another chat are ignored; one-time codes; running a proposed command and returning its output; dangerous commands arrive without a button; alerts are not repeated; a wrong PIN sends nothing and a correct one delivers the reply |
+| Tab groups and bringing conversations in | Tab groups and `tmux-bring` |
+| ws-verify --live: the running tmux server (PATH, save, tabs, scripts, sockets) | Against a throwaway server: a healthy one passes and a linked session does not count as more tabs; a server without `~/.local/bin` in `PATH`, a tab missing from the save, a leftover `find-peek-*` session, a key bound to a missing script and a dead socket each fail with their remedy; `--clean-sockets` removes only dead sockets |
+| Sandbox placeholders in your repos (read-only) | Read-only check of sandbox placeholder files in your repositories |
+| Language selector (ws-lang) | `ws-lang`: `en` when nothing is set, setting and reading the language, `WS_LANG` overriding the file, and the packs: with `en` a key returns the English value only, with `es` the English and the Spanish values joined |
 
-`ws-test --ia` adds a section «Con Claude y API reales (no deterministas)»: `claude -p` answers, the copilot proposes
-a valid command, the API-backed inline suggestion is coherent, and auto mode runs a command and returns its output.
-These retry, validate by pattern and only warn; they never fail the run.
+`ws-test --ai` adds a section "With the real Claude and API (non-deterministic)": `claude -p` answers, the copilot
+proposes a valid command, the API-backed inline suggestion is coherent, and auto mode runs a command and returns its
+output. These retry, validate by pattern and only warn; they never fail the run.
 
-### Limits
+Some fixtures are in Spanish on purpose: they test the Spanish language pack (routing rules, the "waiting for you"
+detector, the Telegram command extractor, the recurring-prompt normalizer), which matches prompts and answers typed
+in Spanish. Those tests run with the language set to `es`.
 
-- `ws-test` needs tmux and an installed station. It cannot run inside Claude Code's sandbox.
+## What is not covered
+
+- `ws-test` needs tmux and an installed workstation. It cannot run inside Claude Code's sandbox.
 - It does not exercise the real Windows side (notifications, Credential Manager, Windows Terminal) or a real Telegram
   bot.
 - The protection levels are tested at the profile-generation level; whether Claude Code honors the profile is checked
-  by hand in a real tab with `/permissions` and `/sandbox`, and by `ws-auditoria --ia`, which attempts real sandbox
-  escapes with `claude -p` in a temporary folder.
+  by hand (see [Manual checks](#manual-checks)).
+- Build, DAST and deploy stages do not apply: the kit is scripts and configuration copied into a home directory.
 
 ## Static checks
 
@@ -137,17 +165,7 @@ These retry, validate by pattern and only warn; they never fail the run.
 | Secrets | `gitleaks dir --config .gitleaks.toml --redact .` | The whole repository |
 | Menu consistency | `ws-menus` | Repeated keys in a menu, the same action in two menus, scripts a menu calls that do not exist |
 
-## Other verification commands
-
-| Command | Purpose |
-|---|---|
-| `ws-check` | Read-only status of the installed station: tmux, MCP servers, sandbox tools, the kit, the git gate, backups |
-| `ws-health` | Resilience: disk space, distro snapshot, tmux save freshness, kit in sync |
-| `ws-verify [--rapido]` | Everything before pushing kit changes: scripts (`bash -n`, shellcheck), tmux, screensaver, Claude Code settings, the station, the kit, and the behavior tests. Read-only; exits 1 on any failure |
-| `ws-auditoria [--ia]` | Read-only audit by pillar (tmux, shortcuts and menus, Claude Code, sandbox, security, resilience, performance, observability) with an HTML and Markdown report |
-| `cr --probar` | Runs 20 labeled tasks against the routing rules; exits 1 below 90 percent |
-
-## CI
+## Continuous integration
 
 Two workflows in `.github/workflows/`, both with `contents: read` and no third-party actions.
 
@@ -155,20 +173,38 @@ Two workflows in `.github/workflows/`, both with `contents: read` and no third-p
 
 Runs on pushes to `main` and on pull requests. Concurrent runs for the same ref are cancelled.
 
-| Job | Steps | Blocking |
-|---|---|---|
-| `lint` | shellcheck on every script with a bash or sh shebang; `py_compile` on every Python script; `jq empty` on every JSON file; tmux syntax check of `.tmux.conf` and every menu in a throwaway server | Yes |
-| `sast` | bandit at a pinned version (medium severity and above); gitleaks at a pinned version, verified against the release checksum | Yes |
-| `test` | `bash tests/run.sh` (after `lint` and `sast`) | Yes |
-| `instalacion` | `install.sh --dry-run` and `install.sh` into an empty home on Ubuntu 24.04, then `ws-test` on the result | No (`continue-on-error`): it reports without blocking the merge |
-
-Build, DAST and deploy stages do not apply: the kit is scripts and configuration copied into a home directory.
+| Job | Name shown in GitHub | Steps | Blocking |
+|---|---|---|---|
+| `lint` | Lint (shellcheck, Python, JSON, tmux) | shellcheck on every script with a bash or sh shebang; `py_compile` on every Python script; `jq empty` on every JSON file; tmux syntax check of `.tmux.conf` and every menu in a throwaway server | Yes |
+| `sast` | SAST and secrets (bandit, gitleaks) | bandit at a pinned version (medium severity and above); gitleaks at a pinned version, verified against the release checksum | Yes |
+| `test` | Kit tests | `bash tests/run.sh` (after `lint` and `sast`) | Yes |
+| `install` | Clean install (Ubuntu 24.04) | `install.sh --dry-run` and `install.sh` into an empty home on Ubuntu 24.04, then `ws-test` on the result | No (`continue-on-error`): it reports without blocking the merge |
 
 ### `codeql.yml`
 
-CodeQL for `python` and `actions`, on pushes and pull requests to `main` and weekly.
+CodeQL for `python` and `actions` (job `analyze`, one run per `language` of the matrix), on pushes and pull requests to
+`main` and weekly.
+
+A branch-protection rule that lists required checks uses the names shown in GitHub: `Lint (shellcheck, Python, JSON,
+tmux)`, `SAST and secrets (bandit, gitleaks)`, `Kit tests`, `Clean install (Ubuntu 24.04)`, `analyze (python)` and
+`analyze (actions)`.
+
+### Dependabot
 
 Dependabot (`.github/dependabot.yml`) updates the GitHub Actions used by the workflows weekly.
+
+## Manual checks
+
+| Command | Purpose |
+|---|---|
+| `ws-check` | Read-only status of the installed workstation: tmux, MCP servers, sandbox tools, the kit, the git gate, backups |
+| `ws-health` | Resilience: disk space, distro snapshot, tmux save freshness, kit in sync |
+| `ws-verify [--quick]` | Everything before pushing kit changes: scripts (`bash -n`, shellcheck), tmux (configuration, and the running server: `ws-verify --live` runs those checks alone), screensaver, Claude Code settings, the workstation, the kit, and the behavior tests. Read-only; exits 1 on any failure |
+| `ws-audit [--ai]` | Read-only audit by pillar (tmux, shortcuts and menus, Claude Code, sandbox, security, resilience, performance, observability) with an HTML and Markdown report |
+| `cr --test` | Runs the 20 labeled tasks of each active language against the routing rules (the English set, plus the Spanish set with `ws-lang es`); exits 1 below 90 percent |
+
+Whether Claude Code honors a protection profile is checked by hand in a real tab with `/permissions` and `/sandbox`,
+and by `ws-audit --ai`, which attempts real sandbox escapes with `claude -p` in a temporary folder.
 
 ## Before opening a pull request
 
