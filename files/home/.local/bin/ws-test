@@ -91,7 +91,9 @@ EOF
 }
 
 # Variables of the isolated environment for each test command.
-E() { env -u TMUX -u CLAUDE_CONFIG_DIR HOME="$TH" TMUX_TMPDIR="$T/s/$SOCK" PATH="$TH/.local/bin:$FB:/usr/bin:/bin" \
+# The XDG folders are unset so the scripts use the isolated home: CI runners set XDG_CONFIG_HOME, and the kit's
+# scripts then read and wrote favorites and folder roots outside it.
+E() { env -u TMUX -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_STATE_HOME -u XDG_CACHE_HOME HOME="$TH" TMUX_TMPDIR="$T/s/$SOCK" PATH="$TH/.local/bin:$FB:/usr/bin:/bin" \
       TERM=xterm-256color WST_LOG="$T/claude.log" WS_TELEMETRY_WIN="$T/win" WS_BACKUP_DEST="$T/dest" WS_BACKUP_LOCK="$T/backup.lock" WS_BACKUP_MIN_GB=0 WS_RECOVER_WAIT=3 "$@"; }
 tm() { E tmux "$@"; }
 have() { [[ -x "$TH/.local/bin/$1" ]]; }
@@ -682,7 +684,7 @@ test_groups() {
   done
   TMUX_TMPDIR="$tt" tmux -f /dev/null new -d -s dev -c "$r/repos/web" "sleep 120"
   # Spanish on purpose: the confirmations keep accepting «s» (sí) next to y/yes.
-  echo s | env HOME="$gh" TMUX_TMPDIR="$tt" "$RH/.local/bin/tmux-bring" --reorganize >/dev/null 2>&1
+  echo s | env -u XDG_CONFIG_HOME HOME="$gh" TMUX_TMPDIR="$tt" "$RH/.local/bin/tmux-bring" --reorganize >/dev/null 2>&1
   local l; l="$(TMUX_TMPDIR="$tt" tmux list-windows -a -F '#S:#W')"
   grep -qx 'repos:api' <<<"$l" && grep -qx 'code:tool' <<<"$l" && ok "opens each conversation without a tab in the session of its group" || fail "groups: $l"
   grep -q '^repos:' <<<"$l" && ! grep -q '^dev:' <<<"$l" && ok "--reorganize moves the tabs from dev to their group" || fail "reorganize: $l"

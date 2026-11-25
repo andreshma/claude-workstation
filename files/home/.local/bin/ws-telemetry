@@ -106,7 +106,9 @@ def _english_select(source: str) -> str:
     The columns that really exist are asked to DuckDB first (DESCRIBE): COALESCE cannot name a column no file has.
     Each old column is folded into its new name (the old one first, as in normalize) and dropped; the old values of
     text columns are translated with LEGACY_VALUES. If the columns cannot be read, the plain SELECT * is returned."""
-    plain = f"SELECT * FROM {source}"
+    # source is the kit's own read_json_auto(...) over its data folder; column names go through q() and values
+    # through lit(), and both come from DESCRIBE of those files and from LEGACY_KEYS / LEGACY_VALUES, not from input.
+    plain = f"SELECT * FROM {source}"  # nosec B608
     try:
         out = subprocess.run(["duckdb", "-csv", "-noheader", "-c", f"DESCRIBE {plain}"],  # nosec B603 B607
                              capture_output=True, text=True, timeout=120, check=True).stdout
@@ -137,7 +139,7 @@ def _english_select(source: str) -> str:
             cases = " ".join(f"WHEN {lit(a)} THEN {lit(b)}" for a, b in values[new].items())
             expr = f"CASE {expr} {cases} ELSE {expr} END"
         cols.append(f"{expr} AS {q(new)}")
-    return f"SELECT * EXCLUDE ({', '.join(q(d) for d in drop)}), {', '.join(cols)} FROM {source}"
+    return f"SELECT * EXCLUDE ({', '.join(q(d) for d in drop)}), {', '.join(cols)} FROM {source}"  # nosec B608
 
 
 def normalize(rec):
