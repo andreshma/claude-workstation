@@ -3,22 +3,28 @@
 # ws-restore-lite — tests or restores a ws-backup-lite backup.
 #
 # Usage: ws-restore-lite [--test | --restore] [FILE] [--identity AGE_FILE]
+#        ws-restore-lite --mirror PATH [--to DIR] [--identity AGE_FILE]
 #   --test     (default) extracts into a temp folder and checks that everything can be
 #                recovered: integrity, readable conversations, tmux, inventory and
 #                that it does NOT contain credentials. Does not touch your $HOME.
 #   --restore  extracts into $HOME. Asks for confirmation; will not run with Claude open; what
 #                already exists and differs is kept as <file>.~N~ (no overwrite).
+#   --mirror   recovers a file or folder of the Windows-side mirrors (%UserProfile%\.claude-wsl-backup from ws-backup,
+#                .tmux-resurrect-backup from tmux-backup) into DIR (default ~/.local/state/ws-restore/mirror-<date>):
+#                .age copies are decrypted, clear ones (older mirrors) copied; ~/.claude is not touched.
 #   FILE         by default, the most recent backup in %UserProfile%\WSL-Backups\lite
 #   --identity   age identity for an encrypted (.age) backup; by default the cloud key ws-backup-cloud keeps in
 #                the Windows Credential Manager (ws/age-backup), which ws-backup-lite always encrypts to
 # Order on a new machine: the kit's install.sh → ws-restore-lite --restore → logins.
 set -euo pipefail
-MODE="--test" FILE="" IDENT=""
+MODE="--test" FILE="" IDENT="" MIRROR="" TO=""
 while (( $# )); do
   case "$1" in
     --test|--restore) MODE="$1" ;;
+    --mirror) MODE="--mirror"; MIRROR="${2:?missing mirror path}"; shift ;;
+    --to) TO="${2:?missing destination folder}"; shift ;;
     --identity) IDENT="${2:?missing identity file}"; shift ;;
-    -h|--help) sed -n '3,15p' "$0"; exit 0 ;;
+    -h|--help) sed -n '3,18p' "$0"; exit 0 ;;
     *) FILE="$1" ;;
   esac
   shift
@@ -30,6 +36,50 @@ win_home() {
   [[ -n "$p" ]] || p="$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r' || true)"
   [[ -n "$p" ]] && wslpath -u "$p"
 }
+# load_cloud_key — without --identity, the cloud key from Credential Manager (ws-backup-cloud setup) into a 0600 temp
+# file deleted on exit. Globals: IDENT, ID_TMP.
+ID_TMP=""
+cleanup_id() { [[ -z "$ID_TMP" ]] || rm -f "$ID_TMP"; }
+trap cleanup_id EXIT
+load_cloud_key() {
+  [[ -z "$IDENT" ]] && command -v ws-secret >/dev/null || return 0
+  ID_TMP="$(mktemp)"; chmod 600 "$ID_TMP"
+  for k in age-backup age-respaldo; do ws-secret get "$k" > "$ID_TMP" 2>/dev/null && [[ -s "$ID_TMP" ]] && break; done
+  if [[ -s "$ID_TMP" ]]; then IDENT="$ID_TMP"; return 0; fi
+  rm -f "$ID_TMP"; ID_TMP=""
+}
+
+#######################################
+# --mirror: a file or folder of the Windows-side mirrors into a folder of its own. Each <name>.age is decrypted to
+# <name>, a clear copy (a mirror written before WS-SEC-013 or without a key) is copied as it is; mtimes are kept and
+# nothing is overwritten.
+#######################################
+if [[ "$MODE" == "--mirror" ]]; then
+  [[ -e "$MIRROR" ]] || { echo "✖ $MIRROR does not exist" >&2; exit 1; }
+  src="$(cd "$(dirname "$MIRROR")" && pwd)/$(basename "$MIRROR")"
+  TO="${TO:-$HOME/.local/state/ws-restore/mirror-$(date +%Y%m%d-%H%M%S)}"
+  mkdir -p "$TO"; chmod 700 "$TO"
+  if [[ -n "$(find "$src" -type f -name '*.age' -print -quit 2>/dev/null)" ]]; then
+    load_cloud_key
+    [[ -n "$IDENT" ]] \
+      || { echo "✖ encrypted mirror: use --identity <age file> (the key of ws-backup-cloud setup)" >&2; exit 1; }
+  fi
+  base="$(dirname "$src")"; n=0 bad=0
+  while IFS= read -r -d '' f; do
+    rel="${f#"$base/"}"; out="$TO/${rel%.age}"
+    [[ -e "$out" ]] && continue
+    mkdir -p "$(dirname "$out")"
+    if [[ "$f" == *.age ]]; then
+      if age -d -i "$IDENT" -o "$out" "$f" 2>/dev/null; then touch -r "$f" "$out"; n=$((n + 1))
+      else rm -f "$out"; bad=$((bad + 1)); echo "  FAIL   could not decrypt $rel" >&2; fi
+    else cp -p "$f" "$out" && n=$((n + 1)); fi
+  done < <(find "$src" -type f ! -name '.*' -print0 2>/dev/null)
+  echo "✔ $n files from $src in $TO$( (( bad )) && echo " ($bad could not be decrypted)")"
+  echo "  Copy back what you need without overwriting, e.g.: cp -rn \"$TO/projects/<folder>\" ~/.claude/projects/"
+  (( bad == 0 )) || exit 1
+  exit 0
+fi
+
 DEST="${WS_BACKUP_DEST:-$(win_home)/WSL-Backups/lite}"
 if [[ -z "$FILE" ]]; then
   FILE="$(find "$DEST" -maxdepth 1 -name 'claude-lite-*.tar.*' ! -name '*.sha256' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)"
@@ -48,14 +98,9 @@ if [[ -f "$FILE.sha256" ]]; then
 else warn "no .sha256 file"; fi
 
 # An encrypted backup without --identity: the cloud key from Credential Manager, in a 0600 temp file deleted on exit.
-ID_TMP=""
-cleanup_id() { [[ -z "$ID_TMP" ]] || rm -f "$ID_TMP"; }
-trap cleanup_id EXIT
-if [[ "$FILE" == *.age && -z "$IDENT" ]] && command -v ws-secret >/dev/null; then
-  ID_TMP="$(mktemp)"; chmod 600 "$ID_TMP"
-  for k in age-backup age-respaldo; do ws-secret get "$k" > "$ID_TMP" 2>/dev/null && [[ -s "$ID_TMP" ]] && break; done
-  if [[ -s "$ID_TMP" ]]; then IDENT="$ID_TMP"; ok "encrypted: using the cloud key from the Windows Credential Manager"
-  else rm -f "$ID_TMP"; ID_TMP=""; fi
+if [[ "$FILE" == *.age && -z "$IDENT" ]]; then
+  load_cloud_key
+  [[ -n "$ID_TMP" ]] && ok "encrypted: using the cloud key from the Windows Credential Manager"
 fi
 
 # read_backup — decrypts (if needed) and decompresses to stdout.
@@ -77,9 +122,12 @@ if [[ "$MODE" == "--test" ]]; then
   if read_backup | tar -C "$T" -xf - 2>"$T.err"; then ok "extracts completely"; else fail "could not extract: $(head -1 "$T.err")"; exit 1; fi
   rm -f "$T.err"
 
-  n=$(find "$T/.claude/projects" -maxdepth 2 -name '*.jsonl' 2>/dev/null | wc -l)
+  # count: under set -e and pipefail a find over a missing folder (a backup without ~/.claude/projects) used to end
+  # the script silently, with no FAIL line and no verdict.
+  count() { find "$@" 2>/dev/null | wc -l || true; }
+  n=$(count "$T/.claude/projects" -maxdepth 2 -name '*.jsonl')
   (( n > 0 )) && ok "$n conversations" || fail "contains no conversations (~/.claude/projects)"
-  s=$(find "$T/.claude/projects" -path '*/subagents/*.jsonl' 2>/dev/null | wc -l)
+  s=$(count "$T/.claude/projects" -path '*/subagents/*.jsonl')
   ok "$s subagent conversations"
   # The 5 most recent conversations must be readable line by line (what claude -r does).
   bad=0
@@ -99,8 +147,8 @@ if [[ "$MODE" == "--test" ]]; then
   elif jq -er '.mcpServers.mempalace.command // ""' "$HOME/.claude.json" 2>/dev/null | grep -q '^/mnt/'; then
     ok "MemPalace runs on Windows: its data does not depend on WSL"
   else warn "MemPalace not included (add its folder to ~/.config/ws-backup/extra.txt)"; fi
-  [[ -s "$INV/apt-manual.txt" ]] && ok "inventory for reinstalling ($(ls "$INV" | wc -l) files)" || fail "no package inventory"
-  cred=$(find "$T" \( -name '.credentials.json' -o -path '*/.azure/*' -o -path '*/.kube/config' -o -path '*/.aws/credentials' -o -name 'age-identity*' \) 2>/dev/null | head -3)
+  [[ -s "$INV/apt-manual.txt" ]] && ok "inventory for reinstalling ($(count "$INV" -maxdepth 1 -type f) files)" || fail "no package inventory"
+  cred=$(find "$T" \( -name '.credentials.json' -o -path '*/.azure/*' -o -path '*/.kube/config' -o -path '*/.aws/credentials' -o -name 'age-identity*' \) 2>/dev/null | head -3 || true)
   [[ -z "$cred" ]] && ok "no credentials inside" || fail "contains credentials: $cred"
   if [[ -s "$INV/$pending" ]]; then
     warn "repos in ~/code with unpushed work at backup time:"; sed 's/^/           /' "$INV/$pending"

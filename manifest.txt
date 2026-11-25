@@ -154,3 +154,7 @@
 .config/agent-browser/policy.json
 .config/agent-browser/allowed-domains.txt
 .config/claude-levels/normal-adds.json
+.local/lib/ws-mirror.sh
+.local/lib/ws-tools.lock
+.local/bin/ws-plugins
+.config/tmux-claude/plugins.lock
