@@ -549,7 +549,8 @@ EOF
     "bash -c 'printf \" Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, and do not ask again\n   3. No (esc)\n\"; read -rsn1 k; echo CHOSEN:\$k; sleep 60'"
   sock="$(ls -d "$tt"/tmux-*/default)"; pane="$(TMUX_TMPDIR="$tt" tmux display -p -t tg '#{pane_id}')"; sleep 0.5
   tg_env() { env TMUX="$sock,1,0" HOME="$RH" WS_TELEGRAM_CFG="$g/cfg" WS_TELEGRAM_ST="$g/st" WS_TELEGRAM_LOG="$g/log" \
-               WS_TELEGRAM_TOKEN=test WS_TELEGRAM_CURL="$g/curl" WS_TELEGRAM_NO_SERVICE=1 WS_TG_FAKE="$g" "$@"; }
+               WS_TELEGRAM_TOKEN=test WS_TELEGRAM_CURL="$g/curl" WS_TELEGRAM_NO_SERVICE=1 WS_TG_FAKE="$g" \
+               WS_BURN_DIR="$g/burn" "$@"; }   # not the machine's /tmp/claude-burn-<uid> (your real plan usage)
   tg_env "$W" notify wait "$pane" "Claude needs your permission to use Bash"
   [[ "$(jq '.options | length' "$g"/st/outbox/*.json 2>/dev/null)" == 3 ]] && ok "the notification carries the 3 options on screen" || fail "notification without options"
   echo "99 1" > "$g/cb"; tg_env "$W" service --once

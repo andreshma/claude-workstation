@@ -10,7 +10,8 @@
 # Failure mode: the stop marker blocks with or without jq. The budget gate fails OPEN: a missing, unreadable or stale
 # flag (older than 2 hours: the dashboard stopped updating) lets work continue, because it cannot know the spend.
 # The project is the folder name of the session's cwd, the same key ws-telemetry and budgets.conf use.
-# Every hold is recorded as an audit «held» event (not «blocked»: ws-anomaly counts only what the guard blocks).
+# Every hold is recorded as an audit «held» event, not «blocked» or «denied»: ws-anomaly counts guard blocks, denied
+# permissions and sandbox hits as signs of probing, and a hold is your own switch, not something the agent tried.
 # Usage: called by Claude Code with the hook JSON on stdin · WS_STATE_DIR overrides ~/.local/state (tests).
 set -uo pipefail
 ST="${WS_STATE_DIR:-$HOME/.local/state}"

@@ -26,7 +26,8 @@
 #   · Approving a risky permission dialog (an ask rule, a command that runs outside the sandbox, an MCP tool or a
 #     dangerous command) asks for the PIN the same way; `ws-telegram approve pin` asks it for every approval.
 #     "Yes, and don't ask again" (and other persistent allows) is never offered as a button: only on the PC.
-#   · Everything is logged in ~/.local/share/ws-telemetry/telegram/ (without the screen text).
+#   · Everything is logged in ~/.local/share/ws-telemetry/telegram/ (without the screen text); approvals, denials,
+#     PIN checks and ▶ Run commands (redacted) also go to the audit hash chain (~/.claude/audit, WS-SEC-011).
 set -uo pipefail
 export LC_ALL=C.UTF-8
 # tmux (run-shell) and setsid start the service with a minimal PATH: without this it cannot find ws-secret and fails with "no token".
@@ -45,10 +46,31 @@ chat_id() { sed -n 's/^chat_id=//p' "$CFG/config" 2>/dev/null; }
 configured() { [[ -n "$(chat_id)" ]]; }
 # Marker files are user settings: the old Spanish names (apagado, texto, ejecutar-sin-pin) still count if they exist.
 is_off() { [[ -f "$CFG/off" || -f "$CFG/apagado" ]]; }
-log_event() {   # event detail...
+log_event() {   # event detail [command] — the command (▶ Run) goes only to the audit log, redacted there
   mkdir -p "$LOGD" && chmod 700 "$LOGD"
   jq -nc --arg e "$1" --arg d "${2:-}" '{ts: (now | todate), event: $e, detail: $d}' >> "$LOGD/$(date +%F).jsonl" 2>/dev/null || true
+  case "$1" in
+    approve_authorized|approve_blocked|approve_asks_pin|command_authorized|command_blocked|command_asks_pin|run|\
+    pin_wrong|unauthorized|refused_persistent|text_reply|text_rejected|text_off|action|invalid|command_expired)
+      audit_tg "$1 ${2:-}" "${3:-}" ;;
+  esac
+  return 0
 }
+
+#######################################
+# Records a remote decision in the Claude audit log (WS-SEC-011): the same hash chain, format and redaction as the
+# hooks (audit.sh, checked by ws-audit --verify-log), event «telegram». Only metadata: the event, the tab, the option
+# number and approve or deny; a ▶ Run command as tool_input.command, which audit.sh redacts (tokens, keys,
+# passwords). Never the screen text or your message. Arguments: reason, [command].
+#######################################
+audit_tg() {
+  local a="${WS_TELEGRAM_AUDIT:-$HOME/.claude/hooks/audit.sh}" j
+  [[ -x "$a" ]] || return 0
+  j="$(jq -nc --arg c "${2:-}" '{tool_name: "Telegram"} + (if $c == "" then {} else {tool_input: {command: $c}} end)')"
+  (cd / && "$a" telegram "$1" <<<"$j") >/dev/null 2>&1 || true
+}
+# decision <choice> <option label> — approve or deny, for the audit record of a dialog answered from the phone.
+decision() { if [[ "$1" == esc ]] || ! is_approval "$2"; then echo deny; else echo approve; fi; }
 token() {
   # WS_TELEGRAM_TOKEN exists ONLY for the isolated tests (ws-test); in real use the token lives in Windows.
   if [[ -n "${WS_TELEGRAM_TOKEN:-}" ]]; then printf '%s' "$WS_TELEGRAM_TOKEN"; else "$HOME/.local/bin/ws-secret" get telegram-bot-token 2>/dev/null; fi
@@ -360,7 +382,11 @@ dialog_risky() {
   return 1
 }
 
-# Does the tab run without a sandbox (solo mode or bare level)? Nothing is offered or run from Telegram there.
+# Is the tab at the bare level (no sandbox) or in solo mode? ▶ Run is neither offered nor run there. Solo now runs
+# inside the sandbox (ADR 0016; only --unsandboxed, @csolo_nosb, leaves it), and it stays refused on purpose: a solo
+# agent approves its own actions unattended, its excluded commands (az, gh, kubectl: half of RUN_ALLOW) still run
+# outside the sandbox with your sessions (WS-AI-004), and a command typed into it from the phone is read by that agent.
+# The stricter rule costs little: do it on the PC, or return the tab to normal mode first.
 no_sandbox() {
   target "$1" 2>/dev/null || return 1
   [[ -n "$("${T_CMD[@]}" show -wqv -t "$T_TGT" @csolo 2>/dev/null)" || "$("${T_CMD[@]}" show -wqv -t "$T_TGT" @clevel 2>/dev/null)" == bare ]]
@@ -487,7 +513,7 @@ run_command() {
     close_msg "$mid" "$t" "⛔ Emergency stop is on: nothing runs (ws-stop-all --clear on the PC)"; log_event command_blocked "$p stop-all"; return
   fi
   if ! run_allowed "$cmd"; then close_msg "$mid" "$t" "✖ Not run from Telegram (not a read-only command of the allow list)"; log_event command_blocked "$p"; return; fi
-  if no_sandbox "$p"; then close_msg "$mid" "$t" "✖ That tab runs without a sandbox: do it on the PC"; log_event command_blocked "$p no_sandbox"; return; fi
+  if no_sandbox "$p"; then close_msg "$mid" "$t" "✖ That tab is in solo mode or runs without a sandbox: do it on the PC"; log_event command_blocked "$p no_sandbox"; return; fi
   target "$p"
   if [[ -z "${WS_TELEGRAM_NO_CLAUDE_CHECK:-}" ]] &&
      ! "${T_CMD[@]}" display -p -t "$T_TGT" '#{pane_current_command}' 2>/dev/null | grep -qE '^([0-9]+\.){2}[0-9]+$|^claude$'; then
@@ -500,7 +526,7 @@ run_command() {
   "${T_CMD[@]}" send-keys -t "$T_TGT" -l '!'; sleep 0.4
   "${T_CMD[@]}" send-keys -t "$T_TGT" -l "$cmd"; sleep 0.2
   "${T_CMD[@]}" send-keys -t "$T_TGT" Enter
-  log_event run "$p"
+  log_event run "$p" "$cmd"
   deadline=$(( $(date +%s) + ${WS_TELEGRAM_WAIT:-180} )); prev=""
   while (( $(date +%s) < deadline )); do
     sleep 2
@@ -716,7 +742,7 @@ check_alerts() {
 
   # 10. Plan usage limit (5 h or weekly) when getting close, before Claude stops
   local lb l5 l7 lmax
-  lb="/tmp/claude-burn-$(id -u)"
+  lb="${WS_BURN_DIR:-/tmp/claude-burn-$(id -u)}"   # written by statusline.sh; WS_BURN_DIR as there (tests)
   if read -r l5 l7 < "$lb/limits" 2>/dev/null && [[ "$l5" =~ ^-?[0-9]+$ && "$l7" =~ ^-?[0-9]+$ ]]; then
     lmax=$(( l5 > l7 ? l5 : l7 ))
     if (( lmax >= $(setting limit_pct 90) )) && alert_rl "limit-$(date +%F-%H)" 120; then
@@ -883,7 +909,7 @@ handle_button() {
     if [[ "$choice" =~ ^[snx]$ && "$afile" =~ /ws-routing/remote-[0-9]+$ && -f "$afile.waiting" ]]; then
       printf '%s' "$choice" > "$afile"
       answer_cb "$id" "Sent: $label"; close_msg "$(jq -r .mid <<<"$j")" "$(jq -r .text <<<"$j")" "✔ You answered: $label ($(date +%H:%M))"
-      log_event reply "$p $choice"
+      log_event reply "$p $choice"; audit_tg "routing $p $choice"
     else
       answer_cb "$id" "Already resolved on the PC"; close_msg "$(jq -r .mid <<<"$j")" "$(jq -r .text <<<"$j")" "↺ Already resolved on the PC"
       log_event changed "$p"
@@ -907,11 +933,12 @@ handle_button() {
       ask_pin "$id" "$j" approve "$choice"; return
     fi
   fi
+  local dec; dec="$(decision "$choice" "${label:-}")"
   if [[ "$choice" == esc ]]; then send_key "$p" Escape; label="Cancel"
   else send_key "$p" "$choice"; label="$choice · $label"; fi
   answer_cb "$id" "Sent: $label"
   close_msg "$(jq -r .mid <<<"$j")" "$(jq -r .text <<<"$j")" "✔ You answered: $label ($(date +%H:%M))"
-  log_event reply "$p $choice"
+  log_event reply "$p $choice"; audit_tg "reply $p $choice $dec"
 }
 
 #######################################
@@ -953,7 +980,7 @@ approve_now() {
   fi
   send_key "$p" "$choice"
   close_msg "$mid" "$t" "✔ You approved with your PIN: $choice · $label ($(date +%H:%M))"
-  log_event reply "$p $choice pin"
+  log_event reply "$p $choice pin"; audit_tg "reply $p $choice approve pin"
 }
 
 clean_expired() {
