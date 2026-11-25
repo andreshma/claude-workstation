@@ -10,6 +10,8 @@ All notable changes to this project are documented here. The format is based on
 
 - The SAST job (bandit) failed on the SQL view of `ws-telemetry sql`; the two queries are built only from the
   kit's own data path and quoted column names and values, and are marked as reviewed.
+- `ws-test` failed five tests on CI runners, which set `XDG_CONFIG_HOME`: its wrapper now unsets the XDG folders so
+  every script uses the isolated home.
 
 ## [3.0.0] - 2026-11-24
 
