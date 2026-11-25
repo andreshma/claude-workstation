@@ -116,7 +116,18 @@ case "${1:-}" in
               else phase "done" "compacted"; main "done" "$(tcolor ok colour82)"; fi
             else rm -f "$reg"/a-* "$reg"/done.log; phase "done" ""; main "done" "$(tcolor ok colour82)"; fi
             # Which account this Claude started with (the project's, the tab's or the default one).
-            if [[ "${CLAUDE_CONFIG_DIR:-}" == */.claude-personal ]]; then put @caccount personal; else put @caccount work; fi ;;
+            if [[ "${CLAUDE_CONFIG_DIR:-}" == */.claude-personal ]]; then put @caccount personal; else put @caccount work; fi
+            # And its profile (ADR-021): WS_PROFILE, else the one of CLAUDE_CONFIG_DIR; the bar shows a custom one.
+            if [[ -r "$HOME/.local/lib/ws-profile.sh" ]]; then
+              # shellcheck source=../../.local/lib/ws-profile.sh
+              . "$HOME/.local/lib/ws-profile.sh"
+              pf="${WS_PROFILE:-}"; wsp_valid "$pf" || { wsp_of_dir "${CLAUDE_CONFIG_DIR:-}"; pf="$REPLY"; }
+              if wsp_valid "$pf"; then
+                put @cprofile "$pf"
+                if wsp_builtin "$pf"; then tmux set -wu -t "$win" @cprofile_label 2>/dev/null
+                else wsp_get "$pf" label; put @cprofile_label "$REPLY"; wsp_get "$pf" colour; put @cprofile_colour "$REPLY"; fi
+              fi
+            fi ;;
   prompt)   tmux set -w -t "$win" @cturn "$(now)" 2>/dev/null; tmux set -wu -t "$win" @cturn_txt 2>/dev/null
             phase thinking ""; main "thinking" "$(tcolor think colour39)" ;;
   tool|posttool)

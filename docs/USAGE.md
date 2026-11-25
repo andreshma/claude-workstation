@@ -26,7 +26,7 @@ On the workstation itself, two things are always up to date because they read wh
 - [7. Status bar legend](#7-status-bar-legend)
 - [8. Finding the tab that needs you](#8-finding-the-tab-that-needs-you)
 - [9. Working with Claude in a tab](#9-working-with-claude-in-a-tab)
-- [10. Accounts](#10-accounts)
+- [10. Accounts and profiles](#10-accounts-and-profiles)
 - [11. Protection levels](#11-protection-levels)
 - [12. Reports and telemetry](#12-reports-and-telemetry)
 - [13. Notifications and Telegram](#13-notifications-and-telegram)
@@ -336,7 +336,8 @@ it. The title shows the group, the tab, Claude's state and the context percentag
 | | `D` | Same text to several Claude tabs (broadcast) |
 | | `Z` | Swarm: several Claudes in parallel on one goal (one worktree and branch per subtask) |
 | | `E` | Export my work for another Claude (handoff package, `ws-handoff`) |
-| Account | `a` | Switch this tab to the personal / work account (same conversation) |
+| Account and profile | `P` | Profile › (the tab's profiles: switch this tab, new tabs, pin the project, log in, status, new profile; see [Profiles](#profiles-several-organisations-and-tenants)) |
+| | `a` | Switch this tab to the personal / work account (same conversation) |
 | | `n` | New tabs use: … (default account for new tabs) |
 | | `f` | Always use the account of this tab for this project (pin the project) |
 | | `L` | Log in to the personal account |
@@ -449,6 +450,7 @@ watcher's traffic light, the Azure subscription, the git branch and the time.
 | 🔒 / 🔓 | Protection level `full` / `bare` |
 | 🤖 before the name | Solo mode |
 | `·P` after the name | The tab was switched to the personal account |
+| `⬢acme` (colored) | The tab runs with the custom profile `acme` (its label and colour from `profile.conf`) |
 | `⏺` | The pane is being recorded |
 | ✔ ✖ ●, `#12` ✓ ✎ 📝, `ABC-123` | CI passed / failed / running; pull request number, approved / changes requested / draft; ticket taken from the branch name |
 | A label word | The tab's label (`Ctrl+b E`) |
@@ -556,11 +558,12 @@ tmux-claude-restart --all --include-busy  # also interrupts tabs that are workin
 Tabs that are thinking, running a tool, compacting or showing a dialog are skipped by default. Each tab keeps its
 protection level; tabs in solo mode are left as they are.
 
-## 10. Accounts
+## 10. Accounts and profiles
 
 The workstation runs two Claude accounts: `work` (in `~/.claude`) and `personal` (in `~/.claude-personal`).
 Each has its own login. Settings, hooks, agents and conversations are shared, so switching a tab continues the same
-conversation.
+conversation. They are the two built-in profiles of `ws-profile`; for clients with their own Claude organisation or
+Azure tenant, add a profile per client ([Profiles](#profiles-several-organisations-and-tenants)).
 
 ### First-time setup of the personal account
 
@@ -594,6 +597,63 @@ Rules:
 - The switch is refused when both logins belong to the same organization, because the usage would be charged to the
   wrong one.
 - A tab in solo mode stays in solo mode after switching.
+
+### Profiles (several organisations and tenants)
+
+A profile gives a tab one client's identities end to end
+([ADR 0021](adr/0021-per-tab-profiles.md)): its own Claude login and organisation (`~/.claude-profiles/NAME`), its
+Azure tenant and default subscription, `gh` and `kubectl` logins (`~/.config/ws-agent/NAME/`, the agent identity of
+the same name) and, by default, its own conversations and no MemPalace. The Claude in that tab, the Azure MCP server it
+starts and every `az`, `gh` or `kubectl` you type in that tab use them. `work` and `personal` are built in.
+
+Worked example, for two clients (the ids are placeholders):
+
+```bash
+# In a terminal (not from Claude): creates the profile and asks for each login (Claude, az, gh, a kubeconfig)
+ws-profile new contoso --tenant 00000000-0000-0000-0000-00000000c001 --subscription 00000000-0000-0000-0000-00000000c0a1
+ws-profile new fabrikam --tenant fabrikam.example.com --memory wing:fabrikam
+ws-profile project contoso ~/code/contoso-app     # every new tab in that repo (and its worktrees) opens as contoso
+ws-profile tab fabrikam                           # this tab, now: new conversation, fabrikam's logins
+ws-profile list                                   # profiles, memory mode, conversations (own / shared), tenant
+ws-profile status                                 # each profile's Claude organisation and az default subscription
+```
+
+| Task | Command | Menu |
+|---|---|---|
+| Create a profile and log in | `ws-profile new NAME [--tenant ID] [--subscription ID] [--share-with PROFILE] [--memory off\|on\|wing:W] [--label TEXT] [--colour C] [--claude-dir work\|personal]` | Profile › New profile… (`N`) |
+| Log in again to one tool | `ws-profile login NAME [claude\|azure\|gh\|kube]` | Profile › Log in to Claude (`L`) |
+| Switch this tab | `ws-profile tab NAME [PANE]` | Profile › the profile's line |
+| Profile for new tabs | `ws-profile use NAME` | Profile › New tabs use (`u`) |
+| Pin a project (repo and worktrees) | `ws-profile project NAME [folder]`, `ws-profile project remove [folder]` | Profile › `f`, `r` |
+| See them | `ws-profile list`, `ws-profile show NAME`, `ws-profile status`, `ws-profile projects` | Profile › Status (`s`) |
+| Re-link the kit setup and MCP servers | `ws-profile setup [NAME]` | None |
+| Remove one | `ws-profile remove NAME` (asks; its logins and conversations are deleted only when you type its name) | None |
+| One Claude with another profile, from a shell | `claude-as NAME [args]` (and `claude-work`, `claude-personal`) | None |
+
+Rules:
+
+- Which profile a new tab or pane gets: the project pin, else the tab's profile (a split), else `ws-profile use`, else
+  `work`. A restart of a tab (level, solo, `tmux-claude-restart`) keeps the tab's profile. A tab restored by
+  tmux-resurrect gets its folder's profile, so pin client repositories.
+- Switching to a profile that does not share the conversation store starts a new conversation and says so; its earlier
+  conversations are in `claude-resume -r` inside that profile. `--share-with PROFILE` links the conversations of two
+  profiles on purpose (the same client in two Azure tenants, for example).
+- `--claude-dir work|personal` reuses that account's Claude login and conversations for another Azure tenant of the
+  same organisation.
+- Memory: `off` (the default of a new profile) keeps MemPalace out of the tab, reads and writes, and its hooks get
+  nothing; `wing:W` files the tab's sessions into wing `W` only and limits searches to it; `on` is what `work` does.
+  The recall (books) server is unaffected.
+- What the agent cannot do in a profile's tab: read any profile's logins (sandbox, guard and `Read` deny rules),
+  read the conversations of another store (the fence `claude-resume` adds to the level settings), change
+  `CLAUDE_CONFIG_DIR`, the credential variables, `WS_PROFILE` or `WS_MEMORY`, log in, or run `ws-profile` or
+  `claude-account` commands that change profiles.
+- `ws-audit` (section Profiles) warns when two profiles declare the same tenant and subscription, an isolated profile
+  links conversations, a profile's credentials could be read by sandboxed commands, or a tab runs with a profile that
+  no longer exists.
+- `tmux-level … --agent NAME` is the credentials-only case: the tab keeps its Claude account and takes NAME's `az`,
+  `gh` and `kubectl` logins.
+- After `ws-profile new`, check that each login landed where it should: `ws-profile status` shows the Claude
+  organisation and the default subscription; in the tab, `/mcp` and an Azure MCP read show the tenant.
 
 ## 11. Protection levels
 
@@ -647,7 +707,9 @@ Telegram never offers to run commands in a `bare` or solo-mode tab.
 and git logs show the agent, not you. Create the folder and log in there yourself with a reduced-scope identity; an
 unknown name is refused. The tab remembers it (`@cagent`) for later level changes. With `WS_AGENT` set, the guard
 refuses to point those variables elsewhere, `--kubeconfig`, `az login` and `gh auth login`/`switch`; Claude cannot read
-`~/.config/ws-agent/` ([ADR 0020](adr/0020-agent-scoped-identities.md)).
+`~/.config/ws-agent/` ([ADR 0020](adr/0020-agent-scoped-identities.md)). A profile `NAME` keeps its credentials in that same folder: `--agent NAME` is
+the credentials-only case, and `ws-profile tab NAME` also switches the Claude account, conversations and memory
+([Profiles](#profiles-several-organisations-and-tenants)).
 
 ### What the gates do in a session
 
@@ -1175,7 +1237,7 @@ The other `WS_*` variables follow the same pattern: the Spanish word became its 
 | Model per task | `cr` | [9](#9-working-with-claude-in-a-tab) |
 | Restart Claude | `tmux-claude-restart` | [9](#9-working-with-claude-in-a-tab) |
 | Swarm and handoff | `tmux-swarm`, `ws-handoff` | [9](#9-working-with-claude-in-a-tab) |
-| Accounts | `claude-account`, `claude-work`, `claude-personal` | [10](#10-accounts) |
+| Accounts and profiles | `ws-profile`, `claude-account`, `claude-as`, `claude-work`, `claude-personal` | [10](#10-accounts-and-profiles) |
 | Protection | `tmux-level` (`--agent`), `tmux-solo` (`--hours`, `--unsandboxed`) | [11](#11-protection-levels) |
 | Emergency stop and anomalies | `ws-stop-all`, `ws-anomaly` | [11](#emergency-stop-and-anomalies) |
 | Memory review | `ws-memory` | [12](#other) |
@@ -1215,6 +1277,8 @@ The other `WS_*` variables follow the same pattern: the Spanish word became its 
 | `WS_BACKUP_COPY_DAYS` | `30` | Age after which the Windows-side copies of `ws-backup` and `tmux-backup` are pruned |
 | `WS_AGENT_BROWSER_DOMAINS` | Not set | Extra domains for one `agent-browser` run (`a.com,*.b.com`) |
 | `WS_ANOMALY_MINUTES`, `WS_ANOMALY_THRESHOLD` | `10`, `5` | Defaults of `ws-anomaly` |
+| `WS_PROFILE`, `WS_MEMORY` | Set by the tab's profile | The tab's profile and its MemPalace mode (`off`, `on`, `wing:W`), honoured by the memory hooks; never set them from Claude |
+| `AZURE_TOKEN_CREDENTIALS` | `AzureCliCredential` in a custom profile | Makes the Azure MCP server use only the profile's `az` login |
 | `CLAUDE_NOTIFY_MIN_SECS` | `20` | Minimum turn length for a "finished" notification |
 | `AI_SHELL_GHOST` | `1` | `0` turns off the grey AI suggestion in the shell |
 
@@ -1230,6 +1294,7 @@ The other `WS_*` variables follow the same pattern: the Spanish word became its 
 | `@croute` | on | `off` turns automatic model routing off in all tabs |
 | `@branch_bar` | on | `off` hides CI, pull request and ticket in the bar |
 | `@csolo_hours` | 4 | Default expiry of solo mode, in hours |
+| `@cprofile`, `@cprofile_label`, `@cprofile_colour` | Set by `ws-profile tab` and at Claude's start | The tab's profile; the label and colour the bar shows for a custom one |
 | `@canomaly_n`, `@canomaly_min` | 5, 10 | Blocked or denied actions in that many minutes that make a session anomalous (🚨 in the bar) |
 
 ## 20. Troubleshooting
@@ -1248,6 +1313,8 @@ The other `WS_*` variables follow the same pattern: the Spanish word became its 
 | Open tabs do not send OpenTelemetry data | Export starts when Claude starts: restart the tab (`tmux-claude-restart --all`) |
 | WSL is damaged | New Ubuntu → `install.sh` → `ws-restore-lite --restore` → logins |
 | `az`, `gh` or `git push` fail in a Claude started by hand | The base is strict: start it with `claude-resume` or restart the tab ([Protection levels](#11-protection-levels)) |
+| A tab asks to log in to Claude, or `az` says "Please run az login", after a switch | That profile is not signed in: `ws-profile login NAME claude` (or `azure`) in a terminal |
+| A shell prints "this tab runs as «NAME», which is not set up" | A project is pinned to a profile that does not exist: `ws-profile new NAME` or `ws-profile project remove` there |
 | Live tabs lost `az`, `gh` or `git push` after upgrading | They started before the strict base: `tmux-claude-restart --all`, and again for the busy ones |
 | "BLOCKED by policy (guard.sh)" on a settings, hooks or `CLAUDE.md` edit | Edit it yourself, or open the config-write window ([What the gates do](#what-the-gates-do-in-a-session)) |
 | Every commit fails with "gitleaks is missing" | `ws-tools install base` |

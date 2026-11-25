@@ -56,6 +56,8 @@
 .blerc
 .local/bin/ws-completions
 .local/bin/claude-account
+.local/bin/ws-profile
+.local/lib/ws-profile.sh
 .config/tmux-claude/accounts.sh
 .local/bin/tmux-recover
 .local/bin/tmux-popup-run

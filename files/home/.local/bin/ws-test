@@ -22,6 +22,8 @@ chk() { local d="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else fail "$
 
 RH="$HOME"                           # real home (only READ, to copy what is installed)
 unset TMUX TMUX_PANE                 # no tmux of these tests may be able to talk to your real session
+# Nor run with the profile of the tab you start them from (ws-profile, ADR-021).
+unset WS_PROFILE WS_PROFILE_PANE WS_MEMORY AZURE_CONFIG_DIR GH_CONFIG_DIR KUBECONFIG AZURE_TOKEN_CREDENTIALS WS_AGENT
 # The fixtures marked «Spanish on purpose» need the Spanish patterns: «es» means English AND Spanish (see ws-lang),
 # whatever language you have chosen. The tests of the selector itself set their own.
 export WS_LANG=es
@@ -97,7 +99,7 @@ EOF
 # Variables of the isolated environment for each test command.
 # The XDG folders are unset so the scripts use the isolated home: CI runners set XDG_CONFIG_HOME, and the kit's
 # scripts then read and wrote favorites and folder roots outside it.
-E() { env -u TMUX -u CLAUDE_CONFIG_DIR -u CLAUDECODE -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_STATE_HOME -u XDG_CACHE_HOME HOME="$TH" TMUX_TMPDIR="$T/s/$SOCK" PATH="$TH/.local/bin:$FB:/usr/bin:/bin" \
+E() { env -u TMUX -u CLAUDE_CONFIG_DIR -u CLAUDECODE -u WS_PROFILE -u WS_MEMORY -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_STATE_HOME -u XDG_CACHE_HOME HOME="$TH" TMUX_TMPDIR="$T/s/$SOCK" PATH="$TH/.local/bin:$FB:/usr/bin:/bin" \
       TERM=xterm-256color WST_LOG="$T/claude.log" WS_TELEMETRY_WIN="$T/win" WS_BACKUP_DEST="$T/dest" WS_BACKUP_LOCK="$T/backup.lock" WS_BACKUP_MIN_GB=0 WS_RECOVER_WAIT=3 "$@"; }
 tm() { E tmux "$@"; }
 have() { [[ -x "$TH/.local/bin/$1" ]]; }
@@ -1239,7 +1241,7 @@ test_level() {
   mkdir -p "$T/lvl"; conversation_in "$T/lvl" no; : > "$T/claude.log"
   tm -f /dev/null new-session -d -s dev -c "$T/lvl" "bash --norc --noprofile"; local p w; p="$(tm display -p -t dev '#{pane_id}')"; w="$(tm display -p -t dev '#{window_id}')"
   E env PATH="$T/fc59:$TH/.local/bin:/usr/bin:/bin" WS_LEVELS_DIR="$T/levels" tmux-level full "$p" >/dev/null 2>&1; sleep 1
-  [[ "$(tm show -wqv -t "$w" @clevel)" == full && "$(tm capture-pane -p -t "$p")" == *"claude-resume --setting-sources project,local --settings"*full*.json* ]] \
+  [[ "$(tm show -wqv -t "$w" @clevel)" == full && "$(tm capture-pane -pJ -t "$p")" == *"claude-resume --setting-sources project,local --settings"*full*.json* ]] \
     && ok "switching level restarts Claude with its profile and marks the tab (🔒)" || fail "tmux-level full: level=$(tm show -wqv -t "$w" @clevel) · $(tm capture-pane -p -t "$p" | grep -v '^$' | tail -3)"
   # A tab where Claude never received a message: the level still gets a running Claude, with the same flags.
   tail -1 "$T/claude.log" | grep -q 'args=--setting-sources project,local --settings .*full' \
@@ -1580,6 +1582,50 @@ test_lang() {
   rm -f "$lf"   # the isolated home ends as it started: without a saved language
 }
 
+# Per-tab profiles (ADR-021) on a real tmux server: switching a tab to an isolated profile starts a NEW conversation
+# with that profile's login and fence, the tab's shell gets its credentials and memory off, a level change keeps the
+# profile, the bar shows its label, and back to work gives your own sessions again.
+test_profiles() {
+  use_socket prof
+  section "Per-tab profiles (ws-profile)"
+  have ws-profile || { warn "ws-profile is not installed"; return; }
+  local A="$TH/.claude-profiles/acme" C="$TH/.config/ws-agent/acme" p w r
+  E ws-profile new acme --tenant 00000000-0000-0000-0000-0000000000aa --no-login >/dev/null 2>&1
+  [[ -f "$TH/.config/ws-profiles/acme/profile.conf" && -L "$A/settings.json" && ! -e "$A/projects" && -d "$C/azure" ]] \
+    && ok "ws-profile new: the kit setup linked, its own conversations, its credential folders" || fail "ws-profile new: $(ls -A "$A" 2>&1 | tr '\n' ' ')"
+  echo x > "$A/.credentials.json"
+  : > "$T/claude.log"; p="$(pane_with_claude prof)"; w="$(tm display -p -t "$p" '#{window_id}')"
+  conversation_in "$T/repos"
+  E ws-profile tab acme "$p" >/dev/null 2>&1; sleep 2
+  tail -1 "$T/claude.log" | grep -q "cfg=$A args=--settings [^ ]*/normal@acme\.json$" \
+    && ok "tab → acme: a NEW conversation (another store) with acme's login and its fence" || fail "tab → acme: $(tail -1 "$T/claude.log")"
+  [[ "$(tm show -wqv -t "$w" @cprofile)" == acme && "$(tm show -wqv -t "$w" @cprofile_label)" == acme ]] \
+    && ok "the tab is marked with its profile and label" || fail "tab options: $(tm show -w -t "$w" 2>&1 | grep cprofile | tr '\n' ' ')"
+  E tmux-background --bar >/dev/null 2>&1
+  [[ "$(tm show -gv window-status-format)" == *"@cprofile_label"* && "$(tm show -gv window-status-current-format)" == *"@cprofile_label"* ]] \
+    && ok "the status bar shows the label of a custom profile" || fail "the bar has no profile label"
+  # The simulated Claude is closed by hand; then the tab's shell is asked what it runs with.
+  tm send-keys -t "$p" /exit Enter; sleep 0.4
+  tm send-keys -t "$p" "echo \"\$WS_PROFILE|\$WS_MEMORY|\$AZURE_CONFIG_DIR|\$GH_CONFIG_DIR\" > '$T/prof.env'" Enter; sleep 0.5
+  [[ "$(cat "$T/prof.env" 2>/dev/null)" == "acme|off|$C/azure|$C/gh" ]] \
+    && ok "the tab's shell runs with acme's az and gh folders (a hand-typed az uses them) and memory off" || fail "tab shell: $(cat "$T/prof.env" 2>/dev/null)"
+  r="$(jq -nc '{tool_name: "mcp__mempalace__mempalace_search", tool_input: {query: "client"}}' | E env WS_PROFILE=acme WS_MEMORY=off bash "$RH/.claude/hooks/memory-gate.sh" >/dev/null 2>&1; echo $?)"
+  [[ "$r" == 2 ]] && ok "memory off: the tab's Claude cannot read or write MemPalace" || fail "memory-gate with memory off: exit $r"
+  r="$A/projects/${T//[^A-Za-z0-9]/-}-repos"; mkdir -p "$r" && echo '{"type":"user"}' > "$r/c1.jsonl"   # acme's own conversation there
+  E tmux-level normal "$p" >/dev/null 2>&1; sleep 1.5
+  tail -1 "$T/claude.log" | grep -q "cfg=$A args=--continue --settings [^ ]*/normal@acme\.json$" \
+    && ok "a level change keeps the tab's profile and resumes ITS conversation" || fail "tmux-level in an acme tab: $(tail -1 "$T/claude.log")"
+  tm send-keys -t "$p" /exit Enter; sleep 0.4
+  E ws-profile tab work "$p" >/dev/null 2>&1; sleep 1.5
+  tail -1 "$T/claude.log" | grep -q "cfg=work args=--settings [^ ]*/normal@work\.json$" \
+    && ok "back to work: a new conversation with your own login, fenced from acme's" || fail "tab → work: $(tail -1 "$T/claude.log")"
+  tm send-keys -t "$p" /exit Enter; sleep 0.4
+  tm send-keys -t "$p" "echo \"\$WS_PROFILE|\${AZURE_CONFIG_DIR:-unset}|\${CLAUDE_CONFIG_DIR:-unset}\" > '$T/prof.env'" Enter; sleep 0.5
+  [[ "$(cat "$T/prof.env" 2>/dev/null)" == "work|unset|unset" ]] && ok "…and the shell gets your own az and Claude again" || fail "work shell: $(cat "$T/prof.env" 2>/dev/null)"
+  tm kill-server 2>/dev/null
+  rm -rf "$TH/.config/ws-profiles" "$TH/.claude-profiles" "$TH/.config/ws-agent" "$TH/.config/claude-levels/"*@*.json
+}
+
 # The checks ws-verify makes on the running server, against a throwaway one: TMUX_TMPDIR and HOME point it there.
 test_live_server() {
   use_socket live
@@ -1646,6 +1692,7 @@ test_traces
 test_routing
 test_telegram
 test_groups
+test_profiles
 test_live_server
 test_sandbox_placeholders
 (( AI )) && run_ai

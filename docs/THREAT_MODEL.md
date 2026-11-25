@@ -38,6 +38,7 @@ on the remote, or human review. Each control is catalogued, with its framework m
 | The workstation's own configuration (`~/.claude/settings.json`, `~/.config/claude-levels/normal-adds.json`, hooks, `CLAUDE.md`, commands, agents, skills, `~/.claude.json`, `core.hooksPath`, the managed drop-in) | It is what enforces everything else and steers every later session; changing it disables the controls. |
 | The kit's update channel (the GitHub repository, release tags, the maintainer's signing key, `allowed_signers`) | Whatever it installs runs with the user's privileges on every workstation that updates. |
 | The Claude accounts and their usage | Work and personal usage must not be mixed; spend has a budget. |
+| Each client's data across organisations and tenants (per-tab profiles: `~/.config/ws-profiles`, `~/.claude-profiles/<name>`, `~/.config/ws-agent/<name>`) | One client's code, conversations and memory must not reach another client's Claude organisation or Azure tenant (contracts, NDAs, data protection). |
 
 MemPalace and recall live in other repositories and run on the Windows side; the kit wires their hooks and MCP
 registrations and pins their executables by sha256, but does not inspect their code or their stores.
@@ -209,7 +210,8 @@ Claude receives, and records the block in the audit log.
 | Bash | Writes to the protected configuration through a redirection, `tee`, `cp`, `mv`, `ln`, `install`, `rm`, `sed -i`, `perl -i`, `dd`, `tar`, `unzip` or `curl -o`, and a recursive `rm`, `mv`, `rsync`, `cp -r`, `tar` or `unzip` whose target contains a protected path |
 | Bash | `claude mcp add/add-json/remove`, `claude plugin install/enable/marketplace add` |
 | Bash | `ws-learn`, `ws-memory save-facts/review`, `ws-stop-all --clear`, `ws-telemetry budgets --override`, setting `WS_MEMORY_APPROVED` or `WS_MEMORY_GATE`, and MemPalace's own write commands (`mempalace mine/add/kg/…`) |
-| Bash | In a tab with an agent identity (`WS_AGENT`): switching az, gh or kubectl to other credentials (`AZURE_CONFIG_DIR`, `GH_CONFIG_DIR`, `KUBECONFIG`, token variables, `--kubeconfig`), `az login`, `gh auth login/switch/refresh/setup-git` |
+| Bash | In a tab with an agent identity (`WS_AGENT`) or a custom profile (`WS_PROFILE` other than `work`/`personal`): switching Claude, az, gh or kubectl to other credentials (`CLAUDE_CONFIG_DIR`, `AZURE_CONFIG_DIR`, `GH_CONFIG_DIR`, `KUBECONFIG`, `AZURE_TOKEN_CREDENTIALS`, token variables, `--kubeconfig`, `env -i`), `az login/logout`, `gh auth login/logout/switch/refresh/setup-git`, `claude auth login/logout`, `claude setup-token` |
+| Bash | In any tab: setting `WS_PROFILE` or `WS_MEMORY`, and `ws-profile new/login/logout/tab/use/project/remove/setup`, `claude-account setup/login/logout/tab/use/project` |
 | Bash | Mutating `az` commands when the subscription named in the command, or the default one, is production |
 | Bash | Mutating `kubectl` and `helm` commands when the context named in the command, or the current one, is production |
 | Read, Grep, Glob | A credential store reached through a link or `..` |
@@ -454,7 +456,8 @@ and captured pane contents. Without `ws-backup-cloud setup` or age recipients, t
 | A local process posts fake telemetry | Not mitigated (same privilege as the user) | It affects reports only |
 | A kit update that does not come from the maintainer | Only `vX.Y.Z` tags signed by a key in the installed `allowed_signers` are applied | `--allow-unsigned` (logged); a stolen signing key |
 | Usage is charged to the wrong account | `claude-account` records the account each tab started with, pins accounts per project, and refuses to switch when both logins belong to the same organization | None stated |
-| An agent's actions look like the owner's in cloud and git logs | `tmux-level … --agent NAME` runs the tab with its own az, gh and kubectl logins | Optional; commits carry no agent trailer yet; AWS and SSH are not covered |
+| An agent's actions look like the owner's in cloud and git logs | `tmux-level … --agent NAME` runs the tab with its own az, gh and kubectl logins; a profile (`ws-profile`) does the same for every launcher of the tab | Optional; commits carry no agent trailer yet; AWS and SSH are not covered |
+| A client's tab acts in another client's tenant or Claude organisation (cross-tenant, cross-organisation) | Per-tab profiles ([ADR 0021](adr/0021-per-tab-profiles.md)): the tab's Claude, its Azure MCP server (`AZURE_TOKEN_CREDENTIALS=AzureCliCredential`) and the shell's `az`, `gh` and `kubectl` use the profile's folders; project pins; the guard blocks switching them or logging in from Claude; `ws-audit` warns on two profiles with the same tenant and subscription | A `claude` started by hand outside a pinned project takes the default profile; a restored tab returns to its folder's profile; the logins themselves are the owner's |
 
 #### Tampering
 
@@ -482,6 +485,15 @@ and captured pane contents. Without `ws-backup-cloud setup` or age recipients, t
 | Secrets end up in telemetry | Metadata-only traces; masking in the collector | Pattern-based |
 | Private text ends up in memory | `<private>` blocked by the memory gate and stripped by `memory-filter.sh` before the MemPalace and recall hooks | Paraphrases are not recognised |
 | Conversation text leaves the machine | Telemetry is loopback-only; kit channels redact; per-level egress limits | The Claude API itself receives the conversation by design, Telegram receives redacted excerpts, and MCP servers and excluded commands have open egress |
+
+#### Information disclosure across clients
+
+| Threat | Control | Residual risk |
+|---|---|---|
+| A tab resumes or reads another client's conversation | A custom profile has its own conversation store; `ws-profile tab` resumes only within a store; the fence `claude-resume` adds denies sandboxed reads and the Read tool on every other store's conversations, the MemPalace hand-off copies and the audit log | A `claude` typed by hand has no fence; at `bare` there is no sandbox, only the Read deny rules |
+| MemPalace carries one client's work into another client's session | `memory=off` (the default of a profile): the save hooks get nothing and every MemPalace tool is blocked, reads too; `memory=wing:W` files into and searches only wing W | Facts written before the profile existed; the recall books are shared on purpose |
+| A sandboxed command reads another profile's tokens | `~/.config/ws-agent` (every profile's az, gh and kube) denied as a whole; `~/.claude-profiles/*/.credentials.json` denied by glob in the settings, the managed policy and the guard, and as literal paths in each tab's fence; `ws-audit` fails if a profile's login is not covered | Excluded commands (`az`, `gh`, `kubectl`) run outside the sandbox with the tab's own credentials, by design |
+| The agent switches its own tab to another organisation | The guard blocks `ws-profile`/`claude-account` commands that switch, the profile variables and `~/.config/ws-profiles` writes; the menu and the commands are the owner's | Indirection the guard does not parse (a script) still runs inside the sandbox, which has no network to Claude's API |
 
 #### Denial of service
 
@@ -583,6 +595,7 @@ These risks are known and accepted as the code stands today. Each is described w
 | A local process can post fake telemetry | Same privilege as the user; it affects reports only |
 | Without `hard=1`, spend alerts and budgets do not stop a session | They inform; holding work is the owner's opt-in |
 | Injection screening and secret detection are pattern-based | They are a safety net, not a replacement for the sandbox, the rules and not printing secrets |
+| SSH keys, the Docker config, AWS and database clients are shared by every profile | Profiles isolate Claude, Azure, GitHub CLI and kubectl; the rest has no per-process folder the kit can switch safely ([ADR 0021](adr/0021-per-tab-profiles.md)) |
 
 ### Pending work
 

@@ -79,7 +79,7 @@ NSA-AIDATA:BP5, WAF-SEC:SE:03, OWASP-LLM25:LLM02, OWASP-ASI:ASI06).
 ## Approved models and providers
 
 - **Provider.** Anthropic, through Claude Code with the account pinned per project by `claude-account` (`work` in
-  `~/.claude`, `personal` in `~/.claude-personal`; [architecture.md, Accounts](../architecture.md#accounts)). The
+  `~/.claude`, `personal` in `~/.claude-personal`; [architecture.md, Accounts and profiles](../architecture.md#accounts-and-profiles)). The
   terminal copilot uses a Claude Console login of its own (`ws-copilot login`, kept apart from Claude Code's
   credentials) or falls back to `claude -p`
   ([runbook.md, section 10](../runbook.md#10-floating-windows-ai-in-the-terminal-and-tests)).

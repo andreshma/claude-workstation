@@ -54,6 +54,9 @@ are in [docs/governance/](docs/governance/README.md).
 - **Agent identities**: `tmux-level … --agent NAME` runs a tab with the az, gh and kubectl logins under
   `~/.config/ws-agent/NAME`, and the guard refuses to switch them
   ([ADR 0020](docs/adr/0020-agent-scoped-identities.md)).
+- **Per-tab profiles** (`ws-profile`): a client's tab runs with that client's Claude organisation, Azure tenant, gh and
+  kubectl logins and, by default, its own conversations and no MemPalace; no tab can read another profile's logins or
+  conversations, and the agent cannot switch or change profiles ([ADR 0021](docs/adr/0021-per-tab-profiles.md)).
 - **Secrets** live only in the Windows Credential Manager (`ws-secret`, DPAPI). Tokens are passed to tools through file
   descriptors, never argv. The repository contains no credentials; exports are scanned before every commit, and the
   git gate refuses commits when gitleaks is missing (opt-out per repository, logged).

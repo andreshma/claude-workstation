@@ -38,7 +38,7 @@ controls:
     tokens, Unicode tag, bidirectional and zero-width characters, base64 blocks over 2 KB)'
   - files/home/.claude/hooks/untrusted-content.sh:70-76 (additionalContext label; on a hit, a warning and an audit injection-suspect
     line)
-  - files/home/.claude/settings.json:392-460 (PostToolUse on WebFetch, WebSearch and mcp__.*; Bash only through if rules
+  - files/home/.claude/settings.json:399-467 (PostToolUse on WebFetch, WebSearch and mcp__.*; Bash only through if rules
     for curl, wget and gh)
   - files/home/.claude/hooks/read-convert.sh:20-21 (converted documents are announced as 'document data, not instructions')
   - files/home/.local/bin/ws-telegram:162 (remote replies are prefixed '[Reply from Telegram]')
@@ -74,10 +74,10 @@ controls:
   - OWASP-LLM26:LLM03
   status: implemented
   evidence:
-  - files/home/.local/bin/tmux-level:78-103 (full keeps permissions and hooks; bare keeps deny, disableBypassPermissionsMode
+  - files/home/.local/bin/tmux-level:86-111 (full keeps permissions and hooks; bare keeps deny, disableBypassPermissionsMode
     and hooks; solo is generated from the solo profile plus the normal additions)
-  - files/home/.claude/settings.json:313 (bypassPermissions mode disabled at every level)
-  - 'files/home/.claude/settings.json:500-510 (guard hook with onFailure block: a missing or crashing guard blocks)'
+  - files/home/.claude/settings.json:320 (bypassPermissions mode disabled at every level)
+  - 'files/home/.claude/settings.json:507-517 (guard hook with onFailure block: a missing or crashing guard blocks)'
   - 'files/etc/claude-code/managed-settings.json (managed drop-in: deny floor, guard as root, bypass disabled)'
   - install.sh:222-251 (install.sh --managed installs it to /etc/claude-code/managed-settings.d/50-ws-kit.json)
   - files/home/.local/bin/ws-audit:289-301 (warns about repository .claude settings that add allow rules or excluded commands
@@ -113,11 +113,11 @@ controls:
   - OWASP-LLM26:LLM03
   status: implemented
   evidence:
-  - 'files/home/.claude/settings.json:951-1020 (the user settings carry the sandbox with no excludedCommands: a hand-typed
+  - 'files/home/.claude/settings.json:958-1028 (the user settings carry the sandbox with no excludedCommands: a hand-typed
     claude runs strict)'
   - files/home/.config/claude-levels/normal-adds.json:1-34 (the commands the normal level excludes from the sandbox)
-  - files/home/.local/bin/tmux-level:11-23,132-146 (normal = claude-resume --settings normal.json, generated from normal-adds.json)
-  - files/home/.local/bin/claude-resume:7-12 (with no --settings or --setting-sources it starts at the normal level)
+  - files/home/.local/bin/tmux-level:11-23,176-190 (normal = claude-resume --settings normal.json, generated from normal-adds.json)
+  - files/home/.local/bin/claude-resume:8-19 (with no --settings or --setting-sources it starts at the normal level)
   - files/home/.local/bin/ws-audit:279-282 (warns when the user settings exclude commands)
   - docs/adr/0013-minimum-protection-floor.md
   check:
@@ -151,10 +151,10 @@ controls:
   - OWASP-LLM26:LLM03
   status: partial
   evidence:
-  - files/home/.local/bin/tmux-solo:3-20 (auto mode inside the sandbox; --unsandboxed is the audited exception; expiry;
+  - files/home/.local/bin/tmux-solo:3-21 (auto mode inside the sandbox; --unsandboxed is the audited exception; expiry;
     worktree by default)
   - files/home/.config/claude-solo/settings.json:1-6 (sandbox enabled, autoAllowBashIfSandboxed)
-  - files/home/.local/bin/tmux-solo:35-56 (expiry hours, generated unsandboxed profile, audit events solo-on and solo-unsandboxed)
+  - files/home/.local/bin/tmux-solo:36-57 (expiry hours, generated unsandboxed profile, audit events solo-on and solo-unsandboxed)
   - files/home/.local/bin/tmux-watch:15,69-75 (returns an expired solo tab to normal)
   - files/home/.local/bin/ws-audit:303-309 (fails when the solo profile turns the sandbox off)
   - files/home/.local/bin/ws-telegram:363-367 (nothing is offered or run from Telegram in a solo or bare tab)
@@ -190,7 +190,7 @@ controls:
   - OWASP-LLM26:LLM03
   status: implemented
   evidence:
-  - 'files/home/.claude/settings.json:196-312 (ask list: aws, azd, terraform, kubectl, helm, docker, databases, PowerShell,
+  - 'files/home/.claude/settings.json:203-319 (ask list: aws, azd, terraform, kubectl, helm, docker, databases, PowerShell,
     cmd.exe, wsl.exe, every .exe, Azure, Microsoft 365 and MemPalace writes)'
   - '''ws-test: the MCP tools that send, delete or touch secrets, and PowerShell, always ask for confirmation'''
   check:
@@ -318,7 +318,7 @@ controls:
   - 'install.sh:157-220 (mcp_verify: a server missing from the lock or with a mismatch is skipped)'
   - files/home/.local/bin/ws-update:14-41 (npm audit signatures; local sha256; flags an npx registration; prerelease suffix
     kept)
-  - files/home/.local/bin/ws-audit:465-480 (fails when a pinned package or a local MCP executable no longer matches its
+  - files/home/.local/bin/ws-audit:482-497 (fails when a pinned package or a local MCP executable no longer matches its
     pin)
   check:
   - bash tests/supply-chain.sh
@@ -348,12 +348,12 @@ controls:
   - OWASP-LLM26:LLM04
   status: partial
   evidence:
-  - files/home/.claude/settings.json:153-158 (deny claude mcp add, add-json, remove; claude plugin install, enable, marketplace
+  - files/home/.claude/settings.json:154-159 (deny claude mcp add, add-json, remove; claude plugin install, enable, marketplace
     add)
-  - files/home/.claude/hooks/guard.sh:200-203 (the same commands blocked by the guard, also through claude-resume and
+  - files/home/.claude/hooks/guard.sh:214-217 (the same commands blocked by the guard, also through claude-resume and
     wrappers)
-  - 'files/home/.claude/settings.json:315 (enableAllProjectMcpServers false: project .mcp.json servers need approval)'
-  - files/home/.claude/settings.json:162-167 (Edit deny on the settings, hooks, plugins, status line and ~/.claude.json)
+  - 'files/home/.claude/settings.json:322 (enableAllProjectMcpServers false: project .mcp.json servers need approval)'
+  - files/home/.claude/settings.json:163-168 (Edit deny on the settings, hooks, plugins, status line and ~/.claude.json)
   - install.sh:157-220 (only servers in the lock are registered)
   check:
   - bash tests/guard.sh
@@ -383,7 +383,7 @@ controls:
   - OWASP-LLM26:LLM03
   status: partial
   evidence:
-  - files/home/.claude/settings.json:252-290 (always-ask rules for mutating and data-reading Azure and Microsoft 365 tools)
+  - files/home/.claude/settings.json:259-297 (always-ask rules for mutating and data-reading Azure and Microsoft 365 tools)
   - files/home/.claude/hooks/untrusted-content.sh:33 (MCP output labelled untrusted, WS-AI-001)
   - files/mcp-servers.json:43-55 (chrome-devtools opt-in, isolated profile, no usage statistics, redacted headers)
   - 'files/home/.local/bin/agent-browser:5-10,33-35 (agent-browser wrapper: localhost allow list, action policy, refuses
@@ -422,18 +422,23 @@ controls:
   - OWASP-LLM26:LLM09
   status: partial
   evidence:
-  - files/home/.claude/hooks/memory-gate.sh:20,36-44 (memory write tools recognised; content marked <private> is blocked)
-  - files/home/.claude/hooks/memory-gate.sh:54-63 (asks on every write, also in auto mode and after 'don't ask again';
+  - files/home/.claude/hooks/memory-gate.sh:24,40-41,68-74 (memory write tools recognised; content marked <private> is blocked)
+  - files/home/.claude/hooks/memory-gate.sh:84-93 (asks on every write, also in auto mode and after 'don't ask again';
     only keys approved in ws-memory pass)
-  - files/home/.claude/settings.json:294-307 (ask rules for every MemPalace write tool and the mempalace CLI)
-  - files/home/.claude/settings.json:541-548,872 (memory gate on PreToolUse for MemPalace tools and on UserPromptSubmit)
-  - files/home/.claude/hooks/memory-filter.sh:3-12 (private spans removed from what the MemPalace and recall hooks receive)
-  - files/home/.claude/hooks/guard.sh:298-307 (ws-memory save-facts/review and MemPalace's own write commands blocked
+  - files/home/.claude/settings.json:301-314 (ask rules for every MemPalace write tool and the mempalace CLI)
+  - files/home/.claude/settings.json:548-555,879 (memory gate on PreToolUse for MemPalace tools and on UserPromptSubmit)
+  - files/home/.claude/hooks/memory-filter.sh:3-17 (private spans removed from what the MemPalace and recall hooks receive)
+  - 'files/home/.claude/hooks/memory-filter.sh:25-37,69-83 (per-tab profile: memory=off hands nothing to MemPalace;
+    memory=wing:W hands a copy whose cwd files it into wing W only)'
+  - 'files/home/.claude/hooks/memory-gate.sh:15-19,43-67 (memory=off blocks every MemPalace tool, reads too; wing:W forces
+    the wing and blocks the tools that cannot be limited to one)'
+  - files/home/.claude/hooks/guard.sh:321-330 (ws-memory save-facts/review and MemPalace's own write commands blocked
     from Claude)
   - files/home/.local/bin/ws-memory:2-21 (approved saves through a one-tool profile; refuses inside Claude)
   check:
   - bash tests/memory-gate.sh
   - bash tests/guard.sh
+  - bash tests/profiles.sh
   gap: MemPalace's own lifecycle hooks still store transcript content without a per-item approval (the kit removes only
     the private spans), a paraphrase of private text is not recognised, and whether Claude Code honours updatedInput together
     with ask has not been verified at runtime.
@@ -460,7 +465,7 @@ controls:
   - OWASP-LLM26:LLM05
   status: partial
   evidence:
-  - 'files/home/.claude/hooks/memory-gate.sh:46-52 (provenance stamped by the hook: source, session, project, time)'
+  - 'files/home/.claude/hooks/memory-gate.sh:76-82 (provenance stamped by the hook: source, session, project, time)'
   - files/home/.claude/hooks/audit.sh:13-15 (memory writes keep the sha256 of the input, never the content)
   - files/home/.local/bin/ws-memory:132-150 (approved saves checked in the tool results)
   - 'files/home/.local/bin/ws-memory:162-215 (review --older-than 90: keep or invalidate)'
@@ -491,16 +496,16 @@ controls:
   - OWASP-LLM26:LLM01
   status: implemented
   evidence:
-  - 'files/home/.claude/hooks/guard.sh:59-81 (protected locations: hard for settings, hooks, ~/.claude.json, plugins,
+  - 'files/home/.claude/hooks/guard.sh:65-93 (protected locations: hard for settings, hooks, ~/.claude.json, plugins,
     profiles, guard lists, git hooks, /etc/claude-code, kit keys, pinned packages, audit log, markers; soft for CLAUDE.md,
     commands, agents, skills and the Windows-side .claude folder)'
-  - files/home/.claude/hooks/guard.sh:96-142 (path scan with links and '..' resolved, recursive targets, the owner's 30-minute
+  - files/home/.claude/hooks/guard.sh:108-154 (path scan with links and '..' resolved, recursive targets, the owner's 30-minute
     window)
-  - 'files/home/.claude/hooks/guard.sh:243-356 (shell write targets: redirection, tee, cp, mv, ln, install, rm, sed -i,
+  - 'files/home/.claude/hooks/guard.sh:261-379 (shell write targets: redirection, tee, cp, mv, ln, install, rm, sed -i,
     dd, tar, unzip, rsync, curl -o)'
-  - files/home/.claude/hooks/guard.sh:357-364 (file tools)
-  - files/home/.claude/settings.json:159-195 (Edit deny rules for the same paths)
-  - files/home/.claude/settings.json:935-946 and files/home/.claude/hooks/config-change.sh:1-14 (every configuration change
+  - files/home/.claude/hooks/guard.sh:380-387 (file tools)
+  - files/home/.claude/settings.json:160-202 (Edit deny rules for the same paths)
+  - files/home/.claude/settings.json:942-953 and files/home/.claude/hooks/config-change.sh:1-14 (every configuration change
     is audited)
   - files/home/.local/bin/ws-learn:128-150,181,194 (generated commands checked, previewed, description quoted; refuses
     inside Claude)
@@ -695,7 +700,7 @@ controls:
   evidence:
   - files/home/.claude/hooks/lint-on-edit.sh:10-16
   - 'files/home/.local/bin/ws-gate:95-140 (pre-commit: secrets, size, lint, message)'
-  - files/home/.claude/hooks/guard.sh:169-177 (no push to main or master)
+  - files/home/.claude/hooks/guard.sh:181-189 (no push to main or master)
   - files/home/.claude/standards.md:39 (generated code is reviewed like any PR)
   check:
   - bash tests/guard.sh
@@ -733,7 +738,7 @@ controls:
   - 'files/home/.claude/hooks/prompt-screen.sh:3-12 (typed prompts are screened with ws-redact; #allow-secret overrides
     and is audited)'
   - files/home/.claude/hooks/prompt-screen.sh:38-53 (block with the redacted line; the prompt is suppressed)
-  - files/home/.claude/settings.json:784-792 (first UserPromptSubmit hook)
+  - files/home/.claude/settings.json:791-799 (first UserPromptSubmit hook)
   - files/home/.local/bin/ws-redact:13-24
   check:
   - bash tests/hooks-prompt-screen.sh
@@ -795,7 +800,7 @@ controls:
   - OWASP-LLM26:LLM05
   status: partial
   evidence:
-  - files/home/.claude/settings.json:818-832 (recall hook on every prompt, wrapped by memory-filter.sh)
+  - files/home/.claude/settings.json:825-839 (recall hook on every prompt, wrapped by memory-filter.sh)
   - 'files/mcp-servers.json:7,21 (HF_HUB_OFFLINE=1: no model download at run time)'
   - docs/governance/AI-BOM.md#hooks
   check:
@@ -825,7 +830,7 @@ controls:
     --pane, --session, --clear)
   - files/home/.claude/hooks/ws-runtime-gate.sh:5-6,23-32 (every prompt and tool is held while the marker exists)
   - files/home/.local/bin/ws-telegram:38,486,858 (Telegram runs and answers nothing while the marker exists)
-  - files/home/.claude/settings.json:179-187 (deny clearing the stop and editing the marker from Claude)
+  - files/home/.claude/settings.json:186-194 (deny clearing the stop and editing the marker from Claude)
   - files/home/.config/tmux-claude/menu-claude.tmux (Menu → Claude → Emergency stop)
   - docs/governance/AI-INCIDENT-RESPONSE.md#common-steps
   check:
@@ -857,18 +862,28 @@ controls:
   - ISO42001:A.3
   status: partial
   evidence:
-  - 'files/home/.local/bin/tmux-level:31-36,122-130 (--agent NAME: WS_AGENT, AZURE_CONFIG_DIR, GH_CONFIG_DIR and KUBECONFIG
-    under ~/.config/ws-agent/NAME; tab option @cagent)'
-  - files/home/.claude/hooks/guard.sh:235-241 (in an agent tab, switching az, gh or kubectl to other credentials or logging
-    in is blocked)
-  - files/home/.claude/settings.json:178,1017 (~/.config/ws-agent denied to Read and to sandboxed reads)
-  - files/home/.local/bin/claude-account:3-6 (separate work and personal Claude logins)
+  - 'files/home/.local/bin/tmux-level:31-44,130-150 (--agent NAME: WS_AGENT, AZURE_CONFIG_DIR, GH_CONFIG_DIR and KUBECONFIG
+    under ~/.config/ws-agent/NAME, the credentials-only case of a profile; a restart keeps the tab''s profile)'
+  - 'files/home/.local/lib/ws-profile.sh:1-24,140-160 (per-tab profiles: a profile''s credentials are its agent identity
+    folder; wsp_exports gives a tab its Claude dir, az, gh and kubectl folders, AZURE_TOKEN_CREDENTIALS=AzureCliCredential)'
+  - 'files/home/.local/bin/ws-profile:2-29,138-180,242-276 (ws-profile new with a login per CLI in its own folder, refused
+    inside Claude; ws-profile tab restarts a tab with a profile, a new conversation when the store differs)'
+  - files/home/.config/tmux-claude/accounts.sh:1-38 (every new shell exports its tab's profile, so hand-typed az, gh and
+    kubectl use the same identity)
+  - 'files/home/.claude/hooks/guard.sh:249-259 (in an agent or custom-profile tab, switching Claude, az, gh or kubectl to
+    other credentials, env -i, or logging in is blocked)'
+  - files/home/.claude/hooks/guard.sh:200-201,316-320 (WS_PROFILE and WS_MEMORY, and ws-profile or claude-account commands
+    that switch accounts, are blocked from Claude in any tab)
+  - files/home/.claude/settings.json:185,1025 (~/.config/ws-agent denied to Read and to sandboxed reads)
   - docs/adr/0020-agent-scoped-identities.md
+  - docs/adr/0021-per-tab-profiles.md
   check:
   - bash tests/guard.sh
+  - bash tests/profiles.sh
   - 'live: ws-test'
-  gap: The reduced-scope identities themselves are created by the owner; excluded commands in tabs without --agent still
-    use the user's own sessions; the Agent-Session commit trailer is not built, so commits by agents look like the user's.
+  gap: The reduced-scope identities themselves are created by the owner; tabs at the built-in profiles (work, personal)
+    still use the user's own sessions through excluded commands; the Agent-Session commit trailer is not built, so commits
+    by agents look like the user's; git over SSH uses the owner's keys in every profile.
   risk: 'medium: likelihood medium; impact high (any credential the user holds is reachable from normal-level tabs through
     excluded commands).'
   remediation: Create one reduced-scope identity per recurring agent task; add the optional Agent-Session trailer through
@@ -895,7 +910,7 @@ controls:
   evidence:
   - tests/interop-adversarial.sh (Windows executables ask, credential folders denied, a README injection that asks for
     a push to main is blocked by the guard and the gate, Telegram refuses .exe; --live probes interop from bubblewrap)
-  - 'files/home/.local/bin/ws-audit:317-349 (--ai: write outside, read ~/.ssh and Claude credentials, reach a non-allowed
+  - 'files/home/.local/bin/ws-audit:334-366 (--ai: write outside, read ~/.ssh and Claude credentials, reach a non-allowed
     domain)'
   - tests/guard.sh (evasions, false positives, fail-closed)
   - tests/hooks-untrusted.sh (planted injection markers in tool output)
@@ -921,9 +936,9 @@ controls:
   - MS-RAI:Reliability and Safety
   status: implemented
   evidence:
-  - files/home/.claude/hooks/guard.sh:28-33,39 (fails closed)
-  - files/home/.claude/settings.json:500-510 (onFailure block on the guard)
-  - files/home/.claude/settings.json:597-680 (slow SessionStart hooks through ws-cache with caps)
+  - files/home/.claude/hooks/guard.sh:34-39,45 (fails closed)
+  - files/home/.claude/settings.json:507-517 (onFailure block on the guard)
+  - files/home/.claude/settings.json:604-687 (slow SessionStart hooks through ws-cache with caps)
   - files/home/.local/bin/ws-kit-update:104-115 (rollback on failed install or tests)
   - files/home/.local/bin/tmux-swarm:18-19 (integration stops on conflict)
   check:
@@ -944,7 +959,7 @@ controls:
   evidence:
   - files/home/.local/bin/ws-telegram:162 ('[Reply from Telegram]' prefix)
   - files/home/.local/bin/tmux-swarm:73-88 (task text from a user-approved split)
-  - 'files/home/.claude/settings.json:1029 (teammateMode in-process: Claude Code''s own agent teams)'
+  - 'files/home/.claude/settings.json:1037 (teammateMode in-process: Claude Code''s own agent teams)'
   check:
   - 'live: ws-test'
   gap: The kit adds no channel between agents beyond the task file; agent-team messaging is Claude Code's and outside
@@ -1001,7 +1016,7 @@ controls:
   - OWASP-LLM26:LLM03
   status: implemented
   evidence:
-  - files/home/.claude/settings.json:951-954
+  - files/home/.claude/settings.json:958-961
   - files/home/.local/bin/ws-audit:257-266 (enabled, no unsandboxed retry, failIfUnavailable, bwrap works)
   check:
   - jq -e '.sandbox.enabled and .sandbox.failIfUnavailable and (.sandbox.allowUnsandboxedCommands == false)' files/home/.claude/settings.json
@@ -1025,15 +1040,19 @@ controls:
   - OWASP-LLM26:LLM02
   status: implemented
   evidence:
-  - files/home/.local/lib/ws-credential-paths.txt (one list, the same entries as sandbox.filesystem.denyRead)
-  - files/home/.claude/hooks/guard.sh:69-81 (the list, its /etc copy and a built-in minimum)
-  - files/home/.claude/hooks/guard.sh:243-356 ($HOME, ~, '..', links, globs, $(…), @file and --opt=value forms in commands)
-  - files/home/.claude/hooks/guard.sh:365-368 (Read, Grep and Glob through a link or '..')
-  - files/home/.claude/settings.json:976-1019 (sandbox denyRead on both sides of WSL)
-  - files/home/.claude/settings.json:98-152,178 (Read deny rules)
+  - files/home/.local/lib/ws-credential-paths.txt (one list, the same entries as sandbox.filesystem.denyRead; a glob line
+    covers every profile's Claude login)
+  - files/home/.claude/hooks/guard.sh:77-93 (the list, its /etc copy and a built-in minimum; glob lines expanded per call)
+  - files/home/.local/bin/tmux-level:152-174 (every profile's Claude login also denied as a literal path in the generated
+    level settings, whatever the sandbox's glob support)
+  - files/home/.claude/hooks/guard.sh:261-379 ($HOME, ~, '..', links, globs, $(…), @file and --opt=value forms in commands)
+  - files/home/.claude/hooks/guard.sh:388-391 (Read, Grep and Glob through a link or '..')
+  - files/home/.claude/settings.json:983-1027 (sandbox denyRead on both sides of WSL)
+  - files/home/.claude/settings.json:98-153,185 (Read deny rules)
   check:
   - bash tests/guard.sh
   - bash tests/hooks-settings.sh
+  - bash tests/profiles.sh
   gap: Commands the guard cannot parse (python -c, base64 of a variable, a script) can still read a store in bare and
     in solo --unsandboxed, where no sandbox denyRead applies.
   risk: 'medium: likelihood medium in solo; impact high (cloud and git credentials).'
@@ -1054,7 +1073,7 @@ controls:
   - OWASP-LLM26:LLM02
   status: partial
   evidence:
-  - files/home/.claude/settings.json:955-975 (allowedDomains for sandboxed commands)
+  - files/home/.claude/settings.json:962-982 (allowedDomains for sandboxed commands)
   - files/home/.claude/settings.json:64-68 (WebFetch allowed without a prompt only for five documentation domains; others
     ask)
   - files/home/.local/bin/ws-audit:276-278 (fails on overly broad domains)
@@ -1089,11 +1108,11 @@ controls:
   - files/home/.local/bin/ws-gate:95-108 (a missing gitleaks blocks the commit unless ws.gate.allowNoGitleaks, which is
     logged)
   - files/home/.local/bin/ws-gate:13-14,44-67 (ws-gate bypasses lists local core.hooksPath, ws.gate.skip and allowNoGitleaks)
-  - files/home/.local/bin/ws-audit:439-451 (global gate present; a local core.hooksPath or allowNoGitleaks fails, ws.gate.skip
+  - files/home/.local/bin/ws-audit:456-468 (global gate present; a local core.hooksPath or allowNoGitleaks fails, ws.gate.skip
     warns)
   - files/home/.config/git/hooks/_chain:13-18
-  - install.sh:263-270 (sets core.hooksPath if unset)
-  - files/home/.claude/hooks/guard.sh:181-185 (Claude cannot bypass the gate)
+  - install.sh:264-271 (sets core.hooksPath if unset)
+  - files/home/.claude/hooks/guard.sh:193-197 (Claude cannot bypass the gate)
   check:
   - bash tests/gate-secret-scan.sh
   - 'live: ws-gate bypasses'
@@ -1118,7 +1137,7 @@ controls:
   - OWASP-LLM26:LLM03
   status: implemented
   evidence:
-  - files/home/.claude/hooks/guard.sh:164-242 (push, gate bypass, Co-authored-by, download and run, secrets, production,
+  - files/home/.claude/hooks/guard.sh:176-260 (push, gate bypass, Co-authored-by, download and run, secrets, production,
     PowerShell, git hooks, agent identity)
   - tests/guard.sh (217 cases)
   check:
@@ -1140,11 +1159,11 @@ controls:
   - WAF-SEC:SE:04
   status: implemented
   evidence:
-  - 'files/home/.claude/hooks/guard.sh:50,143-160 (production.conf: subscriptions by ID or name, kube contexts; then the
+  - 'files/home/.claude/hooks/guard.sh:56,155-172 (production.conf: subscriptions by ID or name, kube contexts; then the
     name pattern)'
-  - files/home/.claude/hooks/guard.sh:204-222 (az --subscription, /subscriptions/<id>, ARM_ and AZURE_SUBSCRIPTION_ID,
+  - files/home/.claude/hooks/guard.sh:218-236 (az --subscription, /subscriptions/<id>, ARM_ and AZURE_SUBSCRIPTION_ID,
     the active subscription; kubectl and helm contexts)
-  - files/home/.claude/hooks/guard.sh:369-380 (mutating Azure MCP tools that name a production subscription)
+  - files/home/.claude/hooks/guard.sh:392-403 (mutating Azure MCP tools that name a production subscription)
   check:
   - bash tests/guard.sh
   gap: Without ~/.config/ws-guard/production.conf only the name pattern applies; a production resource reached without
@@ -1169,8 +1188,8 @@ controls:
   status: implemented
   evidence:
   - files/home/.local/bin/ws-secret:1-30
-  - files/home/.claude/settings.json:141-142
-  - files/home/.claude/hooks/guard.sh:194-199
+  - files/home/.claude/settings.json:142-143
+  - files/home/.claude/hooks/guard.sh:208-213
   - files/home/.local/bin/ws-audit:311 (secret-looking environment variables)
   check:
   - bash tests/guard.sh
@@ -1195,7 +1214,7 @@ controls:
   - OWASP-LLM26:LLM02
   status: implemented
   evidence:
-  - files/home/.claude/hooks/guard.sh:357-364 (writes with a secret are blocked)
+  - files/home/.claude/hooks/guard.sh:380-387 (writes with a secret are blocked)
   - files/home/.local/bin/ws-gate:95-108
   - export.sh
   - .github/workflows/ci.yml:68-91 (gitleaks in CI)
@@ -1252,7 +1271,7 @@ controls:
   - files/home/.claude/hooks/audit.sh:30-46 (command redacted, file path, WebFetch URL without query string, search query,
     500 redacted characters of MCP input, input hash for MemPalace)
   - files/home/.claude/hooks/untrusted-content.sh:74 (injection-suspect lines with source and URL)
-  - files/home/.claude/settings.json:490-510,784-800,878-885 (hooked on PreToolUse, UserPromptSubmit, PermissionDenied
+  - files/home/.claude/settings.json:497-517,791-807,885-892 (hooked on PreToolUse, UserPromptSubmit, PermissionDenied
     and session events)
   check:
   - bash tests/audit-chain.sh
@@ -1282,8 +1301,8 @@ controls:
     of a day links to the previous day; writers take a lock)
   - files/home/.claude/hooks/audit.sh:63-75 (on session end the head hash goes to an anchor file on the Windows side)
   - files/home/.claude/hooks/audit.sh:13,23 (395-day retention)
-  - 'files/home/.local/bin/ws-audit:350-423 (ws-audit --verify-log: chain and anchors, reports and never repairs)'
-  - files/home/.local/bin/ws-audit:435-438 (the Security pillar fails on a broken chain)
+  - 'files/home/.local/bin/ws-audit:367-440 (ws-audit --verify-log: chain and anchors, reports and never repairs)'
+  - files/home/.local/bin/ws-audit:452-455 (the Security pillar fails on a broken chain)
   - files/home/.local/bin/ws-backup-lite:124-131 (a copy of the anchors travels with the light backup, and so off the
     machine with ws-backup-cloud)
   check:
@@ -1337,7 +1356,7 @@ controls:
     warning and an UNENCRYPTED log line)
   - files/home/.local/bin/ws-backup-lite:16-23,44-82 (expiry of the Windows-side copies after WS_BACKUP_COPY_DAYS, 30)
   - files/home/.local/bin/ws-restore-lite:12-13,50-69 (restores encrypted backups, with the cloud key by default)
-  - files/home/.local/bin/ws-audit:456-463 (fails when the last light backup is unencrypted)
+  - files/home/.local/bin/ws-audit:473-480 (fails when the last light backup is unencrypted)
   - files/home/.local/bin/ws-backup-cloud:3,14-16 (cloud copy always encrypted, keeps 7)
   check:
   - bash tests/backup-encryption.sh
@@ -1362,7 +1381,7 @@ controls:
   - files/home/.local/bin/ws-backup-lite:188 (sha256 of each backup)
   - files/home/.local/bin/ws-restore-lite:5-8 (test restore checks there are no credentials)
   - files/home/.local/bin/ws-backup-cloud:8-10 (decrypt test)
-  - files/home/.local/bin/ws-audit:490-504 (backup freshness)
+  - files/home/.local/bin/ws-audit:507-521 (backup freshness)
   check:
   - bash tests/backup-encryption.sh
   - 'live: ws-test'
@@ -1429,7 +1448,7 @@ controls:
   - .github/dependabot.yml (actions and the pinned npm packages, 7-day cooldown)
   - files/home/.local/lib/ws-npm/agent-browser/package-lock.json (npm tools pinned with ws-pinned)
   - files/home/.local/bin/ws-tools:115-121 (GitHub binaries checked against the release checksums)
-  - install.sh:272-278 (TPM and the tmux plugins cloned at the branch tip)
+  - install.sh:273-279 (TPM and the tmux plugins cloned at the branch tip)
   check:
   - bash tests/supply-chain.sh
   gap: tmux plugins and TPM are still cloned at the branch tip (no plugins.lock), and ws-tools trusts the checksum file
@@ -1505,7 +1524,7 @@ controls:
   - NSA-DAISS:Update and patch regularly
   status: partial
   evidence:
-  - files/home/.local/bin/ws-audit:486-487 (pending security updates)
+  - files/home/.local/bin/ws-audit:503-504 (pending security updates)
   - files/home/.local/bin/ws-update (manual apt upgrade)
   check:
   - 'manual: ws-audit pillar Security, ''pending security updates (apt)'''
@@ -1527,9 +1546,9 @@ controls:
   - WAF-SEC:SE:08
   status: partial
   evidence:
-  - files/home/.local/bin/ws-audit:425-434 (credentials, ~/.claude, telemetry, ~/.ssh)
+  - files/home/.local/bin/ws-audit:442-451 (credentials, ~/.claude, telemetry, ~/.ssh)
   - files/home/.claude/hooks/audit.sh:20-22
-  - files/home/.local/bin/tmux-level:113-119,141-145 (profiles 0600)
+  - files/home/.local/bin/tmux-level:121-127,185-189 (profiles 0600)
   check:
   - 'manual: ws-audit pillar Security, permissions checks'
   gap: The home directory itself, the umask and ~/.claude/audit and ~/.local/share/tmux-swarm are not checked.
@@ -1575,10 +1594,10 @@ controls:
   - OWASP-LLM26:LLM03
   status: partial
   evidence:
-  - files/home/.claude/settings.json:247-251,308 (PowerShell, cmd.exe, wsl.exe and every .exe ask)
-  - files/home/.claude/settings.json:998-1016 (Windows credential folders denied to sandboxed reads)
-  - files/home/.local/bin/tmux-level:67-71 (full denies Documents, Desktop, Downloads, Pictures, Videos and OneDrive)
-  - 'files/home/.claude/hooks/guard.sh:224-231 (PowerShell: no encoded commands, no download and run)'
+  - files/home/.claude/settings.json:254-258,315 (PowerShell, cmd.exe, wsl.exe and every .exe ask)
+  - files/home/.claude/settings.json:1006-1024 (Windows credential folders denied to sandboxed reads)
+  - files/home/.local/bin/tmux-level:75-79 (full denies Documents, Desktop, Downloads, Pictures, Videos and OneDrive)
+  - 'files/home/.claude/hooks/guard.sh:238-245 (PowerShell: no encoded commands, no download and run)'
   - tests/interop-adversarial.sh (13 Windows executables, credential folders)
   check:
   - bash tests/interop-adversarial.sh
@@ -1623,7 +1642,8 @@ controls:
   effort: S
 - id: WS-SEC-025
   title: Account and organisation separation
-  objective: Work and personal Claude usage stay on separate logins and cannot be mixed by accident.
+  objective: Work, personal and per-client Claude organisations and Azure tenants stay on separate logins per tab and, by
+    default, on separate conversations and memory, so one client's data does not flow into another's organisation.
   maps_to:
   - CSF:PR.AA-01
   - OWASP-NHI:NHI9
@@ -1632,12 +1652,22 @@ controls:
   - ISO42001:A.10
   status: implemented
   evidence:
-  - files/home/.local/bin/claude-account:3-16
-  - '''ws-test: personal shares conversations and NOT credentials'''
+  - files/home/.local/bin/claude-account:2-18 (work and personal, now the built-in profiles of ws-profile)
+  - 'files/home/.local/lib/ws-profile.sh:1-24,84-123 (profiles, conversation stores, precedence: project pin > tab > default)'
+  - 'files/home/.local/bin/ws-profile:55-91,417-433 (an isolated profile links the kit setup but not conversations; the
+    fence of other stores'' conversations and every Claude login)'
+  - files/home/.local/bin/tmux-level:152-174 (the fence merged into each level's settings as denyRead and Read deny rules)
+  - files/home/.local/bin/claude-resume:11-29 (every kit launcher starts Claude with the fenced settings)
+  - 'files/home/.local/bin/ws-profile:438-501 and files/home/.local/bin/ws-audit:317-331 (ws-audit: same tenant and
+    subscription twice, links in an isolated profile, credentials readable by the sandbox, tabs with a missing profile)'
+  - '''ws-test: tab → acme: a NEW conversation (another store) with acme''''s login and its fence'''
   check:
+  - bash tests/profiles.sh
   - 'live: ws-test'
-  gap: None for this objective.
-  risk: 'low: tested.'
+  gap: A Claude started by hand with plain claude (the strict base) has no fence; a tab restored by tmux-resurrect goes
+    back to its folder's profile (pin or default), not the one a ws-profile tab gave it; the real logins and the Azure MCP
+    tenant are verified by the owner, not by the tests.
+  risk: 'low: tested; residual cross-organisation flow needs a hand-started Claude in a folder without a pin.'
   remediation: Keep.
   effort: S
 - id: WS-SEC-026
@@ -1652,7 +1682,7 @@ controls:
   - SSDF:PO.5
   status: implemented
   evidence:
-  - files/home/.local/bin/ws-audit:1-21,569-585
+  - files/home/.local/bin/ws-audit:1-21,586-602
   - files/home/.local/bin/ws-verify:2-10
   - files/home/.local/bin/ws-check:2-12
   - files/home/.local/bin/ws-health:2-4
@@ -2045,8 +2075,8 @@ controls:
   - MS-RAI:Transparency
   status: implemented
   evidence:
-  - files/home/.local/bin/tmux-level:205-208 (message per level)
-  - files/home/.local/bin/tmux-solo:100-102
+  - files/home/.local/bin/tmux-level:255-258 (message per level)
+  - files/home/.local/bin/tmux-solo:101-103
   - docs/THREAT_MODEL.md#protection-levels-and-the-floor
   - docs/governance/AI-USE-POLICY.md#protection-levels-when-to-use-each
   - docs/USAGE.md

@@ -23,8 +23,14 @@
 #   · naming a credential store in a command, or reaching one through a link or «..» (WS-SEC-002): the list is
 #     ~/.local/lib/ws-credential-paths.txt (the same entries as sandbox.filesystem.denyRead) plus, when installed,
 #     /etc/claude-code/ws-credential-paths.txt; without either, a built-in minimum
-#   · in a tab with an agent identity (WS_AGENT, set by tmux-level from a profile), switching az, gh or kubectl to
-#     other credentials (AZURE_CONFIG_DIR, GH_CONFIG_DIR, KUBECONFIG, tokens, --kubeconfig, logins) (WS-AI-026)
+#   · in a tab with an agent identity (WS_AGENT, set by tmux-level) or a custom profile (WS_PROFILE other than work or
+#     personal, ADR-021), switching Claude, az, gh or kubectl to other credentials (CLAUDE_CONFIG_DIR,
+#     AZURE_CONFIG_DIR, GH_CONFIG_DIR, KUBECONFIG, AZURE_TOKEN_CREDENTIALS, tokens, --kubeconfig, env -i, logins:
+#     az login, gh auth login|switch|refresh|setup-git, claude auth login|logout, claude setup-token) (WS-AI-026);
+#     in any tab, setting WS_PROFILE or WS_MEMORY (the memory mode the MemPalace hooks honour), and the commands that
+#     switch or create profiles and accounts (ws-profile new|login|logout|tab|use|project|remove|setup,
+#     claude-account setup|login|logout|tab|use|project): profiles, their config (~/.config/ws-profiles) and their
+#     Claude dirs (~/.claude-profiles/*: settings, hooks, .claude.json; the login is a credential store) are yours
 # Fails CLOSED: if it cannot read the input (no jq or invalid JSON) or resolve the paths, it blocks, because it does
 # not know what it is letting through. To decide, it ignores quoted text that contains spaces (an echo, a grep or a
 # commit message that mention a forced push or a protected file are not blocked); a quoted single word still counts
@@ -60,12 +66,14 @@ block() {
 # hard: what steers or constrains every later session, or runs outside the sandbox; never written from Claude.
 # soft: instructions and personal extensions; writable only inside a window the owner opens (header).
 cfg_hard=() cfg_soft=()
-for d in "$H/.claude" "$H/.claude-personal" ${CLAUDE_CONFIG_DIR:+"$CLAUDE_CONFIG_DIR"}; do
+for d in "$H/.claude" "$H/.claude-personal" "$H"/.claude-profiles/* ${CLAUDE_CONFIG_DIR:+"$CLAUDE_CONFIG_DIR"}; do
+  [[ "$d" == "$H/.claude-profiles/*" ]] && continue   # no profile dir: the glob stayed as it is
   cfg_hard+=("$d/settings.json" "$d/settings.local.json" "$d/hooks" "$d/.claude.json" "$d/plugins" "$d/statusline.sh")
   cfg_soft+=("$d/CLAUDE.md" "$d/commands" "$d/agents" "$d/skills")
 done
 cfg_hard+=("$H/.claude.json" "$H/.config/git/hooks" "$H/.config/claude-levels" "$H/.config/claude-solo"
-  "$H/.config/ws-guard" "$H/.config/ws-agent" "$H/.local/lib/ws-credential-paths.txt" /etc/claude-code
+  "$H/.config/ws-guard" "$H/.config/ws-agent" "$H/.config/ws-profiles" "$H/.config/claude-accounts"
+  "$H/.local/lib/ws-credential-paths.txt" "$H/.local/lib/ws-profile.sh" /etc/claude-code
   "$H/.config/ws-kit" "$H/.local/share/ws-kit" "$H/.local/lib/ws-npm" "$H/.config/agent-browser" "$H/.config/ws-telegram"
   "$H/.claude/audit" "$H/.local/state/ws-stop-all" "$H/.local/state/ws-budget-over" "$H/.local/state/ws-budget-override"
   "$H/.local/state/ws-gate")
@@ -74,7 +82,11 @@ for f in /etc/claude-code/ws-credential-paths.txt "$H/.local/lib/ws-credential-p
   [[ -r "$f" ]] || continue
   while IFS= read -r l || [[ -n "$l" ]]; do
     l="${l%%#*}"; l="${l%"${l##*[![:space:]]}"}"; l="${l#"${l%%[![:space:]]*}"}"
-    [[ -n "$l" ]] && cred+=("${l/#\~/$H}")
+    [[ -n "$l" ]] || continue
+    l="${l/#\~/$H}"
+    if [[ "$l" == *[*?[]* ]]; then   # a glob line (one entry per profile): what it matches now
+      while IFS= read -r g; do cred+=("$g"); done < <(compgen -G "$l" 2>/dev/null | head -200)
+    else cred+=("$l"); fi
   done < "$f"
 done
 (( ${#cred[@]} )) || cred=("$H/.ssh" "$H/.aws" "$H/.azure" "$H/.config/gh" "$H/.kube" "$H/.gnupg" "$H/.netrc"
@@ -185,6 +197,8 @@ case "$tool" in
       block "changing core.hooksPath or ws.gate.* disables the git gate: do it yourself if it is really needed"
     grep -Eq '(^|[;&|[:space:](])(export[[:space:]]+)?WS_MEMORY_(APPROVED|GATE)=' <<<"$sc" &&
       block "WS_MEMORY_APPROVED and WS_MEMORY_GATE are set by you or ws-memory, never from Claude"
+    grep -Eq '(^|[;&|[:space:](])(export[[:space:]]+|unset[[:space:]]+([^;&|]*[[:space:]])?|-u[[:space:]]*)?(WS_MEMORY|WS_PROFILE|WS_PROFILE_PANE)([=[:space:]]|$)' <<<"$sc" &&
+      block "WS_PROFILE and WS_MEMORY come with the tab's profile (ws-profile): they are not changed from Claude"
     grep -Eq "${GIT}commit" <<<"$sc" && grep -qi 'co-authored-by' <<<"$cmd" &&
       block "Co-authored-by is forbidden by the organization's policy"
     grep -Eq '(curl|wget)[^|;&]*\|[[:space:]]*(sudo([[:space:]]+-[^[:space:]]+)*[[:space:]]+)?(ba|z|da)?sh([[:space:]]|$)' <<<"$sc" &&
@@ -232,12 +246,16 @@ case "$tool" in
     # What git runs later, outside the sandbox (hooks, aliases, filters): not written from Claude.
     grep -Eq '(>|>>|(^|[;&|[:space:]])(tee|cp|mv|install|ln|chmod|rm|touch|truncate|dd)[[:space:]]|sed[[:space:]]+(-[a-zA-Z]*[[:space:]]+)*-[a-zA-Z]*i)[^|;&]*\.git/(hooks(/|[[:space:]]|$)|config([[:space:]]|$))' <<<"$cmd" &&
       block "writing to .git/hooks or .git/config leaves code that runs outside the sandbox: do it yourself"
-    # An agent identity stays that identity: no switching the CLIs to other credentials (WS-AI-026).
-    if [[ -n "${WS_AGENT:-}" ]]; then
-      grep -Eq '(^|[;&|[:space:]])(export[[:space:]]+|unset[[:space:]]+([^;&|]*[[:space:]])?|-u[[:space:]]*)?(AZURE_CONFIG_DIR|GH_CONFIG_DIR|KUBECONFIG|GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|AZURE_CLIENT_SECRET|ARM_CLIENT_SECRET)([=[:space:]]|$)|--kubeconfig([=[:space:]]|$)' <<<"$sc" &&
-        block "this tab runs as the agent identity «$WS_AGENT»: it cannot switch az, gh or kubectl to other credentials"
-      grep -Eq '(^|[;&|[:space:]])(az[[:space:]]+login|gh[[:space:]]+auth[[:space:]]+(login|switch|refresh|setup-git))([[:space:]]|$)' <<<"$sc" &&
-        block "this tab runs as the agent identity «$WS_AGENT»: logging in or switching accounts is done by you, in ~/.config/ws-agent/$WS_AGENT"
+    # An agent identity or a custom profile stays what it is: no switching Claude or the CLIs to other credentials
+    # (WS-AI-026, ADR-021). The built-in profiles (work, personal) are your own sessions and keep today's rules.
+    who=""
+    if [[ -n "${WS_AGENT:-}" ]]; then who="agent identity «$WS_AGENT»"
+    elif [[ -n "${WS_PROFILE:-}" && "$WS_PROFILE" != work && "$WS_PROFILE" != personal ]]; then who="profile «$WS_PROFILE»"; fi
+    if [[ -n "$who" ]]; then
+      grep -Eq '(^|[;&|[:space:]])(export[[:space:]]+|unset[[:space:]]+([^;&|]*[[:space:]])?|-u[[:space:]]*)?(CLAUDE_CONFIG_DIR|AZURE_CONFIG_DIR|GH_CONFIG_DIR|KUBECONFIG|AZURE_TOKEN_CREDENTIALS|GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|AZURE_CLIENT_SECRET|ARM_CLIENT_SECRET|ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN)([=[:space:]]|$)|--kubeconfig([=[:space:]]|$)|(^|[;&|[:space:]])env[[:space:]]+(-[a-zA-Z]*i|--ignore-environment)([[:space:]]|$)' <<<"$sc" &&
+        block "this tab runs as the $who: it cannot switch Claude, az, gh or kubectl to other credentials"
+      grep -Eq '(^|[;&|[:space:]])(az[[:space:]]+(login|logout|account[[:space:]]+clear)|gh[[:space:]]+auth[[:space:]]+(login|logout|switch|refresh|setup-git)|claude[[:space:]]+(auth[[:space:]]+(login|logout)|setup-token))([[:space:]]|$)' <<<"$sc" &&
+        block "this tab runs as the $who: logging in or switching accounts is done by you, in a terminal (ws-profile login)"
     fi
 
     # Paths: the words the shell will use, split into simple commands. Heredoc bodies are data (dropped); quoted
@@ -295,6 +313,11 @@ case "$tool" in
       done
       c="${tok[j]:-}"; c="${c##*/}"
       [[ "$c" == ws-learn ]] && block "ws-learn saves what YOU approve: run it yourself in a terminal (Menu → Usage)"
+      # Profiles and accounts decide which organisation and tenant a tab talks to (ADR-021): read-only commands pass.
+      [[ "$c" == ws-profile && "${tok[j+1]:-}" =~ ^(new|login|logout|tab|use|project|remove|setup|menu)$ ]] &&
+        block "ws-profile ${tok[j+1]} changes which account a tab uses: run it yourself (Menu → Claude → Profile)"
+      [[ "$c" == claude-account && "${tok[j+1]:-}" =~ ^(setup|login|logout|tab|use|project)$ ]] &&
+        block "claude-account ${tok[j+1]} changes which account a tab uses: run it yourself (Menu → Claude)"
       case "$c" in   # what only the owner approves or lifts (WS-AI-012, WS-AI-019, WS-AI-025)
         ws-memory) [[ "${tok[j+1]:-}" =~ ^(save-facts|review|profile)$ ]] &&
           block "ws-memory ${tok[j+1]} approves memory writes: run it yourself in a terminal" ;;

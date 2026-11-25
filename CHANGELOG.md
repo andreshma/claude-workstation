@@ -31,7 +31,11 @@ After installing, in this order:
 8. Run `ws-audit --verify-log` once; the anchor file appears after the first session ends.
 9. Two live checks that could not be made in tests: a MemPalace write from Claude shows a prompt with the provenance
    filled in, and a prompt blocked by `prompt-screen.sh` shows its reason. Run `claude doctor` as well.
-10. Optional: `~/.config/ws-guard/production.conf` (production subscriptions and kube contexts), `hard=1` in
+10. Profiles: `install.sh` copies `~/.config/claude-accounts/{active,projects.conf}` into `~/.config/ws-profiles/`
+    once; `claude-account` keeps working. For each client: `ws-profile new NAME --tenant … --subscription …` in a
+    terminal (it guides the Claude, az, gh and kubeconfig logins), then `ws-profile project NAME <repo>`, and check
+    with `ws-profile status` and, in that tab, an Azure MCP read that the tenant is the client's.
+11. Optional: `~/.config/ws-guard/production.conf` (production subscriptions and kube contexts), `hard=1` in
     `~/.config/ws-telemetry/budgets.conf`, `bash install.sh --managed`, agent identities (`tmux-level … --agent NAME`
     after logging in under `~/.config/ws-agent/NAME`), `ws-telegram approve pin`, `ws-tools install agent-browser`,
     the Chrome DevTools MCP server (`ws-tools install chrome-devtools-mcp`, then
@@ -99,10 +103,37 @@ Breaking behaviour changes, each described below:
   SBOM; `release.yml` refuses an unsigned tag and attaches the SBOM to the release. New suites cover the hooks,
   the audit chain, anomalies, approval fatigue, the spend gate, the memory gate, solo mode, the supply chain, kit
   updates, Telegram approvals, backup encryption, the gate's secret scan and Windows interop.
-- ADRs [0016](docs/adr/0016-solo-mode-inside-the-sandbox.md) to [0020](docs/adr/0020-agent-scoped-identities.md).
+- ADRs [0016](docs/adr/0016-solo-mode-inside-the-sandbox.md) to [0021](docs/adr/0021-per-tab-profiles.md).
+- Per-tab profiles (`ws-profile`, [ADR 0021](docs/adr/0021-per-tab-profiles.md)): each tab can run with its own Claude
+  organisation (`~/.claude-profiles/NAME`), Azure tenant and default subscription, gh and kubectl logins
+  (`~/.config/ws-agent/NAME`, the agent identity of the same name) and, by default, its own conversations and no
+  MemPalace. `ws-profile new NAME [--tenant] [--subscription] [--share-with] [--memory off|on|wing:W]` guides each
+  login in a terminal and refuses to run inside Claude; `ws-profile tab NAME` restarts the tab with the profile and
+  starts a new conversation when the conversation store differs; `use`, `project`, `list`, `status`, `show`, `setup`,
+  `remove` (credentials only with the typed name). Precedence for a new tab: project pin > the tab's profile > the
+  default. Menu → Claude → Profile lists the profiles; the bar and `tmux-find` show `⬢label` for a custom one.
+- `~/.local/lib/ws-profile.sh`: the one function that computes a tab's environment (`CLAUDE_CONFIG_DIR`,
+  `AZURE_CONFIG_DIR`, `GH_CONFIG_DIR`, `KUBECONFIG`, `AZURE_TOKEN_CREDENTIALS=AzureCliCredential` for the Azure MCP
+  server, `WS_PROFILE`, `WS_MEMORY`), used by `accounts.sh` for every new shell and typed as
+  `eval "$(ws-profile --export NAME)" &&` by `tmux-level`, `tmux-claude-restart`, `tmux-solo`, `tmux-swarm` and
+  `ws-profile tab`.
+- Profile fence: `claude-resume` starts Claude with `tmux-level --fenced`, a copy of the level settings that denies
+  sandboxed reads and the Read tool on the other profiles' conversations and on every profile's Claude login.
+  `claude-resume --new` starts a new conversation.
+- `ws-audit` pillar «Profiles» (`ws-profile audit`): two profiles with the same tenant and subscription, an isolated
+  profile that links conversations, credentials the sandbox could read, tabs running with a missing profile.
+- `tests/profiles.sh`, profile cases in `tests/guard.sh` and `ws-test` (tab switch, isolation, memory off, label).
 
 ### Changed
 
+- `claude-account` is a wrapper of `ws-profile` (`work` and `personal` are its built-in profiles) with the same
+  commands and messages; its settings moved to `~/.config/ws-profiles/` (`migrate.sh`, idempotent, dry-run aware).
+  `claude-work` and `claude-personal` are shell functions now, next to `claude-as NAME`.
+- MemPalace per profile: `memory-filter.sh` hands nothing to the MemPalace hooks in a tab with `memory=off` and, with
+  `memory=wing:W`, a transcript copy whose cwd files it into wing W; `memory-gate.sh` blocks every MemPalace tool with
+  memory off and forces the wing with `wing:W`. The recall hook is unaffected.
+- `tmux-level --agent NAME` is the credentials-only case of the profile NAME; a level change, a restart and solo mode
+  keep the tab's profile.
 - **Breaking: the user settings are strict.** `sandbox.excludedCommands` moved from `settings.json` to
   `~/.config/claude-levels/normal-adds.json`; the normal level is `claude-resume --settings normal.json` on top of
   every settings source, every kit launcher starts at normal, and a `claude` typed by hand runs with no exclusions
@@ -165,6 +196,14 @@ Breaking behaviour changes, each described below:
 
 ### Security
 
+- Profiles: `~/.claude-profiles/*/.credentials.json` denied to sandboxed reads (glob, which Claude Code expands on
+  Linux, plus literal paths in every tab's fence), to the Read tool and in the guard's credential list (glob lines
+  expanded per call); the profiles' az, gh and kube folders live under `~/.config/ws-agent`, denied as a whole. The
+  guard blocks, in a custom profile's tab, changing `CLAUDE_CONFIG_DIR`, the credential variables or
+  `AZURE_TOKEN_CREDENTIALS`, `env -i`, `az login|logout`, `gh auth login|logout|switch|refresh|setup-git` and
+  `claude auth login|logout|setup-token`; in every tab, `WS_PROFILE`/`WS_MEMORY` and the `ws-profile` and
+  `claude-account` commands that switch or create profiles; `~/.config/ws-profiles`, the profiles' Claude settings
+  and `~/.local/lib/ws-profile.sh` are hard-protected (and Edit-denied in `settings.json` and the managed policy).
 - Security model, residual risks and the agentic (ASI01–ASI10) cross-reference updated in
   [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) and [SECURITY.md](SECURITY.md).
 

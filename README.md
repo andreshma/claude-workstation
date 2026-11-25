@@ -149,7 +149,7 @@ Everything under `files/home/` is installed into `$HOME`, as listed in `manifest
 | tmux configuration | Tabs, status bar with agent state, menus, themes, tab templates, shell helpers (`tw`, `twt`, `two`, `tp`), account selection for new shells (`accounts.sh`) | `.tmux.conf`, `.config/tmux-claude/` |
 | tmux commands | Repository picker, finder (`tmux-find`: tabs, active, favorites, recent), dashboard, state painter (`tmux-status`), watcher (`tmux-watch`), protection levels (`tmux-level`, `tmux-solo`), restart (`tmux-claude-restart`), subagents, focus mode, recording, screensaver (`tmux-saver`, `tmux-art`), summaries | `.local/bin/tmux-*` |
 | Workstation commands | Health (`ws-check`, `ws-health`, `ws-verify`, `ws-audit` with `--verify-log` and `--compliance`), backups, tools, the commit gate (`ws-gate`), telemetry and reports (`ws-telemetry`, `ws-report`, `ws-otel`, `ws-hooks`), `ws-cache`, Telegram, secrets and redaction, handoff and learning, the emergency stop (`ws-stop-all`), anomaly detection (`ws-anomaly`), approved memory writes and their review (`ws-memory`), pinned npm packages (`ws-pinned`), the behavior tests (`ws-test`) | `.local/bin/ws-*`, `.local/lib/ws_compliance.py` |
-| Accounts | Two Claude accounts (`work`, `personal`), per tab and per project | `.local/bin/claude-account` |
+| Accounts and profiles | Per-tab profiles: each tab with its own Claude organisation, Azure tenant and subscription, gh and kubectl logins and, by default, its own conversations and no MemPalace; `work` and `personal` built in | `.local/bin/ws-profile`, `.local/lib/ws-profile.sh`, `.local/bin/claude-account` |
 | Claude Code settings and hooks | Model, permissions, sandbox (the strict base), OpenTelemetry export, status line and the hooks: state, audit (hash-chained), guard (fails closed), routing, traces, notifications, lint on edit, document conversion, untrusted-content labelling, prompt secret screen, configuration-change audit, memory gate and `<private>` filter, runtime gate (emergency stop and hard budget) | `.claude/settings.json`, `.claude/hooks/` |
 | Level profiles | What the normal level adds to the strict base (the commands excluded from the sandbox); the solo profile | `.config/claude-levels/normal-adds.json`, `.config/claude-solo/settings.json` |
 | Guard lists | Credential paths shared by the sandbox and the guard | `.local/lib/ws-credential-paths.txt` |
@@ -185,6 +185,7 @@ The full guide is [docs/USAGE.md](docs/USAGE.md). `Ctrl+b` is the tmux prefix: p
 | Pick the model per task | `cr "task"`, or Menu → "Claude in this tab" → "Model" |
 | Change the protection level | Menu → "Claude in this tab" → "Protection", or `tmux-level full\|normal\|bare` |
 | Switch a tab to the other account | Menu → "Claude in this tab" → "Switch this tab to the … account (same conversation)", or `claude-account tab` |
+| Run a tab as one client (Claude organisation, Azure tenant, gh, kubectl) | Menu → "Claude in this tab" → "Profile", or `ws-profile tab NAME` |
 | List every shortcut | `Ctrl+b h`; full manual with `ws-menus --show` |
 
 Pinning a project to an account, restarting Claude in every tab, answering from the phone, handing work over to
@@ -239,13 +240,14 @@ of the target machine.
 | `~/.config/claude-levels/normal-adds.json` | Installed by the kit | What the normal level adds to the strict base: the commands excluded from the sandbox |
 | `~/.config/ws-guard/production.conf` | Not present; the name pattern applies alone | Production subscriptions and kube contexts the guard protects, as `subscription <id or name>` and `context <name>` lines |
 | `~/.config/ws-guard/allow-config-writes` | Not present | An epoch until which Claude may write `CLAUDE.md`, commands, agents and skills (the owner's 30-minute window); written by you only |
-| `~/.config/ws-agent/<name>/` | Not present | The `az`, `gh` and `kubectl` logins of an agent identity (`tmux-level … --agent <name>`) |
+| `~/.config/ws-agent/<name>/` | Not present | The `az`, `gh` and `kubectl` logins of an agent identity (`tmux-level … --agent <name>`) and of the profile `<name>` |
+| `~/.config/ws-profiles/` | Not present | Profiles (`<name>/profile.conf`), the one for new tabs (`default`) and the pinned projects (`projects.conf`), written by `ws-profile` |
+| `~/.claude-profiles/<name>/` | Not present | The Claude dir of a custom profile (its login and conversations) |
 | `~/.config/ws-kit/allowed_signers.local` | Not present | Extra release-signing keys for a fork |
 | `~/.config/ws-backup/age-recipients` | Not present | Extra `age` keys the light backup is encrypted to, besides the cloud key |
 | `~/.config/agent-browser/allowed-domains.local.txt` | Not present | Domains agent-browser may open besides localhost |
 | `~/.config/ws-local/bar-extra.conf` | Not present; not part of the kit | Extra status bar segments |
-| `~/.config/claude-accounts/active` | `work` | Account for new tabs (written by `claude-account`) |
-| `~/.config/claude-accounts/projects.conf` | Not present | Accounts pinned per project (written by `claude-account`) |
+| `~/.config/claude-accounts/active`, `projects.conf` | Not present | Before the profiles; `install.sh` copies them into `~/.config/ws-profiles/` once |
 | `~/.config/tmux-claude/appearance` | Screensaver on, random scene, 10 minutes | Theme and screensaver preferences |
 | `~/.config/tmux-claude/gallery` | Not present | Screensaver images |
 | `~/.config/tmux-claude/lang` | `en`; `es` on an installation migrated from 2.x | Language of the prompts and answers the kit recognizes, and the language Claude writes reports in (written by `ws-lang`; `WS_LANG` overrides it) |
@@ -270,6 +272,23 @@ claude-account status                     # default account, organization of eac
 ```
 
 A pinned project wins over the default account: every new tab opened there uses the pinned account.
+
+### Profiles: one client per tab
+
+For clients with their own Azure tenant or Claude organisation, `ws-profile` adds a profile per client: its own
+Claude login, Azure tenant and default subscription, `gh` and `kubectl` logins and, by default, its own conversations
+and no MemPalace, so one client's data does not flow into another's organisation
+([ADR 0021](docs/adr/0021-per-tab-profiles.md)). `work` and `personal` above are its built-in profiles.
+
+```bash
+ws-profile new contoso --tenant 00000000-0000-0000-0000-00000000c001   # in a terminal: asks for each login
+ws-profile project contoso ~/code/contoso-app                          # that repo always opens as contoso
+ws-profile tab contoso                                                 # this tab, now (Menu → Claude → Profile)
+ws-profile list                                                        # profiles; ws-profile status for the logins
+```
+
+The tab shows `⬢contoso` in the status bar. The agent cannot read any profile's logins, read another profile's
+conversations, change the tab's profile or log in. Details in [docs/USAGE.md](docs/USAGE.md#profiles-several-organisations-and-tenants).
 
 ### Personal configuration
 
@@ -346,8 +365,8 @@ Details in [docs/TESTING.md](docs/TESTING.md).
 | Command | Scope |
 |---|---|
 | `bash tests/run.sh` | Installer and exporter in temporary homes (templates, secret blocking, backups, idempotence, migration of the names used before 3.0), JSON and shellcheck of the payload, and the guard tests |
-| `bash tests/guard.sh` | The PreToolUse guard: bypass variants, protected configuration, credential paths, production list, agent identity, false positives and fail-closed behavior |
-| `bash tests/<area>.sh` | The other standalone suites (twenty with the two above): hooks, audit chain and anomalies, memory gate, spend and stop gate, solo sandbox, supply chain and signed updates, Telegram approvals, backup encryption, gate secret scan, Windows interop, and the compliance catalogue and AI-BOM checks |
+| `bash tests/guard.sh` | The PreToolUse guard: bypass variants, protected configuration, credential paths, production list, agent identity and profiles, false positives and fail-closed behavior |
+| `bash tests/<area>.sh` | The other standalone suites (twenty-one with the two above): hooks, audit chain and anomalies, memory gate, spend and stop gate, solo sandbox, per-tab profiles, supply chain and signed updates, Telegram approvals, backup encryption, gate secret scan, Windows interop, and the compliance catalogue and AI-BOM checks |
 | `ws-test` | Behavior of the **installed** workstation, with an isolated home, isolated tmux sockets and a simulated Claude; costs no usage |
 | `ws-test --ai` | The same plus non-deterministic checks against the real Claude |
 | `ws-verify` | Read-only verification before pushing: scripts, tmux (also the running server: `--live`), Claude Code settings, the kit and the tests |

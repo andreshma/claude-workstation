@@ -8,7 +8,8 @@
 #   · the ask rules (terraform, kubectl, AWS, DB, git push, memory writes…) STILL ASK YOU; deny, guard.sh and the
 #     dangerous rm commands stay blocked
 #   · it expires: after @csolo_hours (4 h by default) tmux-watch returns the tab to normal mode
-# Your other tabs keep their level. After restarting the workstation, everything goes back to normal.
+# Your other tabs keep their level. After restarting the workstation, everything goes back to normal. The tab keeps
+# its profile (ws-profile, ADR-021): the restart types «eval "$(ws-profile --export NAME)" &&» before Claude.
 #
 # Usage:
 #   tmux-solo this [PANE] [--hours N] [--unsandboxed]   switches the tab to solo mode (resumes the conversation)
@@ -96,12 +97,12 @@ case "$action" in
     win="$(tmux display -p -t "$pane" '#{window_id}')"
     name="$(tmux display -p -t "$pane" '#W')"; name="${name#🤖}"; name="${name#🔓}"
     if [[ "$action" == this ]]; then
-      restart_claude "$pane" "${CMD_SOLO/claude /claude-resume }"
+      restart_claude "$pane" "$(tmux-level --prefix "$pane" 2>/dev/null)${CMD_SOLO/claude /claude-resume }"
       mark "$win"; tmux rename-window -t "$win" "$( (( nosb )) && echo 🔓)🤖$name"
       if (( nosb )); then msg "Solo mode WITHOUT sandbox on $name for $hours h (audited exception) · it asks you about anything critical"
       else msg "Solo mode on $name for $hours h: auto inside the sandbox · it asks you about anything critical"; fi
     else
-      restart_claude "$pane" "$CMD_NORMAL"
+      restart_claude "$pane" "$(tmux-level --prefix "$pane" 2>/dev/null)$CMD_NORMAL"
       for o in @csolo @csolo_until @csolo_nosb; do tmux set -wu -t "$win" "$o" 2>/dev/null || true; done
       tmux rename-window -t "$win" "$name"; audit solo-off "$name"
       msg "$name back in normal mode"

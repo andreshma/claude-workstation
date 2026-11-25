@@ -163,3 +163,28 @@ remove_shims() {
   done < <(awk -F'\t' -v OFS='\t' '$1 == "shim" || $1 == "retired" { print $2, $3 }' "$KIT/renames.tsv")
   (( n )) || printf '  none left\n'
 }
+
+#######################################
+# Moves the two accounts of claude-account into the profiles of ws-profile (ADR-021): the account for new tabs
+# (~/.config/claude-accounts/active) becomes ~/.config/ws-profiles/default and the pinned projects
+# (claude-accounts/projects.conf, same «<account> <folder>» lines) become ws-profiles/projects.conf. Idempotent: a
+# file that already exists is never overwritten; the old files stay where they are (nothing reads them once the new
+# ones exist). Uses DRY. Not a migration of names: it does not set MIGRATED.
+#######################################
+migrate_profiles() {
+  local old="$HOME/.config/claude-accounts" new="$HOME/.config/ws-profiles" a header=0
+  say() { (( header )) || { log "Claude accounts → profiles (ws-profile)"; header=1; }; printf '  %s\n' "$*"; }
+  if [[ -f "$old/active" && ! -e "$new/default" ]]; then
+    a="$(head -1 "$old/active" 2>/dev/null)"; [[ "$a" == personal ]] || a=work
+    say "new     .config/ws-profiles/default = $a (from .config/claude-accounts/active)"
+    (( DRY )) || { mkdir -p "$new" && chmod 700 "$new" && ( umask 077; echo "$a" > "$new/default" ); }
+  fi
+  if [[ -s "$old/projects.conf" && ! -e "$new/projects.conf" ]]; then
+    say "new     .config/ws-profiles/projects.conf ($(grep -cvE '^[[:space:]]*(#|$)' "$old/projects.conf") pinned projects, from .config/claude-accounts)"
+    # Any value other than personal meant the work account: written out as work.
+    (( DRY )) || { mkdir -p "$new" && chmod 700 "$new" \
+      && awk '/^[[:space:]]*(#|$)/ { next } { c = ($1 == "personal") ? "personal" : "work"; sub(/^[^ \t]+[ \t]+/, ""); print c " " $0 }' \
+           "$old/projects.conf" > "$new/projects.conf" && chmod 600 "$new/projects.conf"; }
+  fi
+  return 0
+}

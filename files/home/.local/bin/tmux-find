@@ -61,7 +61,7 @@ tabs() {
 rows_all() {
   local fmt="#{?session_grouped,#{session_group},#{session_name}}${TAB}#{session_name}${TAB}#{window_id}"
   fmt+="${TAB}#{window_index}${TAB}#{window_name}${TAB}#{?#{@cs},#{@cs},-}${TAB}#{?#{@cctx},#{@cctx}%,}"
-  fmt+="${TAB}#{window_bell_flag}${TAB}#{@cstall}${TAB}#{@cmain}${TAB}#{window_activity}"
+  fmt+="${TAB}#{window_bell_flag}${TAB}#{@cstall}${TAB}#{@cmain}${TAB}#{window_activity}${TAB}#{@cprofile_label}"
   src ALL tmux list-windows -a -F "$fmt" | awk -F "$TAB" -v OFS="$TAB" '
     $1 != $2 { next }
     {
@@ -71,6 +71,7 @@ rows_all() {
       else if ($9 == 1) { p = 2; m = "⏳" }
       text = sprintf("%s \033[36m%-10.10s\033[0m %3s  %-30s %-16s %5s", \
                      m, "[" $2 "]", $4, substr($5, 1, 30), substr($6, 1, 16), $7)
+      if ($12 != "") text = text " \033[33m⬢" substr($12, 1, 16) "\033[0m"   # the tab'"'"'s custom profile
       print p, $11, "tab:" $2 ":" $3, text, ""
     }' | sort -t "$TAB" -k1,1n -k2,2nr | cut -f3-
 }

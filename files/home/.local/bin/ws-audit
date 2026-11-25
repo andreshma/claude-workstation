@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ws-audit — full, READ-ONLY audit of the workstation, by pillars.
 
-Pillars: tmux · shortcuts and menu · Claude Code · sandbox · security · resilience · performance ·
+Pillars: tmux · shortcuts and menu · Claude Code · sandbox · profiles · security · resilience · performance ·
 observability. Each check gives ok / warn / fail / info, the detail and the recommendation.
 
 Usage:
@@ -314,6 +314,23 @@ def p_sandbox() -> None:
         escape_tests()
 
 
+def p_profiles() -> None:
+    """Per-tab profiles (ADR-021): the checks of `ws-profile audit` (same tenant and subscription in two profiles,
+    conversation links in an isolated profile, credentials the sandbox could read, tabs whose profile is missing)."""
+    pillar("Profiles")
+    wp = H / ".local/bin/ws-profile"
+    if not wp.exists():
+        res("info", "ws-profile is not installed"); return
+    try:
+        out = subprocess.run([str(wp), "audit"], capture_output=True, text=True, timeout=30, check=False).stdout  # nosec B603 — the kit's own command, fixed arguments
+    except (OSError, subprocess.TimeoutExpired) as e:
+        res("warn", "ws-profile audit did not answer", str(e)[:120]); return
+    for line in out.splitlines():
+        f = (line.split("\t") + ["", "", "", ""])[:4]
+        if f[0] in ("ok", "warn", "fail", "info"):
+            res(f[0], f[1], f[2], f[3])
+
+
 def escape_tests() -> None:
     """Asks Claude (non-interactive) to run commands that the sandbox MUST block."""
     if not shutil.which("claude"):
@@ -577,7 +594,7 @@ if __name__ == "__main__":
     if "--verify-log" in sys.argv:
         rest = sys.argv[sys.argv.index("--verify-log") + 1:]
         sys.exit(1 if verify_log(Path(rest[0]) if rest else AUDIT_DIR)[1] else 0)
-    for f in (p_tmux, p_shortcuts, p_claude, p_sandbox, p_security, p_resilience, p_performance, p_observability):
+    for f in (p_tmux, p_shortcuts, p_claude, p_sandbox, p_profiles, p_security, p_resilience, p_performance, p_observability):
         try:
             f()
         except Exception as e:  # noqa: BLE001 — a broken section must not prevent the rest of the report

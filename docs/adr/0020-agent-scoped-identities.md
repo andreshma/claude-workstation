@@ -1,6 +1,6 @@
 # 0020. Agent-scoped identities per tab
 
-- Status: Accepted (the commit trailer part is open)
+- Status: Accepted (the commit trailer part is open); amended by [0021](0021-per-tab-profiles.md): an identity is also the credential part of a profile
 - Date: 2026-11-25
 
 ## Context and problem statement

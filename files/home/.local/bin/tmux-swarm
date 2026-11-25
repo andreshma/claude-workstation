@@ -92,7 +92,9 @@ new_swarm() {
     || echo '.swarm-task.md' >> "$(git rev-parse --git-common-dir)/info/exclude"
   [[ "$level" == normal ]] && audit swarm-normal "swarm $id at the normal level (WS_SWARM_LEVEL=normal)"
   tmux new-session -d -s "swarm-$id" -n dashboard -c "$root"   # the dashboard starts once the state is saved
-  local js='[]'
+  local js='[]' pf
+  # Every agent runs with the repo's profile (ADR-021: its pin, else the one for new tabs), fenced by claude-resume.
+  pf="$(ws-profile --resolve "$root" 2>/dev/null)"; [[ "$pf" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]] || pf=work
   for i in "${!tasks[@]}"; do
     branch="swarm/$id/$((i + 1))"; wt="$(dirname "$root")/$repo.wt/swarm-$id-$((i + 1))"
     git worktree add -q -b "$branch" "$wt" HEAD || die "Could not create the worktree $wt"
@@ -108,7 +110,7 @@ new_swarm() {
     cmd="$(agent_command "$level" "$wt" "$D/profiles/$id-$((i + 1)).json")" || die "Could not build the profile of agent $((i + 1))"
     # Spanish on purpose: accented letters are kept in tab names taken from subtask titles typed in Spanish.
     tmux new-window -d -t "swarm-$id:" -n "$((i + 1))-$(head -1 <<<"${tasks[$i]//\\n/$'\n'}" | tr -c 'A-Za-z0-9áéíóúñ_-' '-' | cut -c1-18)" -c "$wt" \
-      "bash -lc '$cmd \"\$(cat .swarm-task.md)\"; exec bash -l'"
+      "bash -lc 'eval \"\$(ws-profile --export $pf)\" && ${cmd/#claude /claude-resume --new } \"\$(cat .swarm-task.md)\"; exec bash -l'"
     js="$(jq -c --arg r "$branch" --arg w "$wt" --arg t "${tasks[$i]}" --arg p "$D/profiles/$id-$((i + 1)).json" \
       '. + [{branch: $r, path: $w, task: $t, profile: $p}]' <<<"$js")"
   done

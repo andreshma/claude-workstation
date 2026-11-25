@@ -55,5 +55,5 @@ if ! is_shell; then
   done
   is_shell || { tmux display -d 4000 "Claude did not exit; restart it by hand with /exit"; exit 1; }
 fi
-# At the normal level (the tab's level is not kept across a restart, as before).
-tmux send-keys -t "$p" "$("$HOME/.local/bin/tmux-level" --command normal 2>/dev/null || echo claude-resume)" Enter
+# At the normal level (the tab's level is not kept across a restart, as before), with the tab's profile (ADR-021).
+tmux send-keys -t "$p" "$("$HOME/.local/bin/tmux-level" --command normal --pane "$p" 2>/dev/null || echo claude-resume)" Enter

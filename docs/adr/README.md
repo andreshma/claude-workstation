@@ -26,7 +26,8 @@ comments and the changelog refer to a record as `ADR-0NN` (for example `ADR-013`
 | [0017](0017-defence-in-depth-for-agent-configuration.md) | Defence in depth for agent configuration and untrusted content | Accepted |
 | [0018](0018-supply-chain-pinning-and-signed-releases.md) | Supply-chain pinning and signed kit releases | Accepted |
 | [0019](0019-strict-base-and-level-profiles.md) | Strict base settings with level profiles and an optional managed drop-in | Accepted |
-| [0020](0020-agent-scoped-identities.md) | Agent-scoped identities per tab | Accepted (commit trailer open) |
+| [0020](0020-agent-scoped-identities.md) | Agent-scoped identities per tab | Accepted (commit trailer open), amended by [0021](0021-per-tab-profiles.md) |
+| [0021](0021-per-tab-profiles.md) | Per-tab profiles: Claude organisation, Azure tenant, credentials and memory per tab | Accepted |
 
 Records 0001 to 0007 are not in this repository. Its history mentions 0001 to 0006 only as part of a design
 document that was never part of it, and nothing mentions 0007; the code, the changelog and the other documents do not

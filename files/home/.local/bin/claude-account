@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# claude-account — two Claude accounts (work and personal) on the same workstation.
-# Each account has its own login (CLAUDE_CONFIG_DIR, the official method), but both share
-# conversations, history, todos and the whole setup: after switching accounts, `claude -c` continues the
-# same conversation. The work account uses ~/.claude; the personal one uses ~/.claude-personal.
+# claude-account — the two Claude accounts (work and personal), now the built-in profiles of ws-profile (ADR-021):
+# work is ~/.claude, personal is ~/.claude-personal, each with its own login (CLAUDE_CONFIG_DIR) and both sharing
+# conversations, history, todos and the whole setup, so after switching accounts `claude -c` continues the same
+# conversation. This command keeps its commands and messages; ws-profile does the work (and adds more profiles).
 #
 # Usage:
 #   claude-account setup              prepares ~/.claude-personal (links, MCP and startup state); leaves ~/.claude alone
@@ -18,50 +18,12 @@
 #   claude-account status             default account, organization of each one and projects with a pinned account
 set -euo pipefail
 PATH="$HOME/.local/bin:$PATH"   # tmux menus may start it with a minimal PATH (tmux-level, claude-resume)
-M="$HOME/.claude"
 P="$HOME/.claude-personal"
-CONF="$HOME/.config/claude-accounts"
-mkdir -p "$CONF"
-
-# What both accounts share: setup, conversations and work state. Each one keeps its own:
-# .credentials.json, .claude.json (account), remote-settings.json and policy-limits.json
-# (policies of ITS organization), stats-cache.json (usage) and caches.
-SHARED=(settings.json CLAUDE.md standards.md rules hooks agents agent-memory commands skills
-            workflows output-styles keybindings.json themes plugins projects tasks todos plans file-history
-            history.jsonl paste-cache statusline.sh statusline-present.sh)
-
-# From the global state (~/.claude.json) only the finished startup (onboarding, theme, trusted
-# folders) and the MCP servers are copied to the personal account; never the account (oauthAccount, userID, keys).
-STATE_KEYS='["hasCompletedOnboarding","lastOnboardingVersion","lastReleaseNotesSeen","theme",
-  "projects","mcpServers","autoUpdates","editorMode","preferredNotifChannel","verbose",
-  "bypassPermissionsModeAccepted","hasAcknowledgedCostThreshold","shiftEnterKeyBindingInstalled"]'
+WP="$HOME/.local/bin/ws-profile"
+# shellcheck source=../lib/ws-profile.sh
+. "$HOME/.local/lib/ws-profile.sh"
 
 msg() { if [[ -n "${TMUX:-}" ]]; then tmux display "$1"; else echo "$1"; fi; }
-
-setup() {
-  mkdir -p "$P" && chmod 700 "$P"
-  local x
-  for x in "${SHARED[@]}"; do
-    [[ -e "$M/$x" ]] || continue
-    if [[ -L "$P/$x" ]]; then continue
-    elif [[ -e "$P/$x" ]]; then echo "  warn    $P/$x already exists and is not a link: left as is"
-    else ln -s "$M/$x" "$P/$x"; echo "  link    ~/.claude-personal/$x"; fi
-  done
-  # Startup state and MCP: without this, Claude treats the personal account as a first run and
-  # shows the login/welcome screen even though it is already signed in.
-  local src="$HOME/.claude.json" dst="$P/.claude.json"
-  if [[ -f "$src" ]]; then
-    [[ -f "$dst" ]] || echo '{}' > "$dst"
-    jq --slurpfile s "$src" --argjson k "$STATE_KEYS" '
-      . as $p | ($s[0] | with_entries(select(.key as $x | $k | index($x)))) as $base
-      | $base * $p                                   # the personal account own values win
-      | .hasCompletedOnboarding = ($base.hasCompletedOnboarding // .hasCompletedOnboarding)
-      | .projects = (($base.projects // {}) * ($p.projects // {}))
-      | .mcpServers = (($base.mcpServers // {}) + ($p.mcpServers // {}))' "$dst" > "$dst.tmp" && mv "$dst.tmp" "$dst"
-    chmod 600 "$dst"
-    echo "  state   startup and trusted folders copied; MCP: $(jq -r '.mcpServers // {} | keys | join(", ")' "$dst")"
-  fi
-}
 
 # auth_txt work|personal — login status of that account (text). stdin from /dev/null:
 # `timeout` puts Claude in another process group and, if it touches the terminal, it stays stopped.
@@ -73,29 +35,10 @@ auth_txt() {
 # org_of work|personal — name of the organization that account is signed in to.
 org_of() { { auth_txt "$1" || true; } | sed -n 's/^Organization: //p'; }
 
-# claude_running <pane> — is a Claude running in the pane? Two signals, either one is enough:
-#   1) the pane's foreground command is not a shell (the native Claude binary is named after
-#      its version, e.g. "2.1.325", not "claude": that is why the account switch used to fail);
-#   2) among the pane's descendants there is a claude process (or node running Claude).
-claude_running() {
-  local root cur
-  cur="$(tmux display -p -t "$1" '#{pane_current_command}')"
-  [[ "$cur" =~ ^(bash|zsh|sh|fish|dash)$ ]] || return 0
-  root="$(tmux display -p -t "$1" '#{pane_pid}')"
-  ps -e -o pid=,ppid=,comm=,args= | awk -v r="$root" '
-    { parent[$1] = $2
-      if ($3 ~ /^claude$/ || $4 ~ /(^|\/)claude$/ || $4 ~ /\/claude\/versions\// || ($3 == "node" && $0 ~ /claude/)) c[$1] = 1 }
-    END { for (p in c) for (q = parent[p]; q > 1; q = parent[q]) if (q == r) { found = 1; break }
-          exit !found }'
-}
-
 tab() {
-  local pane="${1:-$(tmux display -p '#{pane_id}')}" win current target cmd extra="" sp i name om op
-  win="$(tmux display -p -t "$pane" '#{window_id}')"
-  current="$(tmux show -wqv -t "$win" @caccount)"
-  [[ -n "$current" ]] || current="$(cat "$CONF/active" 2>/dev/null || echo work)"
-  [[ "$current" == personal ]] || current=work   # any other stored value means the work account
-  [[ "$current" == personal ]] && target=work || target=personal
+  local pane="${1:-$(tmux display -p '#{pane_id}')}" current target om op
+  current="$("$WP" --of-pane "$pane")"
+  [[ "$current" == personal ]] && target=work || target=personal   # any other profile goes to personal
   if [[ "$target" == personal ]] && [[ ! -f "$P/.credentials.json" ]]; then
     msg "The personal account is not signed in: Menu → Claude → Log in to the personal account"; exit 1
   fi
@@ -105,110 +48,37 @@ tab() {
     msg "Both accounts are in the same organization ($om): check with claude-account status"; exit 1
   fi
   [[ "$target" == personal && -z "$op" ]] && { msg "The personal account does not report a session: claude-account status"; exit 1; }
-  # The personal account needs the startup state; without it, Claude would show the login screen.
-  [[ "$target" == personal ]] && ! jq -e '.hasCompletedOnboarding' "$P/.claude.json" >/dev/null 2>&1 && setup >/dev/null
-  # If the tab is in solo mode, keep that mode when switching accounts.
-  # The profile carries the level (ADR-013): solo's, or normal's sandbox exclusions (claude-resume adds them itself).
-  if [[ -n "$(tmux show -wqv -t "$win" @csolo)" ]]; then
-    if [[ -n "$(tmux show -wqv -t "$win" @csolo_nosb)" ]]; then sp="${WS_LEVELS_DIR:-$HOME/.config/claude-levels}/solo-unsandboxed.json"
-    else sp="$(tmux-level --settings-file solo 2>/dev/null)" || sp="$HOME/.config/claude-solo/settings.json"; fi
-    extra=" --permission-mode auto --settings '$sp'"
-  fi
-  if claude_running "$pane"; then
-    # Ctrl+C first: it clears whatever is typed in the input box; otherwise «<text>/exit» is sent as a message and
-    # Claude never closes. If /exit still does not close it in 10 s, Ctrl+C twice (Claude's own way out).
-    tmux send-keys -t "$pane" Escape; sleep 0.5
-    tmux send-keys -t "$pane" C-c; sleep 0.4
-    claude_running "$pane" && { tmux send-keys -t "$pane" -l "/exit"; tmux send-keys -t "$pane" Enter; }
-    for (( i = 0; i < 40; i++ )); do
-      claude_running "$pane" || break
-      (( i == 20 )) && { tmux send-keys -t "$pane" C-c; sleep 0.3; tmux send-keys -t "$pane" C-c; }
-      sleep 0.5
-    done
-    (( i < 40 )) || { msg "Claude did not close; close it (/exit) and try again"; exit 1; }
-  fi
-  # export/unset in the pane's shell: later resumes use the same account. claude-resume and not «claude -c»: both
-  # accounts share the conversations, and in a tab that never had one «claude -c» would only print an error.
-  if [[ "$target" == personal ]]; then cmd="export CLAUDE_CONFIG_DIR='$P'; claude-resume$extra"
-  else cmd="unset CLAUDE_CONFIG_DIR; claude-resume$extra"; fi
-  tmux send-keys -t "$pane" -l "$cmd"; tmux send-keys -t "$pane" Enter
-  tmux set -w -t "$win" @caccount "$target"
-  name="$(tmux display -p -t "$win" '#W')"; name="${name%·P}"
-  [[ "$target" == personal ]] && name="$name·P"
-  tmux rename-window -t "$win" "$name"
-  msg "$(tmux display -p -t "$win" '#W'): account $target ($( [[ "$target" == personal ]] && echo "$op" || echo "$om" )), same conversation"
-}
-
-use() {
-  local c="${1:?work or personal}"
-  [[ "$c" == work || "$c" == personal ]] || { echo "usage: claude-account use work|personal" >&2; exit 2; }
-  echo "$c" > "$CONF/active"
-  if tmux has-session 2>/dev/null; then   # applies to the tmux server even when called from outside
-    if [[ "$c" == personal ]]; then tmux set-environment -g CLAUDE_CONFIG_DIR "$P"; else tmux set-environment -gu CLAUDE_CONFIG_DIR; fi
-    tmux set -g @caccount_def "$c"
-  fi
-  msg "New tabs: account $c"
-}
-
-# root_of <folder> — project root: the main repo (also from a worktree) or the folder if it is not a repo.
-root_of() {
-  local d c; d="$(realpath -e "${1:-.}")" || return 1
-  c="$(git -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-  if [[ "$c" == */.git ]]; then echo "${c%/.git}"; else git -C "$d" rev-parse --show-toplevel 2>/dev/null || echo "$d"; fi
-}
-
-project() {
-  local c="${1:-}" d="${2:-.}" r f="$CONF/projects.conf" tmp
-  [[ "$c" == work || "$c" == personal || "$c" == remove ]] || { echo "usage: claude-account project work|personal|remove [folder | --pane ID]" >&2; exit 2; }
-  if [[ "$d" == --pane ]]; then d="$(tmux display -p -t "${3:?pane}" '#{pane_current_path}')"; fi
-  r="$(root_of "$d")" || { msg "Folder not found: $d"; exit 1; }
-  [[ "$r" == *$'\n'* ]] && { msg "Invalid path"; exit 1; }
-  touch "$f"; tmp="$(mktemp)"
-  awk -v r="$r" '{ c = $1; p = $0; sub(/^[^ \t]+[ \t]+/, "", p); if (p != r) print }' "$f" > "$tmp"
-  [[ "$c" == remove ]] || printf '%s %s\n' "$c" "$r" >> "$tmp"
-  mv "$tmp" "$f"; chmod 600 "$f"
-  if [[ "$c" == remove ]]; then msg "$(basename "$r"): no pinned account (uses the one for new tabs)"
-  else msg "$(basename "$r"): new tabs always use the $c account"; fi
-}
-
-projects() {
-  local f="$CONF/projects.conf"
-  if [[ -s "$f" ]]; then grep -vE '^[[:space:]]*(#|$)' "$f" | awk '{ c = ($1 == "personal") ? "personal" : "work"; sub(/^[^ \t]+[ \t]+/, ""); printf "  %-9s %s\n", c, $0 }'
-  else echo "  (no project with a pinned account)"; fi
-}
-
-status() {
-  echo "New tabs: $([[ "$(cat "$CONF/active" 2>/dev/null)" == personal ]] && echo personal || echo work)"
-  local c t rc
-  for c in work personal; do
-    printf '%-9s ' "$c:"
-    if [[ "$c" == personal && ! -d "$P" ]]; then echo "not prepared (claude-account setup)"; continue; fi
-    t="$(auth_txt "$c")" && rc=0 || rc=$?
-    if (( rc == 124 || rc == 137 )); then printf 'no answer in 15 s'
-    elif grep -qi '^Organization:' <<<"$t"; then grep -iE '^(Organization|Email):' <<<"$t" | tr '\n' ' '
-    else printf '%s' "$(head -1 <<<"$t")"; fi
-    echo
-  done
-  echo "Projects with a pinned account:"; projects
+  "$WP" tab "$target" "$pane" --quiet
+  msg "$(tmux display -p -t "$pane" '#W'): account $target ($( [[ "$target" == personal ]] && echo "$op" || echo "$om" )), same conversation"
 }
 
 case "${1:-status}" in
-  setup)  setup ;;
+  setup)  "$WP" setup personal ;;
   login)  [[ "${2:-}" == personal ]] || { echo "usage: claude-account login personal" >&2; exit 2; }
-          [[ -d "$P" ]] || setup
-          echo "First: in the browser, switch claude.ai to your personal organization."
-          echo "If the browser does not open: the c key copies the URL; if it shows a code, paste it here with Ctrl+Shift+V."
-          # wslview opens the Windows browser from WSL (without it, Claude cannot open it on its own).
-          if [[ -z "${BROWSER:-}" ]] && command -v wslview >/dev/null; then export BROWSER=wslview; fi
-          CLAUDE_CONFIG_DIR="$P" claude auth login
-          echo; status ;;
+          "$WP" login personal claude; echo; "$0" status ;;
   # Signs out of the personal session ONLY (a normal /logout or claude auth logout would close the work one).
   logout) [[ "${2:-}" == personal ]] || { echo "usage: claude-account logout personal" >&2; exit 2; }
-          CLAUDE_CONFIG_DIR="$P" claude auth logout ;;
-  tab) shift; tab "$@" ;;
-  use)   shift; use "$@" ;;
-  project)  shift; project "$@" ;;
-  projects) projects ;;
-  status) status ;;
+          "$WP" logout personal ;;
+  tab)    shift; tab "$@" ;;
+  use)    [[ "${2:-}" == work || "${2:-}" == personal ]] || { echo "usage: claude-account use work|personal" >&2; exit 2; }
+          "$WP" use "$2" quiet; msg "New tabs: account $2" ;;
+  project) [[ "${2:-}" =~ ^(work|personal|remove)$ ]] || { echo "usage: claude-account project work|personal|remove [folder | --pane ID]" >&2; exit 2; }
+          shift; "$WP" project "$@" --quiet
+          r="${2:-.}"; [[ "$r" == --pane ]] && r="$(tmux display -p -t "${3:?pane}" '#{pane_current_path}')"
+          r="$(basename "$(realpath -e "$r")")"
+          if [[ "$1" == remove ]]; then msg "$r: no pinned account (uses the one for new tabs)"
+          else msg "$r: new tabs always use the $1 account"; fi ;;
+  projects) "$WP" projects | sed 's/(no project with a pinned profile)/(no project with a pinned account)/' ;;
+  status) wsp_default; echo "New tabs: $([[ "$REPLY" == personal ]] && echo personal || echo work)"
+          for c in work personal; do
+            printf '%-9s ' "$c:"
+            if [[ "$c" == personal && ! -d "$P" ]]; then echo "not prepared (claude-account setup)"; continue; fi
+            t="$(auth_txt "$c")" && rc=0 || rc=$?
+            if (( rc == 124 || rc == 137 )); then printf 'no answer in 15 s'
+            elif grep -qi '^Organization:' <<<"$t"; then grep -iE '^(Organization|Email):' <<<"$t" | tr '\n' ' '
+            else printf '%s' "$(head -1 <<<"$t")"; fi
+            echo
+          done
+          echo "Projects with a pinned account:"; "$0" projects ;;
   *) sed -n '8,18p' "$0"; exit 2 ;;
 esac
