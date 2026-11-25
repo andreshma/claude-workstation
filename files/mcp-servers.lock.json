@@ -18,10 +18,10 @@
       "source": "npm",
       "npm": "azure-mcp",
       "package": "@azure/mcp",
-      "version": "4.0.0-beta.7",
-      "integrity": "sha512-0bvsAd6giuwRIY7Mu9t7touhSy+3S6N5x/WUEX9FDYNW8EYoVmKtK1H4+t8ty9xBwkGyeCTElm/XiQ2dPWvbBQ==",
+      "version": "4.0.0-beta.9",
+      "integrity": "sha512-zDMWnEPx3b9RdvcuxXnlQsm/MVtaFtmMFOI6Cf6ZEQ1LQluTNgL4m7T1tE3FsNvI9EHcQDjZYn5kkcMQpqyHdA==",
       "prerelease": true,
-      "prereleaseReason": "The tool set and names the ask rules in settings.json were written against (4.0.0 betas); the newest stable, 3.0.0, has not been checked for the same tools. Move to the first stable 4.x when it ships."
+      "prereleaseReason": "No stable 4.x yet (checked 2026-11-25: npm has 4.0.0-beta.1 to beta.10; the only stable, 3.0.0 of 2026-10-12, is an older line than the 4.0 betas the ask rules in settings.json were written against, and moving back would drop the 4.0 fixes). Pinned at the newest beta past the 7-day cool-down. Move to the first stable 4.x when it ships (bash .github/scripts/bump-pinned.sh azure-mcp <version>)."
     },
     "ms-release-comms": {
       "source": "remote",
