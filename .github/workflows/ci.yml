@@ -148,11 +148,14 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
-      # age and zstd for the encrypted backups; npm (already on the runner) for the pinned packages.
+      # age and zstd for the encrypted backups; npm (already on the runner) for the pinned packages; tmux for the
+      # tests/run.sh cases that tests/compliance.sh runs as control checks.
       - name: Dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq age zstd >/dev/null
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq tmux age zstd >/dev/null
       # Every standalone suite except run.sh (the test job runs it); all of them run, the job fails if one does.
-      - name: guard, hooks, audit, memory, spend, solo, supply chain, Telegram, backups, gate, interop
+      # tests/compliance.sh is the continuous compliance evidence (WS-GOV-005) and tests/ai-bom.sh keeps the AI-BOM
+      # in step with the kit (WS-GOV-002).
+      - name: guard, hooks, audit, memory, spend, solo, supply chain, Telegram, backups, gate, interop, compliance, AI-BOM
         run: |
           git config --global user.email ci@example.invalid; git config --global user.name ci
           failed=()

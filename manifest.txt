@@ -138,6 +138,7 @@
 .local/lib/ws-lang.sh
 .local/lib/ws-lang/
 .local/lib/ws-credential-paths.txt
+.local/lib/ws_compliance.py
 .local/bin/ws-stop-all
 .local/bin/ws-anomaly
 .local/bin/ws-memory

@@ -12,6 +12,10 @@ Usage:
   ws-audit --verify-log [folder]   only checks the hash chain of the Claude audit log (~/.claude/audit) and the
                         anchors in %UserProfile%\\ws-telemetry\\audit-anchors.txt; exit 1 if a line was edited,
                         deleted or reordered (WS-SEC-011). It reports, it never repairs.
+  ws-audit --compliance [--json] [--kit DIR] [--catalogue FILE] [--only ID,…] [--no-run]
+                        runs the read-only checks of the control catalogue (docs/compliance/controls.yaml in the kit
+                        checkout, $WS_KIT, default ~/code/claude-workstation) and prints coverage per framework;
+                        exit 1 when an implemented control fails its check (WS-GOV-005). See ws_compliance.py.
 Reports: ~/.local/share/ws-telemetry/audit.{html,md}, a copy of the HTML in
 %UserProfile%\\ws-telemetry and of the .md in $REPOS/ws-audit/ (to review it with Claude).
 It never prints secret values: only names, permissions and counts.
@@ -566,6 +570,10 @@ tr.fail b{{color:#c0392b}}tr.warn b{{color:#b07b1f}}tr.ok b{{color:#3f7d4e}}tr.i
 
 
 if __name__ == "__main__":
+    if "--compliance" in sys.argv:   # continuous compliance evidence (WS-GOV-005): ~/.local/lib/ws_compliance.py
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+        import ws_compliance  # noqa: E402 — only this mode needs it
+        sys.exit(ws_compliance.main([a for a in sys.argv[1:] if a != "--compliance"]))
     if "--verify-log" in sys.argv:
         rest = sys.argv[sys.argv.index("--verify-log") + 1:]
         sys.exit(1 if verify_log(Path(rest[0]) if rest else AUDIT_DIR)[1] else 0)
