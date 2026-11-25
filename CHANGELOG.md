@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-11-25
+
 ### Fixed
 
 - The SAST job (bandit) failed on the SQL view of `ws-telemetry sql`; the two queries are built only from the
