@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Dependencies
@@ -72,7 +72,7 @@ jobs:
       GITLEAKS_VERSION: 8.21.2
       BANDIT_VERSION: 1.7.10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: bandit (medium severity or higher)
@@ -95,7 +95,7 @@ jobs:
     needs: [lint, sast]
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Dependencies
@@ -111,7 +111,7 @@ jobs:
     # First version: reports without blocking the merge; becomes required once it runs stably.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Dependencies
