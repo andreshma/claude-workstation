@@ -41,6 +41,12 @@ After installing, in this order:
     the Chrome DevTools MCP server (`ws-tools install chrome-devtools-mcp`, then
     `bash install.sh --mcp-opt-in chrome-devtools`), and `[interop] appendWindowsPath=false` in `/etc/wsl.conf`.
 
+11. Hardening follow-ups: run `ws-backup --now` once a key exists (`ws-backup-cloud setup`) so the Windows-side
+    mirrors are sealed; `ws-tools install gate` on every machine that pushes lock files or IaC (a push that needs
+    osv-scanner or checkov is blocked without them; `ws.gate.allowNoOsv` and `ws.gate.allowNoCheckov` opt out,
+    logged); `bash install.sh` puts the tmux plugins at their pinned commits (`ws-plugins verify`); add the CI job
+    "Clean install (Ubuntu 24.04)" to the required checks of `main`.
+
 Breaking behaviour changes, each described below:
 
 - Solo mode runs inside the sandbox; the old mode is `tmux-solo this --unsandboxed` (audited).
@@ -51,6 +57,19 @@ Breaking behaviour changes, each described below:
 - `ws-kit-update` refuses releases whose tag is not signed by a key in `allowed_signers`.
 
 ### Added
+
+- `ws-restore-lite --mirror PATH [--to DIR]` recovers a file or folder of the Windows-side mirrors: encrypted `.age`
+  copies are decrypted (cloud key from Credential Manager or `--identity`), clear copies of older mirrors are copied;
+  nothing in `~/.claude` is overwritten.
+- `ws-plugins apply|verify|list`: TPM and every tmux plugin pinned by commit in
+  `~/.config/tmux-claude/plugins.lock`; `install.sh` and `ws-update` use it instead of TPM's `install_plugins` and
+  `update_plugins`; `ws-audit` fails when a plugin is off its pin or not in the lock.
+- `~/.local/lib/ws-tools.lock` pins the GitHub binaries ws-tools installs (osv-scanner, tflint, k9s, hadolint,
+  starship, agg, cosign) by version and sha256, and checkov by version; `ws-tools pins` lists them;
+  `ws-tools install gate` installs the git gate's scanners (gitleaks, osv-scanner, checkov).
+- `.github/scripts/bump-pinned.sh <name> [version]`: one command to move a pinned npm package or to finish a
+  Dependabot bump (package-lock, `files/mcp-servers.lock.json`, integrity, AI-BOM, then the three checks).
+- Suites `tests/gate-scanners.sh`, `tests/supply-tools.sh`, `tests/telegram-audit.sh` and `tests/audit-mcp.sh`.
 
 - Governance documents in `docs/governance/`: the AI use policy, the AI bill of materials (models, subagents, MCP
   servers, hooks, external services), the AI incident response playbooks and the review cadence.
@@ -134,6 +153,24 @@ Breaking behaviour changes, each described below:
   memory off and forces the wing with `wing:W`. The recall hook is unaffected.
 - `tmux-level --agent NAME` is the credentials-only case of the profile NAME; a level change, a restart and solo mode
   keep the tab's profile.
+- The Windows-side mirrors (`%UserProfile%\.claude-wsl-backup` from `ws-backup`, `.tmux-resurrect-backup` from
+  `tmux-backup`) are encrypted per file with age to the light backup's keys (WS-SEC-013), stay incremental, and seal
+  the clear copies left by earlier versions; without a key they stay in clear and `ws-audit` fails on it. Expiry in
+  `ws-backup-lite` handles the `.age` copies.
+- The git gate requires osv-scanner on a push that changes a lock file or manifest, and checkov on one that changes
+  Terraform, Bicep, a Dockerfile, a Kubernetes manifest or a CI workflow (WS-SEC-004); `ws-gate bypasses` and
+  `ws-audit` report the new opt-outs.
+- ws-tools installs GitHub binaries at their pinned version and sha256 instead of the latest release checked
+  against its own checksum file, verifies tflint's cosign signature (installing the pinned cosign first) and fails
+  closed; `WS_TOOLS_ALLOW_UNVERIFIED=1` overrides, logged and audited (WS-SEC-016).
+- Telegram approvals, denials, PIN checks and ▶ Run commands (redacted) are recorded in the audit hash chain as
+  `telegram` events (WS-SEC-011). ▶ Run stays refused in solo tabs, now with the reason in the code.
+- `ws-audit` fails on a registered MCP server (user, local or approved project scope, both accounts) that is not in
+  `files/mcp-servers.json`, and reads the kit's drop-in `managed-settings.d/50-ws-kit.json` next to
+  `managed-settings.json` (valid, root-owned, floor intact, guard current) (WS-AI-010, WS-AI-002).
+- The Azure MCP server moves to `@azure/mcp` 4.0.0-beta.9 (supersedes Dependabot's bump): there is still no stable
+  4.x, and the reason is recorded in the lock.
+- CI: the "Clean install (Ubuntu 24.04)" job is no longer `continue-on-error` (WS-SEC-017).
 - **Breaking: the user settings are strict.** `sandbox.excludedCommands` moved from `settings.json` to
   `~/.config/claude-levels/normal-adds.json`; the normal level is `claude-resume --settings normal.json` on top of
   every settings source, every kit launcher starts at normal, and a `claude` typed by hand runs with no exclusions
@@ -186,6 +223,13 @@ Breaking behaviour changes, each described below:
   also updates the pinned npm packages, with a 7-day cooldown.
 
 ### Fixed
+
+- `ws-restore-lite --test` ended silently (no FAIL line, no verdict) on a backup without `~/.claude/projects`.
+- `ws-test` read the machine's `/tmp/claude-burn-<uid>/limits` (your real plan usage) in its Telegram alert case, so
+  "alerts are not repeated" failed whenever your weekly usage was at 90 %; `ws-telegram` now honours `WS_BURN_DIR`
+  like `statusline.sh`, and the test points it at its own folder.
+- Stale comments in `ws-runtime-gate.sh` (ws-anomaly also counts denials and sandbox hits) and `ws-telegram` (solo
+  runs inside the sandbox).
 
 - `ws-restore-lite` could not extract an encrypted (`.age`) backup; it now also reads the cloud key from the Credential
   Manager when `--identity` is not given.

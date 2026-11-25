@@ -39,7 +39,7 @@ differ from the catalogue.
 
 ## Summary
 
-**After phase 2**, 35 controls are implemented, 32 partial, 2 missing and 1 not applicable: the guard protects the
+**After phase 2 and its follow-ups**, 38 controls are implemented, 29 partial, 2 missing and 1 not applicable: the guard protects the
 agent's configuration and the credential stores at every level and fails closed even when missing, untrusted tool
 output is labelled and screened, typed prompts are screened for secrets, memory writes ask and carry provenance, solo
 mode runs inside the sandbox with an expiry, the base settings are strict, the audit log is a hash chain, one command
@@ -52,17 +52,17 @@ the managed drop-in). The status of each planned item is in [Status after phase 
 | Family | Controls | Implemented | Partial | Missing | Not applicable |
 |---|---|---|---|---|---|
 | `WS-AI` (AI and agent) | 30 | 13 | 17 | 0 | 0 |
-| `WS-SEC` (general security) | 28 | 12 | 13 | 2 | 1 |
+| `WS-SEC` (general security) | 28 | 15 | 10 | 2 | 1 |
 | `WS-GOV` (governance) | 12 | 10 | 2 | 0 | 0 |
-| **Total** | **70** | **35** | **32** | **2** | **1** |
+| **Total** | **70** | **38** | **29** | **2** | **1** |
 
 | Risk | All controls | Open gaps (partial or missing) |
 |---|---|---|
 | High | 7 | 4 |
-| Medium | 33 | 18 |
-| Low | 30 | 12 |
+| Medium | 33 | 16 |
+| Low | 30 | 11 |
 
-Open gaps by effort: 22 small, 10 medium, 2 large. Open high-risk gaps: WS-AI-004 (partial, M), WS-AI-009 (partial,
+Open gaps by effort: 20 small, 9 medium, 2 large. Open high-risk gaps: WS-AI-004 (partial, M), WS-AI-009 (partial,
 M), WS-AI-012 (partial, S), WS-SEC-003 (partial, M).
 <!-- compliance:end summary -->
 
@@ -81,23 +81,23 @@ Control-level: of the controls that cite each framework, how many are in each st
 <!-- compliance:begin frameworks -->
 | Framework | Controls | Implemented | Partial | Missing | N/A |
 |---|---|---|---|---|---|
-| OWASP-LLM25 | 33 | 13 (39 %) | 20 (61 %) | 0 (0 %) | 0 (0 %) |
-| OWASP-LLM26 | 33 | 13 (39 %) | 20 (61 %) | 0 (0 %) | 0 (0 %) |
+| OWASP-LLM25 | 33 | 14 (42 %) | 19 (58 %) | 0 (0 %) | 0 (0 %) |
+| OWASP-LLM26 | 33 | 14 (42 %) | 19 (58 %) | 0 (0 %) | 0 (0 %) |
 | OWASP-ASI | 39 | 20 (51 %) | 19 (49 %) | 0 (0 %) | 0 (0 %) |
-| OWASP-NHI | 15 | 9 (60 %) | 6 (40 %) | 0 (0 %) | 0 (0 %) |
+| OWASP-NHI | 15 | 10 (67 %) | 5 (33 %) | 0 (0 %) | 0 (0 %) |
 | OWASP-MCP3P | 7 | 3 (43 %) | 4 (57 %) | 0 (0 %) | 0 (0 %) |
 | NIST-AI-RMF | 33 | 19 (58 %) | 14 (42 %) | 0 (0 %) | 0 (0 %) |
 | NIST-600-1 | 25 | 11 (44 %) | 14 (56 %) | 0 (0 %) | 0 (0 %) |
-| SSDF | 25 | 16 (64 %) | 9 (36 %) | 0 (0 %) | 0 (0 %) |
+| SSDF | 25 | 18 (72 %) | 7 (28 %) | 0 (0 %) | 0 (0 %) |
 | SSDF-1.2-IPD | 2 | 2 (100 %) | 0 (0 %) | 0 (0 %) | 0 (0 %) |
 | SSDF-218A | 2 | 0 (0 %) | 2 (100 %) | 0 (0 %) | 0 (0 %) |
-| CSF | 63 | 33 (52 %) | 27 (43 %) | 2 (3 %) | 1 (2 %) |
-| CIS-v8 | 49 | 24 (49 %) | 23 (47 %) | 2 (4 %) | 0 (0 %) |
+| CSF | 63 | 36 (57 %) | 24 (38 %) | 2 (3 %) | 1 (2 %) |
+| CIS-v8 | 49 | 27 (55 %) | 20 (41 %) | 2 (4 %) | 0 (0 %) |
 | CIS-Ubuntu | 5 | 1 (20 %) | 2 (40 %) | 2 (40 %) | 0 (0 %) |
-| NSA-DAISS | 23 | 13 (57 %) | 9 (39 %) | 1 (4 %) | 0 (0 %) |
-| NSA-AIDATA | 13 | 4 (31 %) | 9 (69 %) | 0 (0 %) | 0 (0 %) |
+| NSA-DAISS | 23 | 14 (61 %) | 8 (35 %) | 1 (4 %) | 0 (0 %) |
+| NSA-AIDATA | 13 | 5 (38 %) | 8 (62 %) | 0 (0 %) | 0 (0 %) |
 | NSA-AGENTIC | 8 | 4 (50 %) | 4 (50 %) | 0 (0 %) | 0 (0 %) |
-| WAF-SEC | 51 | 26 (51 %) | 23 (45 %) | 2 (4 %) | 0 (0 %) |
+| WAF-SEC | 51 | 29 (57 %) | 20 (39 %) | 2 (4 %) | 0 (0 %) |
 | WAF-AI | 7 | 2 (29 %) | 5 (71 %) | 0 (0 %) | 0 (0 %) |
 | CAF | 15 | 10 (67 %) | 5 (33 %) | 0 (0 %) | 0 (0 %) |
 | MS-RAI | 15 | 11 (73 %) | 4 (27 %) | 0 (0 %) | 0 (0 %) |
@@ -120,14 +120,14 @@ cited selectively (only applicable items).
 | OWASP-MCP3P | 4 | 0 (0 %) | 4 (100 %) | 0 (0 %) | 0 (0 %) | - | 7 |
 | NIST-AI-RMF | 48 | 32 (67 %) | 16 (33 %) | 0 (0 %) | 0 (0 %) | 24 | 33 |
 | NIST-600-1 | 7 | 0 (0 %) | 7 (100 %) | 0 (0 %) | 0 (0 %) | 5 | 25 |
-| SSDF | 18 | 11 (61 %) | 7 (39 %) | 0 (0 %) | 0 (0 %) | 1 | 25 |
+| SSDF | 18 | 13 (72 %) | 5 (28 %) | 0 (0 %) | 0 (0 %) | 1 | 25 |
 | SSDF-1.2-IPD | 2 | 2 (100 %) | 0 (0 %) | 0 (0 %) | 0 (0 %) | - | 2 |
 | SSDF-218A | 2 | 0 (0 %) | 2 (100 %) | 0 (0 %) | 0 (0 %) | - | 2 |
-| CSF | 37 | 15 (41 %) | 22 (59 %) | 0 (0 %) | 0 (0 %) | - | 63 |
-| CIS-v8 | 44 | 15 (34 %) | 28 (64 %) | 1 (2 %) | 0 (0 %) | - | 49 |
+| CSF | 37 | 16 (43 %) | 21 (57 %) | 0 (0 %) | 0 (0 %) | - | 63 |
+| CIS-v8 | 44 | 19 (43 %) | 24 (55 %) | 1 (2 %) | 0 (0 %) | - | 49 |
 | CIS-Ubuntu | 8 | 1 (12 %) | 3 (38 %) | 4 (50 %) | 0 (0 %) | - | 5 |
-| NSA-DAISS | 14 | 5 (36 %) | 9 (64 %) | 0 (0 %) | 0 (0 %) | 1 | 23 |
-| NSA-AIDATA | 10 | 1 (10 %) | 9 (90 %) | 0 (0 %) | 0 (0 %) | 0 | 13 |
+| NSA-DAISS | 14 | 6 (43 %) | 8 (57 %) | 0 (0 %) | 0 (0 %) | 1 | 23 |
+| NSA-AIDATA | 10 | 2 (20 %) | 8 (80 %) | 0 (0 %) | 0 (0 %) | 0 | 13 |
 | NSA-AGENTIC | 3 | 1 (33 %) | 2 (67 %) | 0 (0 %) | 0 (0 %) | - | 8 |
 | WAF-SEC | 12 | 2 (17 %) | 10 (83 %) | 0 (0 %) | 0 (0 %) | 0 | 51 |
 | WAF-AI | 4 | 1 (25 %) | 3 (75 %) | 0 (0 %) | 0 (0 %) | - | 7 |
@@ -152,24 +152,22 @@ remediation are in [controls.yaml](controls.yaml).
 |---|---|---|---|---|---|
 | WS-AI-012 | Memory write gate for MemPalace | partial | high | S | MemPalace's own lifecycle hooks still store transcript content without a per-item approval (the kit removes only the private spans), a paraphrase of private text is not recognised, and whether Claude Code honours updatedInput together with ask has not been verified at runtime. |
 | WS-AI-004 | Guardrails for autonomous (solo) mode | partial | high | M | The solo profile is generated with the normal level's exclusions, so az, gh, git push and the other excluded commands run outside the sandbox, decided by the auto-mode classifier; WebFetch and MCP egress are not confined; --unsandboxed remains available as an audited exception. |
-| WS-AI-009 | MCP server supply chain: pinning and integrity | partial | high | M | azure stays on the prerelease 4.0.0-beta.7 (the reason is in the lock); mempalace and recall are pinned by trust on first use on each machine, so a binary that was already malicious at first registration is accepted. |
+| WS-AI-009 | MCP server supply chain: pinning and integrity | partial | high | M | azure stays on a 4.0.0 prerelease (4.0.0-beta.9; npm had no stable 4.x on 2026-11-25 and the only stable, 3.0.0, is an older line; the reason is in the lock); mempalace and recall are pinned by trust on first use on each machine, so a binary that was already malicious at first registration is accepted. |
 | WS-SEC-003 | Network egress control per protection level | partial | high | M | Excluded commands, MCP servers and hooks have unrestricted egress at every level, as do commands in bare and solo --unsandboxed; github.com and *.githubusercontent.com in the allow list remain possible exfiltration endpoints. |
-| WS-AI-010 | MCP server registration control | partial | medium | S | No allowedMcpServers allow list is shipped (it would also block the claude.ai connectors and plugin servers), and ws-audit does not yet fail when claude mcp list shows a server that is not in files/mcp-servers.json. |
+| WS-AI-010 | MCP server registration control | partial | medium | S | No allowedMcpServers allow list is shipped (it would also block the claude.ai connectors and plugin servers); ws-audit finds a server outside the list after it was registered, it does not prevent the registration. |
 | WS-AI-017 | Validation of model output consumed by kit scripts | partial | medium | S | Subtask text from tmux-swarm is still written verbatim into each agent's task file. |
 | WS-AI-021 | Verification of generated changes before they leave the machine | partial | medium | S | Review on the remote is assumed, not checked: the kit does not verify branch protection or required reviews on the repositories agents push to. |
 | WS-AI-022 | Secret and sensitive data screening of prompts | partial | medium | S | Files the agent reads and text reused from tmux panes are not screened; detection is pattern-based and covers secrets, not personal data; exit 2 and suppressOriginalPrompt on UserPromptSubmit have not been verified at runtime. |
 | WS-AI-023 | Minimisation and retention of prompt and transcript content | partial | medium | S | Content capture is on by default and kept 13 months in clear text, and transcripts 12 months; there is no encryption at rest beyond the disk. |
 | WS-GOV-008 | Third-party AI services register | partial | medium | S | Retention and terms of each external service are still 'to fill'. |
-| WS-SEC-004 | Git gate on commit and push | partial | medium | S | osv-scanner, checkov and the other non-secret checks are still skipped with a warning when missing; a repository-local core.hooksPath is reported by ws-audit (fail) and ws.gate.skip only warns; neither is blocked. |
 | WS-SEC-019 | Operating system patching | partial | medium | S | The kit neither enables nor checks unattended-upgrades, and the audit counts lines containing 'security' rather than reading the security pocket. |
 | WS-SEC-022 | WSL interop and Windows drive exposure | partial | medium | S | Whether interop works from inside bubblewrap has not been probed on a live machine, and at the normal level the Windows profile outside the denied folders is readable. |
 | WS-AI-006 | Approval fatigue monitoring | partial | medium | M | The dashboard template does not render the prompts block yet, and the metrics need the OpenTelemetry collector on. |
 | WS-AI-013 | Memory provenance, expiry and review | partial | medium | M | MemPalace has no expiry of its own; the review covers only facts saved through ws-learn (other writes are listed by hash with ws-memory log); provenance lives in a field the server does not protect. |
 | WS-AI-019 | Spend and consumption limits | partial | medium | M | The hard limit is opt-in (hard=1); there is no per-session cap; the flag is refreshed about once a minute and a stale flag fails open; the per-swarm budget works only while the dashboard runs. |
 | WS-AI-027 | Adversarial tests of the agent controls | partial | medium | M | No test runs the real Claude against a planted injection and checks the outcome (ws-audit --ai has no such case yet), and the bubblewrap interop probe has not run on a live machine. |
-| WS-SEC-011 | Audit log integrity and retention | partial | medium | M | The Telegram event logs are not chained, and an agent in bare or solo --unsandboxed can still edit the anchor file on the Windows side (deny rules and the guard stop the usual forms); the off-box copy is only as recent as the last light backup. |
-| WS-SEC-013 | Encrypted backups with expiry | partial | medium | M | The Windows-side mirrors (%UserProfile%\.claude-wsl-backup and .tmux-resurrect-backup) are still plain copies; expiry removes only copies whose original is gone; the light backup is made in clear (and reported) when no key exists. |
-| WS-SEC-016 | Third-party tool and plugin pinning | partial | medium | M | tmux plugins and TPM are still cloned at the branch tip (no plugins.lock), and ws-tools trusts the checksum file published next to each binary (same origin, no cosign verification). |
+| WS-SEC-011 | Audit log integrity and retention | partial | medium | M | An agent in bare or solo --unsandboxed can still edit the anchor file on the Windows side (deny rules and the guard stop the usual forms); the off-box copy is only as recent as the last light backup; the Telegram delivery log (notifications, alerts) stays a separate, unchained log; only decisions and runs are chained. |
+| WS-SEC-016 | Third-party tool and plugin pinning | partial | medium | M | osv-scanner, k9s, hadolint, starship and agg publish no signature the kit checks (they are pinned by sha256 in the kit; osv-scanner's SLSA provenance is not verified); the az, azd, fnm and rustup install scripts and the apt and pipx packages come from their vendors without a kit pin; TPM's Ctrl+b I and U can still move a plugin (ws-audit reports it). |
 | WS-AI-011 | MCP tool scoping and egress | partial | medium | L | MCP servers still run outside the sandbox with unrestricted network and filesystem access; the agent-browser wrapper is a set of defaults, not a boundary (the binary can be called directly); the ws-mcp-jail confinement is not built. |
 | WS-AI-026 | Agent identity separation and least-privilege credentials | partial | medium | L | The reduced-scope identities themselves are created by the owner; tabs at the built-in profiles (work, personal) still use the user's own sessions through excluded commands; the Agent-Session commit trailer is not built, so commits by agents look like the user's; git over SSH uses the owner's keys in every profile. |
 | WS-AI-016 | Subagent least privilege | partial | low | S | debugger and sql-quick inherit every tool of the parent session; sql-quick's 'wait for confirmation' rule is prompt-only. |
@@ -178,7 +176,6 @@ remediation are in [controls.yaml](controls.yaml).
 | WS-GOV-010 | Secret rotation and offboarding | partial | low | S | The rotation periods are still to be confirmed by the owner, and nothing warns when a secret is older than its period (no ws-audit age check). |
 | WS-SEC-009 | Redaction of text leaving the terminal | partial | low | S | Windows notifications from win-notify.sh are not redacted and tmux-record .cast files keep the raw screen. |
 | WS-SEC-012 | Local telemetry collector hardening | partial | low | S | A gzip body is decompressed without a size cap (ws-otel:288-289), and the collector has no authentication (documented). |
-| WS-SEC-017 | CI security pipeline | partial | low | S | The clean-install job that runs ws-test is still continue-on-error, so behaviour tests on a fresh install do not block a merge. |
 | WS-SEC-020 | Home and data directory permissions | partial | low | S | The home directory itself, the umask and ~/.claude/audit and ~/.local/share/tmux-swarm are not checked. |
 | WS-SEC-021 | Listening services and host firewall in WSL | missing | low | S | The kit does not report listening sockets, sshd state or the WSL networking mode (NAT or mirrored), and does not apply the .wslconfig it exports (install.sh:175-177). |
 | WS-SEC-023 | Host audit logging (auditd and journald) | missing | low | S | The kit neither configures nor checks auditd or journald retention. |
@@ -456,6 +453,14 @@ implementation departs from the design, the reason is in the item's ADR or in th
 | 20 | Strict base and managed policy template | Done: `normal-adds.json`, normal as `claude-resume --settings normal.json`, `install.sh --managed` installs a drop-in in `managed-settings.d`, `ws-audit` warns on repository settings that widen every level ([ADR 0019](../adr/0019-strict-base-and-level-profiles.md)) | WS-AI-003 implemented, WS-AI-002 implemented | `--settings` merge and the drop-in as root unverified at runtime |
 | 21 | Agent-scoped identities | Partial: `tmux-level … --agent NAME` and the guard's identity checks ([ADR 0020](../adr/0020-agent-scoped-identities.md)) | WS-AI-026 partial | The optional `Agent-Session` commit trailer; reduced-scope identities are created by the owner |
 | 22 | Small hardening batch | Only the `ws-learn` part (checks, preview, quoted description) | WS-AI-017 partial; the rest unchanged | Everything else in the item |
+
+Follow-ups after phase 2 (branch `fix/hardening-followups`): the Windows-side mirrors are encrypted per file and
+restore with `ws-restore-lite --mirror` (WS-SEC-013 implemented); osv-scanner and checkov are mandatory on a push
+that has files they apply to, with audited opt-outs (WS-SEC-004 implemented); the clean-install CI job blocks
+(WS-SEC-017 implemented); Telegram decisions and ▶ Run commands are in the audit chain (WS-SEC-011 partial: the
+anchor store); `ws-tools.lock`, cosign for tflint and `plugins.lock` (WS-SEC-016 partial: unsigned upstreams and the
+vendor install scripts); `ws-audit` fails on an MCP server outside the allow list and reads the managed drop-in
+(WS-AI-010 partial: no `allowedMcpServers`); Azure MCP moved to 4.0.0-beta.9, still no stable 4.x (WS-AI-009 partial).
 
 ### Phase 3: governance documents
 

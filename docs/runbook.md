@@ -87,9 +87,14 @@ ws-audit                     # read-only audit by pillar; also: --verify-log, --
 
 ```bash
 B=/mnt/c/Users/<user>/.claude-wsl-backup
-stat -c 'last copy: %y' "$B/.last"                                          # less than 15 min ago
-rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl$'   # 0, or only the active ones
+stat -c 'last copy: %y' "$B/.last"                     # less than 15 min ago
+tail -2 ~/.local/state/ws-backup-mirror.state            # "encrypted" for both mirrors (UNENCRYPTED: no key yet)
+find "$B/projects" -type f ! -name '*.age' | head        # nothing: every copy is <name>.age
 ```
+
+The mirrors are encrypted per file with `age` to the light backup's keys (WS-SEC-013): `ws-backup` for the
+conversations and the audit log, `tmux-backup` for the tmux saves. Without a key (before `ws-backup-cloud setup`) they
+stay in clear and `ws-audit` fails; the first run with a key seals the clear copies in place.
 
 ## 3. Tabs and tmux
 
@@ -109,8 +114,9 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
   ```
 
   Use the real file name (not the example one). Do it on a single line: continuum saves again every minute.
-- **If there is no good save:** use the copy in `%UserProfile%\.tmux-resurrect-backup` or the daily backup
-  (`ws-restore-lite`, [section 17](#17-recovery)).
+- **If there is no good save:** recover the copy in `%UserProfile%\.tmux-resurrect-backup`
+  (`ws-restore-lite --mirror /mnt/c/Users/<user>/.tmux-resurrect-backup`, then copy the save you want into
+  `~/.local/share/tmux/resurrect/`) or use the daily backup (`ws-restore-lite`, [section 17](#17-recovery)).
 - Close the leftover empty tab with `Ctrl+b &`.
 
 ### Restarting the workstation cleanly
@@ -149,8 +155,10 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
 ### A conversation was lost
 
 - Conversations are in `~/.claude/projects/<folder>/<session>.jsonl` and are copied to Windows every 15 min
-  (`%UserProfile%\.claude-wsl-backup\projects`). Copy the project folder back to `~/.claude/projects/` and run
-  `claude -r` in the tab.
+  (`%UserProfile%\.claude-wsl-backup\projects`, encrypted). Recover the project folder with
+  `ws-restore-lite --mirror /mnt/c/Users/<user>/.claude-wsl-backup/projects/<folder>` (it decrypts `.age` copies and
+  copies the clear ones of older mirrors into `~/.local/state/ws-restore/mirror-<date>/`), copy it back to
+  `~/.claude/projects/` with `cp -rn`, and run `claude -r` in the tab.
 - From the daily backup: `ws-restore-lite` (test) and then `ws-restore-lite --restore`
   ([section 17](#17-recovery)).
 - Whatever an agent was executing at the instant of an outage is not recovered; the conversation is, up to the last
@@ -244,6 +252,11 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
 - **"gitleaks is missing, so secrets cannot be checked" blocks every commit:** the secret scan is mandatory.
   Install it with `ws-tools install base`. For a repository that must commit on a machine without it:
   `git config ws.gate.allowNoGitleaks true` (each such commit is logged in `~/.local/state/ws-gate/opt-outs.log`).
+- **A push fails with "osv-scanner is missing" or "checkov is missing":** the push changes a lock file or manifest
+  (osv-scanner) or Terraform, Bicep, a Dockerfile, a Kubernetes manifest or a CI workflow (checkov), and the scanner
+  is not installed: `ws-tools install gate` (gitleaks, osv-scanner and checkov, pinned). Only if you must push without
+  it: `git config ws.gate.allowNoOsv true` or `ws.gate.allowNoCheckov true` in that repository, logged the same way
+  and reported by `ws-audit`.
   `ws-gate bypasses` lists the repositories where the gate does not run in full; `ws-audit` fails on a local
   `core.hooksPath` or `ws.gate.allowNoGitleaks` and warns on `ws.gate.skip`.
 - **`export.sh` refuses because of possible secrets:** move the secret to Key Vault; if it is a detection pattern, add
@@ -297,12 +310,24 @@ and sha512: a committed `package.json` and `package-lock.json` in `files/home/.l
 version and integrity in `files/mcp-servers.lock.json`. `ws-pinned install <name>` runs `npm ci --ignore-scripts` into
 `~/.local/share/ws-kit/npm/<name>/`; nothing runs through `npx -y`.
 
-To move a pin (a reviewed change to the kit; Dependabot opens these weekly, after a 7-day cool-down):
+To move a pin (a reviewed change to the kit; Dependabot opens these weekly, after a 7-day cool-down), one
+command updates every file that must agree: `package.json` and `package-lock.json`, `version`, `integrity` and the
+prerelease flag in `files/mcp-servers.lock.json`, and the generated tables of `docs/governance/AI-BOM.md`; then it runs
+`tests/supply-chain.sh`, `tests/ai-bom.sh` and `tests/compliance.sh`.
 
-1. Edit the version in `files/home/.local/lib/ws-npm/<name>/package.json`.
-2. In that folder: `npm install --package-lock-only --ignore-scripts`.
-3. Update `version` and `integrity` in `files/mcp-servers.lock.json` (`npm view <package>@<version> dist.integrity`).
-4. Run `bash tests/supply-chain.sh`; it fails until the lock, the package files and `files/mcp-servers.json` agree.
+```bash
+bash .github/scripts/bump-pinned.sh --list                      # pinned packages and versions
+bash .github/scripts/bump-pinned.sh azure-mcp 4.0.0-beta.9      # move a pin yourself
+```
+
+A Dependabot pull request changes only `package.json` and `package-lock.json`, so its CI fails (supply chain, AI-BOM,
+compliance) until the rest follows. To finish it:
+
+1. `git fetch origin && git switch <dependabot branch>`.
+2. `bash .github/scripts/bump-pinned.sh <name>` (no version: it takes the package files as Dependabot left them).
+3. A prerelease needs its reason: review `prereleaseReason` in `files/mcp-servers.lock.json` (the script refuses a
+   prerelease without one), and read the release notes.
+4. Add a `CHANGELOG.md` line under Unreleased, commit (`build(deps): bump <package> to <version>`) and push.
 5. After merging and installing: `ws-pinned install <name>`, then `ws-pinned verify --online` (also runs
    `npm audit signatures`).
 
@@ -315,6 +340,25 @@ To move a pin (a reviewed change to the kit; Dependabot opens these weekly, afte
 
 A local MCP executable whose sha256 changed is skipped by `install.sh` with a warning. Review the change, then
 `bash install.sh --mcp-accept <name>` re-pins it.
+
+### Pinned tools and tmux plugins
+
+The GitHub binaries `ws-tools` installs (osv-scanner, tflint, k9s, hadolint, starship, agg, cosign) are pinned by
+version and sha256 in `files/home/.local/lib/ws-tools.lock`, and checkov by version. A download that differs from its
+pin is refused; tflint's release is also checked with cosign (keyless, a GitHub Actions workflow of its own
+repository), and the pinned cosign is installed first when missing. TPM and the tmux plugins are pinned by commit in
+`files/home/.config/tmux-claude/plugins.lock` and installed with `ws-plugins apply` (by `install.sh` and `ws-update`).
+
+| Command | Use |
+|---|---|
+| `ws-tools pins` | The pinned tools and how each is verified |
+| `ws-plugins verify` | Every plugin at its pinned commit with no changed file, and every `@plugin` of `~/.tmux.conf` in the lock; `ws-audit` fails otherwise |
+| `ws-plugins apply` | Puts each plugin back at its commit; a plugin with an added script or whose commit upstream no longer has is moved to `~/.local/share/ws-kit/plugins-quarantine/` |
+
+To move a pin, change the version and sha256 (or the commit) in the lock after reading the release notes or the
+upstream diff, and run `bash tests/supply-tools.sh`. Only when you must install something that fails its check:
+`WS_TOOLS_ALLOW_UNVERIFIED=1 ws-tools install <tool>` or `WS_PLUGINS_ALLOW_UNPINNED=1 ws-plugins apply`; each use is
+logged under `~/.local/state/ws-tools/` or `ws-plugins/` and recorded in the audit log.
 
 ## 9. WSL and Windows
 
@@ -619,7 +663,7 @@ packs, `~/.config/tmux-claude/lang`) stay in place and are harmless.
 | Layer | What it stores | Frequency | Where | Recover with |
 |---|---|---|---|---|
 | tmux (continuum + resurrect) | Tabs, panes, folders | Every minute and when tabs change | `~/.local/share/tmux/resurrect` (30 days) | `tmux-recover` |
-| `ws-backup` | Conversations and audit log | Every 15 min, incremental; copies whose original is gone expire after 30 days (`WS_BACKUP_COPY_DAYS`, pruned by `ws-backup-lite`) | `%UserProfile%\.claude-wsl-backup` | Copy back |
+| `ws-backup` | Conversations and audit log | Every 15 min, incremental, encrypted per file with `age`; copies whose original is gone expire after 30 days (`WS_BACKUP_COPY_DAYS`, pruned by `ws-backup-lite`) | `%UserProfile%\.claude-wsl-backup` | `ws-restore-lite --mirror` |
 | `ws-backup-lite` | All of Claude (conversations, subagents, todos, plans, `/rewind`, history, memory, audit log and a copy of its anchors), tmux and inventory | Daily, automatic (14 copies); encrypted with `age` to the cloud key and any `age-recipients` | `%UserProfile%\WSL-Backups\lite` | `ws-restore-lite --restore` |
 | Kit (GitHub) | All the configuration | On push | `andreshma/claude-workstation` | `install.sh` |
 | `devsnapshot` (optional) | The whole distro | By hand | `%UserProfile%\WSL-Backups` | `wsl --import` |

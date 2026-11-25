@@ -441,9 +441,10 @@ process can drive while it is open; use a separate profile, never the daily one.
   `WS_BACKUP_COPY_DAYS` (30) days.
 - Restores do not clobber: differing files are kept, and the restore refuses to run while Claude is open.
 
-Residual: the incremental Windows-side copies (`.claude-wsl-backup`, `.tmux-resurrect-backup`) are still in clear;
-only their expiry is new, and a copy whose original still exists is kept. They contain conversations, the audit log
-and captured pane contents. Without `ws-backup-cloud setup` or age recipients, the light backup is in clear.
+Residual: the incremental Windows-side copies (`.claude-wsl-backup`, `.tmux-resurrect-backup`) are encrypted per
+file with `age` only once a key exists: before `ws-backup-cloud setup`, or without age, they and the light backup are
+made in clear and `ws-audit` fails. A copy whose original still exists is kept (it mirrors live data). They contain
+conversations, the audit log and captured pane contents.
 
 ### Threats by category
 
@@ -548,7 +549,7 @@ and captured pane contents. Without `ws-backup-cloud setup` or age recipients, t
 
 Residual:
 
-- The Azure MCP server is pinned to a prerelease (`4.0.0-beta.7`); the lock records why.
+- The Azure MCP server is pinned to a prerelease (`4.0.0-beta.9`): no stable 4.x exists yet; the lock records why.
 - MCP servers are not confined: they run outside the sandbox with the user's network and files (`ws-mcp-jail` is not
   built).
 - Trust on first use cannot detect a local executable that was already compromised when it was first pinned.

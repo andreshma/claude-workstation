@@ -48,6 +48,7 @@ On the workstation itself, two things are always up to date because they read wh
 | Claude Code | Installed and logged in |
 | Base packages | `tmux git jq fzf gh bubblewrap socat rsync shellcheck` |
 | gitleaks | Required for commits: the gate blocks a commit without it (`ws-tools install base`) |
+| osv-scanner, checkov | Required for a push that changes a lock file or manifest (osv-scanner), or Terraform, Bicep, a Dockerfile, a Kubernetes manifest or a CI workflow (checkov): `ws-tools install gate` installs the three scanners, pinned |
 | `age` | Encrypts the light backups (`ws-backup-cloud setup` installs it) |
 | `npm` | Installs the pinned MCP servers and agent tools (`ws-pinned`) |
 | Optional: `python3-numpy` | 12 of the 25 screensaver scenes use a numpy shading engine |
@@ -165,7 +166,9 @@ it again; `install.sh` warns when the root copy is older.
 ## 3. First run
 
 1. Start the session with `dev` in PowerShell, the desktop shortcut, or the Ubuntu profile of Windows Terminal.
-2. Press `Ctrl+b I` once to install the tmux plugins.
+2. The tmux plugins are installed by `install.sh` at the commits pinned in `~/.config/tmux-claude/plugins.lock`
+   (`ws-plugins verify` checks them). Do not use `Ctrl+b I` or `Ctrl+b U`: TPM would install or move them to the
+   branch tip, and `ws-audit` reports a plugin off its pin (`ws-plugins apply` puts it back).
 3. Press `Ctrl+b m` to open the menu.
 
 ### Entering and leaving
@@ -831,7 +834,7 @@ Notes:
 | Command | What it shows |
 |---|---|
 | `claude-report [days]` | Summary of the audit log: sessions, prompts, actions per repository and tool, blocked and denied actions |
-| `ws-audit` | Read-only audit of the workstation by pillar, with a report. Among other checks it fails on repositories where the gate does not run in full (a local `core.hooksPath` or `ws.gate.allowNoGitleaks`; `ws.gate.skip` only warns), an unencrypted last backup, a pinned package that no longer matches its lock (`ws-pinned verify`) and a broken audit chain, checks that the user settings are the strict base, and warns on a repository's `.claude/settings*.json` that widens every level |
+| `ws-audit` | Read-only audit of the workstation by pillar, with a report. Among other checks it fails on repositories where the gate does not run in full (a local `core.hooksPath` or `ws.gate.allowNoGitleaks`; `ws.gate.skip` only warns), an unencrypted last backup or Windows-side mirror, a pinned package that no longer matches its lock (`ws-pinned verify`), a tmux plugin off its pinned commit (`ws-plugins verify`), a registered MCP server that is not in `files/mcp-servers.json`, a managed policy file that is invalid, not root-owned or lost its floor (it reads `managed-settings.json` and the kit's drop-in `managed-settings.d/50-ws-kit.json`), and a broken audit chain, checks that the user settings are the strict base, and warns on a repository's `.claude/settings*.json` that widens every level |
 | `ws-audit --verify-log [folder]` | Only the hash chain of the audit log and its anchors: exit 1 if a line was edited, deleted or reordered ([runbook](runbook.md#verifying-the-audit-log)) |
 | `ws-audit --compliance [--json] [--kit DIR] [--catalogue FILE]` | Runs the machine-checkable `check` of every control in the kit's `docs/compliance/controls.yaml` and prints a table per framework with the coverage (see below) |
 | `ws-memory review [--older-than 90] [--list\|--count]`, `ws-memory log [--days 30]` | Facts saved through `ws-learn` that are due for review (invalidate or keep), and the memory writes, redactions and private blocks in the audit log. Run them in a terminal |
@@ -976,8 +979,8 @@ Nothing here needs to be run by hand in normal use; these are the commands for c
 
 | What | Where it goes | Command |
 |---|---|---|
-| tmux session (tabs, panes) | `~/.local/share/tmux/resurrect`, copied to `%UserProfile%\.tmux-resurrect-backup` | automatic; `Ctrl+b Ctrl+s` to force |
-| Conversations and audit log | `%UserProfile%\.claude-wsl-backup` | automatic (`ws-backup`) |
+| tmux session (tabs, panes) | `~/.local/share/tmux/resurrect`, copied to `%UserProfile%\.tmux-resurrect-backup` (encrypted per file) | automatic; `Ctrl+b Ctrl+s` to force; recover with `ws-restore-lite --mirror` |
+| Conversations and audit log | `%UserProfile%\.claude-wsl-backup` (encrypted per file with `age`) | automatic (`ws-backup`); recover with `ws-restore-lite --mirror` |
 | Light backup of Claude data, tmux saves and an inventory for reinstalling; never credentials. Encrypted with `age` by default | `%UserProfile%\WSL-Backups\lite` (14 kept) | `ws-backup-lite` |
 | Encrypted copy of the light backup | OneDrive | `ws-backup-cloud setup` once, then automatic |
 | Personal configuration | Your private repository | `ws-personal sync` |
@@ -1249,7 +1252,7 @@ The other `WS_*` variables follow the same pattern: the Spanish word became its 
 | Theme and screensaver | `tmux-theme`, `tmux-saver`, `tmux-scene`, `tmux-art` | [14](#14-appearance-and-screensaver) |
 | Language | `ws-lang` | [15](#15-language) |
 | Backups | `ws-backup-lite`, `ws-restore-lite`, `ws-backup-cloud`, `tmux-recover`, `ws-personal` | [16](#16-backups-and-restore) |
-| Updates and health | `ws-update`, `ws-kit-update`, `ws-check`, `ws-health`, `ws-verify`, `ws-test`, `ws-tools` | [17](#17-updating-from-the-kit) |
+| Updates and health | `ws-update`, `ws-kit-update`, `ws-check`, `ws-health`, `ws-verify`, `ws-test`, `ws-tools`, `ws-plugins` | [17](#17-updating-from-the-kit) |
 | Names from before 3.0 | `install.sh --dry-run`, `install.sh --remove-shims` | [18](#18-upgrading-from-2x-names) |
 | Manual and shortcuts | `ws-menus --show`, `Ctrl+b h` | [5](#5-key-bindings) |
 | PowerShell | `dev`, `devo`, `devdash`, `devagents`, `devsave`, `devcheck`, `devsnapshot`, `devrestoretest` | [3](#3-first-run) |
