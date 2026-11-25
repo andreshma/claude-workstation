@@ -7,6 +7,7 @@
 #   ws-telegram status         configuration, service and latest events
 #   ws-telegram test           sends you a test message
 #   ws-telegram on|off|toggle  (also: Menu → Workstation → Telegram)
+#   ws-telegram approve risky|pin   PIN for approving risky dialogs only (default) or for every approval
 #   ws-telegram forget         deletes token, chat and state
 #   ws-telegram notify <wait|done> <pane> <text>   (called by win-notify; not by hand)
 #   ws-telegram ensure         starts the service if it is not running (called by tmux-backup every minute)
@@ -21,6 +22,10 @@
 #   · The screen text is redacted (tokens, keys, passwords) before it leaves the PC.
 #   · ▶ Run asks for your PIN: the button runs nothing, you reply with the PIN to the message it sends you (5 min,
 #     deleted from the chat). `ws-telegram run no-pin` makes it direct; `ws-telegram run pin` asks again.
+#     ▶ Run is offered only for read-only commands of an allow list (RUN_ALLOW); the block lists are a second check.
+#   · Approving a risky permission dialog (an ask rule, a command that runs outside the sandbox, an MCP tool or a
+#     dangerous command) asks for the PIN the same way; `ws-telegram approve pin` asks it for every approval.
+#     "Yes, and don't ask again" (and other persistent allows) is never offered as a button: only on the PC.
 #   · Everything is logged in ~/.local/share/ws-telemetry/telegram/ (without the screen text).
 set -uo pipefail
 export LC_ALL=C.UTF-8
@@ -29,6 +34,8 @@ export PATH="$HOME/.local/bin:$PATH:/mnt/c/Windows/System32/WindowsPowerShell/v1
 CFG="${WS_TELEGRAM_CFG:-$HOME/.config/ws-telegram}"
 ST="${WS_TELEGRAM_ST:-$HOME/.local/state/ws-telegram}"
 LOGD="${WS_TELEGRAM_LOG:-$HOME/.local/share/ws-telemetry/telegram}"
+# Emergency stop marker (ws-stop-all, WS-AI-025): while it exists nothing is run or answered from the phone.
+STOPMARK="${WS_STATE_DIR:-$HOME/.local/state}/ws-stop-all"
 CURL="${WS_TELEGRAM_CURL:-curl}"
 EXPIRES=600
 umask 077
@@ -86,15 +93,20 @@ handle_message() {
     rf="$ST/to-run/$a.json"
     tg deleteMessage "$(jq -nc --arg c "$CHAT" --arg m "$mid" '{chat_id: $c, message_id: ($m | tonumber)}')" >/dev/null   # removes the PIN from the chat
     if (( $(date +%s) > $(load_state "$rf" | jq -r '.expires // 0') )); then
-      rm -f "$rf"; log_event command_expired "pin"; reply "It expired (5 min) and was not run. Tap ▶ Run again."; return
+      rm -f "$rf"; log_event command_expired "pin"; reply "It expired and nothing was done. Check on the PC."; return
     fi
     if [[ -n "$PIN" && "$txt" =~ ^[[:space:]]*([Pp][Ii][Nn][[:space:]:]*)?([0-9]{4,6})[[:space:]]*$ && "${BASH_REMATCH[2]}" == "$PIN" ]]; then
-      rest="$(load_state "$rf" | jq -c '.j')"; rm -f "$rf" "$ST/pin-fails"; log_event command_authorized "pin"
+      rest="$(load_state "$rf" | jq -c '.j')"
+      if [[ "$(jq -r '.kind // "run"' "$rf")" == approve ]]; then
+        local ch; ch="$(jq -r '.choice // ""' "$rf")"; rm -f "$rf" "$ST/pin-fails"; log_event approve_authorized "pin"
+        approve_now "$rest" "$ch"; return
+      fi
+      rm -f "$rf" "$ST/pin-fails"; log_event command_authorized "pin"
       ( run_command "$rest" ) &
       return
     fi
     f="$ST/pin-fails"; find "$f" -mmin +60 -delete 2>/dev/null; echo x >> "$f"; fails="$(wc -l < "$f")"
-    log_event pin_wrong "$fails run"; alert "🚨 Wrong PIN while trying to run a command ($fails of 3 in 1 h)."
+    log_event pin_wrong "$fails run"; alert "🚨 Wrong PIN while trying to run a command or approve a dialog ($fails of 3 in 1 h)."
     if (( fails >= 3 )); then
       rm -f "$ST"/to-run/*.json "$f"; log_event command_blocked "3 wrong PINs"
       reply "3 wrong PINs: I cancelled the pending commands. Do it on the PC."
@@ -281,6 +293,73 @@ DANGEROUS='(^|[;&|(` ]|\$\()[[:space:]]*(sudo|su|doas|mkfs[^ ]*|dd|shutdown|rebo
 DANGEROUS2='ws-secret|(^|[[:space:]/~])\.(ssh|aws|azure|kube|gnupg)(/|[[:space:]]|$)|id_(rsa|ed25519|ecdsa)|\.credentials|\.pem([[:space:]]|$)|(^|[;&|[:space:]])(kubectl|helm)[[:space:]](.*[[:space:]])?(delete|apply|uninstall|scale|patch|replace|drain|cordon|rollout|upgrade|install|rollback|exec|cp|edit)([[:space:]]|$)|(^|[;&|[:space:]])az[[:space:]](.*[[:space:]])?(delete|delete-batch|create|update|set|purge|start|stop|restart|deallocate|scale|show-connection-string|list-keys)([[:space:]]|$)|(^|[;&|[:space:]])gh[[:space:]](.*[[:space:]])?(delete|merge|close|create|edit|rerun|cancel)([[:space:]]|$)|(^|[;&|[:space:]])git[[:space:]].*[[:space:]]push([[:space:]]|$)|(curl|wget)[[:space:]](.*[[:space:]])?(-d|--data[a-z-]*|-F|--form|-T|--upload-file|-X|--request|--post-data|--post-file)([[:space:]=]|$)|(^|[;&|][[:space:]]*)((ba|z|da)?sh|source|\.)[[:space:]]+[^-[:space:]]|(^|[;&|][[:space:]]*)\./'
 is_dangerous() { grep -qiE "$DANGEROUS" <<<"$1" || grep -qiE "$DANGEROUS2" <<<"$1"; }
 
+# ▶ Run allow list (WS-AI-018): read-only commands only, as globs over the whole command line. A command runs from
+# Telegram only if it matches one of these, has no shell syntax (; & | ` $( ) < > newline) and passes the block
+# lists too. Anything else arrives with "do it on the PC". Read-only does not mean harmless in a hostile repo
+# (git runs core.fsmonitor and pagers from the repo's config): the tab still needs its sandbox and the PIN.
+RUN_ALLOW=(
+  'git status' 'git status *' 'git log' 'git log *' 'git diff' 'git diff *' 'git show' 'git show *' 'git branch'
+  'git branch -a' 'git branch -vv' 'git branch --show-current' 'git remote -v' 'git rev-parse *' 'git describe*'
+  'git shortlog*' 'git ls-files*' 'git blame *' 'git tag' 'git tag -l*' 'git stash list'
+  'ls' 'ls *' 'pwd' 'echo *' 'date' 'whoami' 'id' 'uname' 'uname *' 'hostname' 'uptime' 'df' 'df *' 'du *' 'free'
+  'free *' 'ps' 'ps *' 'wc *' 'head *' 'tail *' 'cat *' 'which *' 'tree' 'tree *'
+  'node --version' 'npm --version' 'pnpm --version' 'python3 --version' 'dotnet --version' 'go version' 'java -version'
+  'az account show' 'az account show *' 'az account list*' 'az group list*' 'az resource list*'
+  'gh auth status' 'gh pr view*' 'gh pr list*' 'gh pr status*' 'gh pr checks*' 'gh pr diff*' 'gh run list*'
+  'gh run view*' 'gh issue view*' 'gh issue list*' 'gh repo view*'
+  'kubectl get *' 'kubectl describe *' 'kubectl config current-context' 'kubectl config get-contexts*' 'kubectl version*'
+  'kubectl top *' 'kubectl logs *'
+  'helm list*' 'helm status *' 'terraform version' 'terraform fmt -check*' 'terraform validate*'
+  'docker ps' 'docker ps *' 'docker images' 'docker images *' 'docker compose ps*'
+  'tmux ls' 'ws-check' 'ws-health' 'ws-tools' 'ws-telemetry summary*' 'claude --version'
+)
+run_allowed() {
+  local c="$1" g
+  [[ "$c" != *[\;\&\|\`\<\>\$\(\)]* && "$c" != *$'\n'* && "$c" != *'--output'* && "$c" != *.exe* ]] || return 1
+  for g in "${RUN_ALLOW[@]}"; do
+    # shellcheck disable=SC2053
+    [[ "$c" == $g ]] && { ! is_dangerous "$c"; return; }
+  done
+  return 1
+}
+
+# Persistent allows in a permission dialog ("Yes, and don't ask again …", "allow all edits during this session"):
+# never offered from the phone. An approving option is any that does not start with No / Cancel / Reject / Deny.
+PERSISTENT_RE="don'?t ask again|do not ask again|don.t ask again|always allow|allow all|during this session|for this session|for the session|and remember|no (vuelvas|volver) a preguntar|no preguntar (de nuevo|otra vez)|permitir siempre|siempre"
+is_persistent() { grep -qiE "$PERSISTENT_RE" <<<"$1"; }
+is_approval() { ! grep -qiE '^[[:space:]]*(no|cancel|reject|deny)([^[:alnum:]]|$)' <<<"$1"; }
+# approve_mode → "risky" (default: PIN for risky dialogs) or "pin" (PIN for every approval).
+approve_mode() { [[ "$(setting approve risky)" == pin ]] && echo pin || echo risky; }
+
+#######################################
+# Is the permission dialog on screen a risky one, whose approval needs the PIN? Risky = an MCP tool (they run
+# outside the sandbox), a command that matches an ask rule or an excluded command (runs outside the sandbox) of
+# ~/.claude/settings.json, settings.local.json or the normal level (normal-adds.json), or one of the block lists. Input: screen text. Returns: 0 if risky.
+#######################################
+dialog_risky() {
+  local scr="$1" l seg g
+  local -a globs=() lines=()
+  grep -q '(MCP)' <<<"$scr" && return 0
+  mapfile -t globs < <(cat "$HOME/.claude/settings.json" "$HOME/.claude/settings.local.json" \
+      "$HOME/.config/claude-levels/normal-adds.json" 2>/dev/null \
+    | jq -r '(.permissions.ask // [])[], ((.sandbox.excludedCommands // [])[] | "Bash(\(.))")' 2>/dev/null \
+    | sed -n 's/^Bash(\(.*\))$/\1/p' | sed 's/:\*$/*/')
+  # Command lines of the dialog: box drawing and indentation stripped; the option lines and the question skipped.
+  mapfile -t lines < <(tail -n 25 <<<"$scr" | sed -e 's/[│┃╭╮╰╯─]//g' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+    | grep -vE '^(❯[[:space:]]*)?[1-9]\.[[:space:]]|^Do you want|^(Bash command|Tool use|Edit file|Create file|Fetch)$|^$')
+  for l in "${lines[@]}"; do
+    is_dangerous "$l" && return 0
+    while IFS= read -r seg; do
+      seg="${seg#"${seg%%[![:space:]]*}"}"; [[ -n "$seg" ]] || continue
+      for g in "${globs[@]}"; do
+        # shellcheck disable=SC2053
+        [[ "$seg" == $g ]] && return 0
+      done
+    done < <(sed -E 's/(&&|\|\||;|\|)/\n/g' <<<"$l")
+  done
+  return 1
+}
+
 # Does the tab run without a sandbox (solo mode or bare level)? Nothing is offered or run from Telegram there.
 no_sandbox() {
   target "$1" 2>/dev/null || return 1
@@ -319,7 +398,7 @@ sys.exit(1)'
 notify() {
   local full="${5:-}"
   configured && ! is_off || { [[ -n "$full" ]] && rm -f "$full"; return 0; }
-  local kind="$1" p="$2" body="$3" tp="${4:-$2}" title scr ops="" text h f is_open=false src="$3"
+  local kind="$1" p="$2" body="$3" tp="${4:-$2}" title scr ops="" text h f is_open=false src="$3" risky=false
   if [[ -n "$full" && -f "$full" ]]; then src="$(cat "$full")"; rm -f "$full"; fi
   # Open question from Claude (ends in ?; with `ws-lang es`, also one opened with the inverted mark, key
   # telegram.question of the language packs): if text replies are on, it can be answered.
@@ -329,6 +408,7 @@ notify() {
   if [[ "$kind" == wait ]]; then
     sleep 0.8   # let the dialog finish drawing
     scr="$(screen "$p")"; ops="$(options <<<"$scr")"
+    { [[ "$(approve_mode)" == pin ]] || dialog_risky "$scr"; } && risky=true
     text="$title"$'\n'"$body"$'\n\n'"$(tail -n 18 <<<"$scr" | redact | cut -c1-200)"
   else
     text="$title"$'\n'"$(redact <<<"$body")"
@@ -341,8 +421,10 @@ notify() {
   : > "$ST/recent/$h"
   f="$ST/outbox/$(date +%s%N).json"
   jq -nc --arg kind "$kind" --arg p "$p" --arg t "$text" --arg o "$ops" --arg h "$(fingerprint "$p" "$ops")" --argjson oq "$is_open" \
-     '{type: $kind, pane: $p, text: $t, hash: $h, open: $oq,
-       options: ($o | split("\n") | map(select(length > 0) | split("\t") | {n: .[0], t: .[1]}))}' > "$f.tmp" && mv "$f.tmp" "$f"
+     --argjson risky "$risky" --arg pre "$PERSISTENT_RE" \
+     '{type: $kind, pane: $p, text: $t, hash: $h, open: $oq, risky: $risky,
+       options: ($o | split("\n") | map(select(length > 0) | split("\t") | {n: .[0], t: .[1]}
+                 | .p = (.t | test($pre; "i")) | .a = ((.t | test("^\\s*(no|cancel|reject|deny)(\\W|$)"; "i")) | not)))}' > "$f.tmp" && mv "$f.tmp" "$f"
   log_event notice "$kind $p"
   # Each `!` command Claude asks you for, in its own message (easy to copy) with ▶ Run if it is safe.
   # A command that changes when redacted (it carried a secret) is sent as dangerous: no button.
@@ -354,7 +436,7 @@ notify() {
       if [[ -f "$ST/proposed/$hc" ]] && (( $(date +%s) - $(stat -c %Y "$ST/proposed/$hc") < 1800 )); then continue; fi
       : > "$ST/proposed/$hc"   # the same command in the same tab: once every 30 min
       redacted="$(redact <<<"$c")"; i=$((i + 1)); danger=false
-      { is_dangerous "$c" || [[ "$redacted" != "$c" ]] || no_sandbox "$p"; } && danger=true
+      { ! run_allowed "$c" || [[ "$redacted" != "$c" ]] || no_sandbox "$p"; } && danger=true
       jq -nc --arg p "$p" --arg c "$c" --arg r "$redacted" --argjson danger "$danger" \
         '{type: "command", pane: $p, command: $c, text: $r, hash: "", options: [], dangerous: $danger}' > "$f.c$i.tmp" \
         && mv "$f.c$i.tmp" "${f%.json}_c$i.json"   # _c > . in sort order: they arrive after the notification
@@ -373,7 +455,7 @@ send_command() {
   n16=$(( $(printf '%s' "$t" | iconv -f UTF-8 -t UTF-16LE | wc -c) / 2 ))   # Telegram counts in UTF-16
   nonce="$(head -c 5 /dev/urandom | od -An -tx1 | tr -d ' \n')"
   if [[ "$(jq -r .dangerous <<<"$j")" == true ]]; then
-    kb='[]'; body="$t"$'\n\n'"⚠ Do it on the PC: this command is not run from Telegram."
+    kb='[]'; body="$t"$'\n\n'"⚠ Do it on the PC: this command is not run from Telegram (only read-only commands of the allow list are)."
   else
     kb="$(jq -nc --arg c "$nonce" '[[{text: "▶ Run", callback_data: "\($c):r"}]]')"; body="$t"
   fi
@@ -401,7 +483,10 @@ send_command() {
 run_command() {
   local j="$1" p cmd mid t folder tr start=0 res="" note="" deadline prev cur stable=0
   p="$(jq -r .pane <<<"$j")"; cmd="$(jq -r .command <<<"$j")"; mid="$(jq -r .mid <<<"$j")"; t="$(jq -r .text <<<"$j")"
-  if is_dangerous "$cmd"; then close_msg "$mid" "$t" "✖ Not run from Telegram"; log_event command_blocked "$p"; return; fi
+  if [[ -e "$STOPMARK" ]]; then
+    close_msg "$mid" "$t" "⛔ Emergency stop is on: nothing runs (ws-stop-all --clear on the PC)"; log_event command_blocked "$p stop-all"; return
+  fi
+  if ! run_allowed "$cmd"; then close_msg "$mid" "$t" "✖ Not run from Telegram (not a read-only command of the allow list)"; log_event command_blocked "$p"; return; fi
   if no_sandbox "$p"; then close_msg "$mid" "$t" "✖ That tab runs without a sandbox: do it on the PC"; log_event command_blocked "$p no_sandbox"; return; fi
   target "$p"
   if [[ -z "${WS_TELEGRAM_NO_CLAUDE_CHECK:-}" ]] &&
@@ -475,9 +560,13 @@ send_pending() {
     if [[ "$(jq -r '.type // ""' <<<"$j")" == command ]]; then send_command "$f" "$j"; continue; fi
     if [[ "$(jq -r '.type // ""' <<<"$j")" == alert ]]; then send_alert "$f" "$j"; continue; fi
     nonce="$(head -c 5 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-    kb="$(jq -c --arg c "$nonce" '[.options[] | [{text: ("\(.n) · " + (.t[0:40])), callback_data: "\($c):\(.n)"}]]
+    # Persistent allows are left out; approving a risky dialog is marked 🔐 (it asks for the PIN).
+    kb="$(jq -c --arg c "$nonce" '(.risky // false) as $r | [.options[] | select((.p // false) | not)
+             | [{text: ((if $r and (.a // false) then "🔐 " else "" end) + "\(.n) · " + (.t[0:40])), callback_data: "\($c):\(.n)"}]]
            + (if (.options | length) > 0 and .type != "ask" then [[{text: "⎋ Cancel", callback_data: "\($c):esc"}]] else [] end)' <<<"$j")"
     local tx oq; tx="$(jq -r .text <<<"$j")"; oq="$(jq -r '.open // false' <<<"$j")"
+    [[ "$(jq -r '[.options[]? | select(.p // false)] | length' <<<"$j")" != 0 ]] && tx+=$'\n\n'"\"Don't ask again\" is answered only on the PC."
+    [[ "$(jq -r '.risky // false' <<<"$j")" == true ]] && tx+=$'\n'"🔐 Approving asks for your PIN."
     [[ "$oq" == true ]] && tx+=$'\n\n'"↩ To answer Claude: Reply to this message, starting with your PIN (expires in 15 min)."
     r="$(tg sendMessage "$(jq -nc --arg c "$CHAT" --arg t "$tx" --argjson kb "$kb" \
            '{chat_id: $c, text: $t, disable_web_page_preview: true} + (if ($kb | length) > 0 then {reply_markup: {inline_keyboard: $kb}} else {} end)')")"
@@ -489,7 +578,7 @@ send_pending() {
       fi
       if [[ "$kb" != "[]" ]]; then
         mkdir -p "$ST/pending"
-        jq -c --arg m "$mid" --argjson v "$(( $(date +%s) + EXPIRES ))" '{pane, hash, options, text, file: (.file // ""), mid: $m, expires: $v}' <<<"$j" > "$ST/pending/$nonce.json"
+        jq -c --arg m "$mid" --argjson v "$(( $(date +%s) + EXPIRES ))" '{pane, hash, options, text, file: (.file // ""), risky: (.risky // false), mid: $m, expires: $v}' <<<"$j" > "$ST/pending/$nonce.json"
       fi
       remember_message "$mid" "$(jq -r '.pane // ""' <<<"$j")"; rm -f "$f"; log_event sent "$mid"
     else
@@ -553,7 +642,7 @@ send_alert() {
     (( $(date +%s) - $(stat -c %Y "$f") > 600 )) && rm -f "$f"
   fi
 }
-alert_action() {   # alert buttons: k = /compact in that tab · p = switch the tab to the other account
+alert_action() {   # alert buttons: k = /compact in that tab · p = switch the tab to the other account · h = stop it
   local j="$1" e="$2" p mid t
   p="$(jq -r .pane <<<"$j")"; mid="$(jq -r .mid <<<"$j")"; t="$(jq -r .text <<<"$j")"
   [[ "$p" =~ ^%[0-9]+$ ]] || { close_msg "$mid" "$t" "✖ Unknown tab"; return; }
@@ -567,6 +656,8 @@ alert_action() {   # alert buttons: k = /compact in that tab · p = switch the t
     p) if command -v claude-account >/dev/null && claude-account tab "$p" >/dev/null 2>&1; then
          close_msg "$mid" "$t" "✔ The tab switched accounts and resumes the conversation ($(date +%H:%M))"; log_event action "account $p"
        else close_msg "$mid" "$t" "✖ Could not switch accounts; do it on the PC (Menu → Claude)"; fi ;;
+    h) ws-stop-all --pane "$p" --yes --reason "Telegram: stop this tab" </dev/null >/dev/null 2>&1
+       close_msg "$mid" "$t" "⛔ Stopped the Claude in that tab ($(date +%H:%M))"; log_event action "stop $p" ;;
   esac
 }
 
@@ -667,6 +758,8 @@ check_alerts() {
       local newver rcv; newver="$(ws-kit-update --check 2>/dev/null)"; rcv=$?
       if (( rcv == 10 )) && alert_rl "version-$(head -1 <<<"$newver" | md5sum | cut -c1-8)" 100000; then
         alert "⬆️ $newver"$'\n\n'"On the PC: ws-kit-update (tests everything and rolls back if something fails)."
+      elif (( rcv == 11 )) && alert_rl "version-bad-$(head -1 <<<"$newver" | md5sum | cut -c1-8)" 100000; then
+        alert "🚨 $newver"$'\n\n'"A kit release whose signature does not verify: it is not installed. Check the repository on the PC."
       fi
     fi
   fi
@@ -681,6 +774,23 @@ check_alerts() {
   local wday whour; wday="$(setting weekly_day 1)"; whour="$(setting weekly_hour 9)"
   if [[ -z "${WS_TELEGRAM_NO_WORKSTATION:-}" ]] && (( 10#$(date +%u) > wday || (10#$(date +%u) == wday && 10#$(date +%H) >= 10#$whour) )) && alert_rl "week-$(date +%G-W%V)" 100000 "semana-$(date +%G-W%V)"; then
     ( weekly_summary ) &
+  fi
+
+  # 14. Anomalies (WS-AI-030): a session with many blocked or denied actions, with a button that stops its tab
+  if [[ "$(setting anomaly on)" == on ]]; then
+    local ases an akinds aproj apane
+    while IFS=$'\t' read -r ases an akinds aproj apane; do
+      [[ -n "$ases" ]] && alert_rl "anomaly-${ases//[^A-Za-z0-9_-]/_}" 30 || continue
+      alert "🚨 $an blocked or denied actions in $(setting anomaly_min 10) min in $aproj ($akinds). An agent may be probing for a way out." \
+        "${apane:+h=⛔ Stop this tab}" "$apane"
+    done < <(ws-anomaly --tsv --threshold "$(setting anomaly_n 5)" --minutes "$(setting anomaly_min 10)" 2>/dev/null)
+  fi
+  # 15. Approval fatigue (WS-AI-006), hourly
+  if [[ -z "${WS_TELEGRAM_NO_WORKSTATION:-}" && "$(setting prompts on)" == on ]] && alert_rl prompts-check 60; then
+    local pk ptext
+    while IFS=$'\t' read -r pk _ ptext; do
+      [[ -n "$pk" ]] && alert_rl "prompts-$pk-$(date +%F)" 1440 && alert "🖐 $ptext"
+    done < <(timeout 120 ws-telemetry prompts --alerts --rate "$(setting prompts_rate 30)" 2>/dev/null)
   fi
 
   # 8. Daily summary
@@ -745,7 +855,8 @@ handle_button() {
     answer_cb "$id" "Not authorized"; log_event unauthorized "from=$from"
     alert_rl "sec-unauth" 10 && alert "🚨 Someone other than you pressed a button of your bot (id $from). Nothing was done."; return
   fi
-  [[ "$data" =~ ^([0-9a-f]{10}):([1-9snxrkp]|esc)$ ]] || { answer_cb "$id" "Invalid button"; log_event invalid ""; return; }
+  [[ -e "$STOPMARK" ]] && { answer_cb "$id" "Emergency stop is on: nothing is sent"; log_event command_blocked stop-all; return; }
+  [[ "$data" =~ ^([0-9a-f]{10}):([1-9snxrkph]|esc)$ ]] || { answer_cb "$id" "Invalid button"; log_event invalid ""; return; }
   nonce="${BASH_REMATCH[1]}"; choice="${BASH_REMATCH[2]}"; pend="$ST/pending/$nonce.json"
   [[ -f "$pend" ]] || { answer_cb "$id" "Already answered or expired"; return; }
   local j; j="$(load_state "$pend")"; rm -f "$pend"   # single use
@@ -760,24 +871,12 @@ handle_button() {
   fi
   if [[ "$(jq -r '.type // ""' <<<"$j")" == command ]]; then   # ▶ Run of a command proposed by Claude
     [[ "$choice" == r ]] || { answer_cb "$id" "Invalid button"; return; }
-    if run_needs_pin; then
-      if [[ -z "$PIN" ]]; then
-        log_event command_blocked "no PIN"; answer_cb "$id" "Your PIN is missing. On the PC: ws-telegram text pin"; return
-      fi
-      local pm
-      pm="$(tg sendMessage "$(jq -nc --arg c "$CHAT" --arg r "$(jq -r .mid <<<"$j")" \
-              '{chat_id: $c, text: "🔐 To run it, reply to THIS message with your PIN (5 min).", reply_parameters: {message_id: ($r | tonumber), allow_sending_without_reply: true}}')" | jq -r '.result.message_id // empty')"
-      [[ -n "$pm" ]] || { answer_cb "$id" "Could not ask for the PIN"; return; }
-      mkdir -p "$ST/to-run"
-      jq -nc --argjson j "$j" --argjson v "$(( $(date +%s) + 300 ))" '{j: $j, expires: $v}' > "$ST/to-run/$pm.json"; chmod 600 "$ST/to-run/$pm.json"
-      log_event command_asks_pin "$(jq -r .pane <<<"$j")"; answer_cb "$id" "Reply with your PIN"
-      return
-    fi
+    if run_needs_pin; then ask_pin "$id" "$j" run ""; return; fi
     answer_cb "$id" "Running…"
     ( run_command "$j" ) &
     return
   fi
-  [[ "$choice" =~ ^[rkp]$ ]] && { answer_cb "$id" "Invalid button"; return; }
+  [[ "$choice" =~ ^[rkph]$ ]] && { answer_cb "$id" "Invalid button"; return; }
   local afile; afile="$(jq -r '.file // ""' <<<"$j")"
   if [[ -n "$afile" ]]; then   # own question (routing window): the answer goes to its file
     label="$(jq -r --arg n "$choice" '.options[] | select(.n == $n) | .t' <<<"$j")"
@@ -797,11 +896,64 @@ handle_button() {
     answer_cb "$id" "The screen changed; I sent nothing"; close_msg "$(jq -r .mid <<<"$j")" "$(jq -r .text <<<"$j")" "↺ The screen changed; nothing was sent"
     log_event changed "$p"; return
   fi
+  if [[ "$choice" != esc ]]; then
+    label="$(jq -r --arg n "$choice" '.options[] | select(.n == $n) | .t' <<<"$j")"
+    [[ -n "$label" ]] || { answer_cb "$id" "Invalid button"; return; }
+    if is_persistent "$label"; then   # never sent from the phone, even if a button for it arrives
+      answer_cb "$id" "Only on the PC"; close_msg "$(jq -r .mid <<<"$j")" "$(jq -r .text <<<"$j")" "✖ \"Don't ask again\" is answered only on the PC"
+      log_event refused_persistent "$p"; return
+    fi
+    if is_approval "$label" && { [[ "$(jq -r '.risky // false' <<<"$j")" == true || "$(approve_mode)" == pin ]] || dialog_risky "$(screen "$p")"; }; then
+      ask_pin "$id" "$j" approve "$choice"; return
+    fi
+  fi
   if [[ "$choice" == esc ]]; then send_key "$p" Escape; label="Cancel"
-  else send_key "$p" "$choice"; label="$choice · $(jq -r --arg n "$choice" '.options[] | select(.n == $n) | .t' <<<"$j")"; fi
+  else send_key "$p" "$choice"; label="$choice · $label"; fi
   answer_cb "$id" "Sent: $label"
   close_msg "$(jq -r .mid <<<"$j")" "$(jq -r .text <<<"$j")" "✔ You answered: $label ($(date +%H:%M))"
   log_event reply "$p $choice"
+}
+
+#######################################
+# Asks for the PIN before running a command (▶ Run) or approving a risky dialog: the button sends nothing; a
+# message asks you to Reply with the PIN. Expires in 5 min, or with the dialog if that comes first.
+# Arguments: callback id, pending JSON, kind (run|approve), option number (approve).
+#######################################
+ask_pin() {
+  local id="$1" j="$2" kind="$3" choice="$4" pm txt v
+  if [[ -z "$PIN" ]]; then
+    log_event "$( [[ $kind == run ]] && echo command_blocked || echo approve_blocked )" "no PIN"
+    answer_cb "$id" "This needs your PIN, and none is set. On the PC: ws-telegram text pin"; return
+  fi
+  if [[ "$kind" == run ]]; then txt="🔐 To run it, reply to THIS message with your PIN (5 min)."
+  else txt="🔐 To approve option $choice, reply to THIS message with your PIN (5 min). The dialog must still be on screen."; fi
+  pm="$(tg sendMessage "$(jq -nc --arg c "$CHAT" --arg r "$(jq -r .mid <<<"$j")" --arg t "$txt" \
+          '{chat_id: $c, text: $t, reply_parameters: {message_id: ($r | tonumber), allow_sending_without_reply: true}}')" | jq -r '.result.message_id // empty')"
+  [[ -n "$pm" ]] || { answer_cb "$id" "Could not ask for the PIN"; return; }
+  v=$(( $(date +%s) + 300 ))
+  if [[ "$kind" == approve ]] && (( $(jq -r '.expires // 0' <<<"$j") < v )); then v="$(jq -r .expires <<<"$j")"; fi
+  mkdir -p "$ST/to-run"
+  jq -nc --argjson j "$j" --argjson v "$v" --arg k "$kind" --arg ch "$choice" '{j: $j, expires: $v, kind: $k, choice: $ch}' > "$ST/to-run/$pm.json"
+  chmod 600 "$ST/to-run/$pm.json"
+  log_event "$( [[ $kind == run ]] && echo command_asks_pin || echo approve_asks_pin )" "$(jq -r .pane <<<"$j")"
+  answer_cb "$id" "Reply with your PIN"
+}
+
+# approve_now <pending JSON> <option> — after the right PIN: sends the key only if the same dialog is still on screen.
+approve_now() {
+  local j="$1" choice="$2" p mid t label
+  p="$(jq -r .pane <<<"$j")"; mid="$(jq -r .mid <<<"$j")"; t="$(jq -r .text <<<"$j")"
+  label="$(jq -r --arg n "$choice" '.options[] | select(.n == $n) | .t' <<<"$j")"
+  if [[ ! "$choice" =~ ^[1-9]$ ]] || is_persistent "$label"; then close_msg "$mid" "$t" "✖ Not sent"; return; fi
+  if [[ -e "$STOPMARK" ]]; then   # the stop may have started while you typed the PIN
+    close_msg "$mid" "$t" "⛔ Emergency stop is on: nothing was sent"; log_event command_blocked "$p stop-all"; return
+  fi
+  if [[ "$(fingerprint "$p" "$(options <<<"$(screen "$p")")")" != "$(jq -r .hash <<<"$j")" ]]; then
+    close_msg "$mid" "$t" "↺ The screen changed; nothing was sent"; log_event changed "$p"; return
+  fi
+  send_key "$p" "$choice"
+  close_msg "$mid" "$t" "✔ You approved with your PIN: $choice · $label ($(date +%H:%M))"
+  log_event reply "$p $choice pin"
 }
 
 clean_expired() {
@@ -826,7 +978,7 @@ service() {
   fi
   configured || exit 0
   CHAT="$(chat_id)"; TOKEN="$(token)"; [[ -n "$TOKEN" ]] || { log_event error "no token"; exit 1; }
-  PIN=""; { text_enabled || run_needs_pin; } && PIN="$(pin)"   # in the service's memory; it lives in the Windows Credential Manager
+  PIN="$(pin)"   # in the service's memory (▶ Run, risky approvals, text replies); it lives in the Windows Credential Manager
   log_event service start
   local version; version="$(stat -c %Y "$0" 2>/dev/null)"
   local offset r u
@@ -913,6 +1065,22 @@ selftest() {   # no network: options and redaction (used by ws-test)
   for c in "npm test" "az account show" "ls -la" "git status" "kubectl get pods -A" "terraform plan"; do
     ! is_dangerous "$c" || { echo "should not have blocked: $c"; return 1; }
   done
+  # ▶ Run allow list: read-only commands only; anything else, or with shell syntax, is not offered.
+  for c in "git status" "ls -la" "az account show" "kubectl get pods -A" "echo hello" "gh pr view 12" "git log --oneline -5"; do
+    run_allowed "$c" || { echo "run allow list should allow: $c"; return 1; }
+  done
+  for c in "npm test" "terraform plan" "git push" "git status; rm -rf ~" "ls \$(whoami)" "cat ~/.ssh/id_ed25519" \
+           "echo x > /etc/passwd" "git diff --output=/tmp/x" "curl https://example.com" "python3 -c 'import os'" \
+           "kubectl delete pod x" "cmd.exe /c echo" "env rm -rf /" "ls | sh" "git branch -D main" "az account set -s x"; do
+    ! run_allowed "$c" || { echo "run allow list should refuse: $c"; return 1; }
+  done
+  # Permission dialogs: persistent allows and risky dialogs.
+  is_persistent "Yes, and don't ask again for npm test commands" && is_persistent "Yes, allow all edits during this session" \
+    && ! is_persistent "Yes" || { echo "persistent options"; return 1; }
+  is_approval "Yes" && ! is_approval "No, and tell Claude what to do differently (esc)" || { echo "approval options"; return 1; }
+  dialog_risky $' Bash command\n   sudo rm -rf /var/x\n Do you want to proceed?\n ❯ 1. Yes\n   2. No' || { echo "risky: dangerous"; return 1; }
+  dialog_risky $' Tool use\n   azure - keyvault_secret_get (MCP)\n Do you want to proceed?\n ❯ 1. Yes' || { echo "risky: MCP"; return 1; }
+  ! dialog_risky $' Bash command\n   npm test\n Do you want to proceed?\n ❯ 1. Yes\n   2. No' || { echo "not risky: npm test"; return 1; }
   echo "ok"
 }
 
@@ -927,6 +1095,13 @@ case "${1:-}" in
   summary) configured || die "first: ws-telegram setup"; daily_summary; ensure; echo "Summary queued; it arrives in a few seconds." ;;
   alerts)   # ws-telegram alerts on|off
     mkdir -p "$CFG"; touch "$CFG/settings"; sed -i -E "/^(alerts|alertas)=/d" "$CFG/settings"; echo "alerts=${2:-on}" >> "$CFG/settings"; echo "Alerts: ${2:-on}" ;;
+  approve)   # PIN for risky approvals only (default) or for every approval
+    mkdir -p "$CFG"; touch "$CFG/settings"
+    case "${2:-}" in
+      pin|risky) sed -i -E "/^approve=/d" "$CFG/settings"; echo "approve=$2" >> "$CFG/settings"
+                 echo "Approvals from Telegram: $([[ $2 == pin ]] && echo "every approval asks for your PIN" || echo "risky dialogs ask for your PIN")" ;;
+      *) echo "Usage: ws-telegram approve risky|pin"; echo "Status: $(approve_mode)"; exit 0 ;;
+    esac ;;
   run)   # ▶ Run from Telegram: with PIN (default) or direct
     mkdir -p "$CFG"
     case "${2:-}" in
@@ -975,7 +1150,7 @@ case "${1:-}" in
     if service_alive; then echo "Service: running (PID $(cat "$ST/service.pid"))"; else echo "Service: stopped (ws-telegram ensure)"; fi
     echo "Pending an answer: $(find "$ST/pending" -name '*.json' 2>/dev/null | wc -l)"
     echo "Text replies: $(text_enabled && echo "on (with PIN)" || echo off)"
-    echo "▶ Run: $(run_needs_pin && echo "asks for your PIN" || echo "no PIN")"
+    echo "▶ Run: $(run_needs_pin && echo "asks for your PIN" || echo "no PIN") · approvals: PIN for $( [[ $(approve_mode) == pin ]] && echo every one || echo risky dialogs)"
     tail -n 5 "$LOGD/$(date +%F).jsonl" 2>/dev/null ;;
   forget)
     read -rp "Delete Telegram token, chat and state? [y/N] " r; [[ "$r" =~ ^([yY]|[yY][eE][sS]|[sS]|[sS][iIíÍ])$ ]] || exit 0

@@ -1,0 +1,34 @@
+{
+  "sandbox": {
+    "excludedCommands": [
+      "aws *",
+      "az *",
+      "azd *",
+      "gh *",
+      "git clone *",
+      "git fetch *",
+      "git ls-remote *",
+      "git pull *",
+      "git push *",
+      "helm *",
+      "k6 *",
+      "kubectl *",
+      "kubelogin *",
+      "mysql *",
+      "obsidian *",
+      "psql *",
+      "pwsh.exe *",
+      "sqlcmd *",
+      "terraform *",
+      "docker ps *",
+      "docker images *",
+      "docker logs *",
+      "docker inspect *",
+      "docker version",
+      "docker info",
+      "docker compose ps *",
+      "docker compose logs *",
+      "docker scout *"
+    ]
+  }
+}

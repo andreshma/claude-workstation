@@ -148,8 +148,9 @@ for l in "${list[@]}"; do
   ensure_session "$g"
   (( win )) && import_conv "${file[$d]}" "$d"
   w="$(tmux new-window -d -P -F '#{window_id}' -t "=$g:" -n "$n" -c "$d")"
-  if (( start )); then tmux send-keys -t "$w" "claude --resume $id" Enter
-  else tmux send-keys -t "$w" "claude --resume $id"; fi   # ready: Enter to resume
+  # claude-resume: at the normal level, with exactly that conversation.
+  if (( start )); then tmux send-keys -t "$w" "claude-resume --resume $id" Enter
+  else tmux send-keys -t "$w" "claude-resume --resume $id"; fi   # ready: Enter to resume
   echo "  opened   [$g] $n"
 done
 

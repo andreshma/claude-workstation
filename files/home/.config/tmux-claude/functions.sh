@@ -1,9 +1,12 @@
 # shellcheck shell=bash
 # Functions to open repos with Claude Code in tmux. Loaded from ~/.bashrc.
 
-# _claude_cmd <dir> — "claude --continue" if that directory already has conversations, otherwise "claude".
+# _claude_cmd <dir> — the command a new tab starts Claude with: the normal level (tmux-level --command normal:
+# claude-resume, which continues the folder's conversation or starts a new one, with normal's sandbox exclusions).
+# Without tmux-level: "claude --continue" if that directory already has conversations, otherwise "claude".
 _claude_cmd() {
-  local k="${1//[^A-Za-z0-9]/-}"
+  local k="${1//[^A-Za-z0-9]/-}" c
+  if c="$("$HOME/.local/bin/tmux-level" --command normal 2>/dev/null)" && [[ -n "$c" ]]; then echo "$c"; return; fi
   if compgen -G "$HOME/.claude/projects/$k/*.jsonl" >/dev/null; then echo "claude --continue"; else echo "claude"; fi
 }
 

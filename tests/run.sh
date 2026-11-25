@@ -43,6 +43,13 @@ check "exports directories (hooks, agents)" test -f "$K/files/home/.claude/hooks
 check "keeps execute permissions" test -x "$K/files/home/.claude/hooks/guard.sh"
 check "skips *.bak.* backups" not test -e "$K/files/home/.claude/hooks/guard.sh.bak.20260101"
 check "exports the MCP servers" test "$(jq -r 'keys[0]' "$K/files/mcp-servers.json")" = recall
+# A later export merges the MCP servers (an opt-in one that is not registered here stays) and keeps the kit-only
+# files that do not come from $HOME (the MCP lock and the managed policy template).
+echo '{"servers":{}}' > "$K/files/mcp-servers.lock.json"; mkdir -p "$K/files/etc/claude-code"; echo '{}' > "$K/files/etc/claude-code/managed-settings.json"
+jq '. + {"chrome-devtools": {"type": "stdio", "command": "x"}}' "$K/files/mcp-servers.json" > "$T/mcp.json" && mv "$T/mcp.json" "$K/files/mcp-servers.json"
+HOME="$A" WIN_USER=nobody.x bash "$K/export.sh" > "$T/exp2.log" 2>&1
+check "a second export keeps a kit MCP server that is not registered here" jq -e 'has("chrome-devtools") and has("recall")' "$K/files/mcp-servers.json"
+check "and keeps the MCP lock and the managed policy template" test -f "$K/files/mcp-servers.lock.json" -a -f "$K/files/etc/claude-code/managed-settings.json"
 
 check "guard.sh (in secrets-allow) does not block the export" grep -q 'No secrets' "$T/exp.log"
 check "turns personal paths into a template" grep -q '@WINHOME@/repos @HOME@/code' "$K/files/home/.config/tmux-claude/functions.sh"

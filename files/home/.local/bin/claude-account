@@ -17,6 +17,7 @@
 #   claude-account projects           lists the projects with a pinned account
 #   claude-account status             default account, organization of each one and projects with a pinned account
 set -euo pipefail
+PATH="$HOME/.local/bin:$PATH"   # tmux menus may start it with a minimal PATH (tmux-level, claude-resume)
 M="$HOME/.claude"
 P="$HOME/.claude-personal"
 CONF="$HOME/.config/claude-accounts"
@@ -89,7 +90,7 @@ claude_running() {
 }
 
 tab() {
-  local pane="${1:-$(tmux display -p '#{pane_id}')}" win current target cmd extra="" i name om op
+  local pane="${1:-$(tmux display -p '#{pane_id}')}" win current target cmd extra="" sp i name om op
   win="$(tmux display -p -t "$pane" '#{window_id}')"
   current="$(tmux show -wqv -t "$win" @caccount)"
   [[ -n "$current" ]] || current="$(cat "$CONF/active" 2>/dev/null || echo work)"
@@ -107,7 +108,12 @@ tab() {
   # The personal account needs the startup state; without it, Claude would show the login screen.
   [[ "$target" == personal ]] && ! jq -e '.hasCompletedOnboarding' "$P/.claude.json" >/dev/null 2>&1 && setup >/dev/null
   # If the tab is in solo mode, keep that mode when switching accounts.
-  [[ -n "$(tmux show -wqv -t "$win" @csolo)" ]] && extra=" --permission-mode auto --settings '$HOME/.config/claude-solo/settings.json'"
+  # The profile carries the level (ADR-013): solo's, or normal's sandbox exclusions (claude-resume adds them itself).
+  if [[ -n "$(tmux show -wqv -t "$win" @csolo)" ]]; then
+    if [[ -n "$(tmux show -wqv -t "$win" @csolo_nosb)" ]]; then sp="${WS_LEVELS_DIR:-$HOME/.config/claude-levels}/solo-unsandboxed.json"
+    else sp="$(tmux-level --settings-file solo 2>/dev/null)" || sp="$HOME/.config/claude-solo/settings.json"; fi
+    extra=" --permission-mode auto --settings '$sp'"
+  fi
   if claude_running "$pane"; then
     # Ctrl+C first: it clears whatever is typed in the input box; otherwise «<text>/exit» is sent as a message and
     # Claude never closes. If /exit still does not close it in 10 s, Ctrl+C twice (Claude's own way out).

@@ -9,6 +9,13 @@ Usage:
   ws-audit --ai     also runs REAL sandbox escape tests with `claude -p` in a temporary
                         folder (tries to write outside, read secrets, reach the internet); spends a
                         little Claude usage
+  ws-audit --verify-log [folder]   only checks the hash chain of the Claude audit log (~/.claude/audit) and the
+                        anchors in %UserProfile%\\ws-telemetry\\audit-anchors.txt; exit 1 if a line was edited,
+                        deleted or reordered (WS-SEC-011). It reports, it never repairs.
+  ws-audit --compliance [--json] [--kit DIR] [--catalogue FILE] [--only ID,…] [--no-run]
+                        runs the read-only checks of the control catalogue (docs/compliance/controls.yaml in the kit
+                        checkout, $WS_KIT, default ~/code/claude-workstation) and prints coverage per framework;
+                        exit 1 when an implemented control fails its check (WS-GOV-005). See ws_compliance.py.
 Reports: ~/.local/share/ws-telemetry/audit.{html,md}, a copy of the HTML in
 %UserProfile%\\ws-telemetry and of the .md in $REPOS/ws-audit/ (to review it with Claude).
 It never prints secret values: only names, permissions and counts.
@@ -21,6 +28,7 @@ import html
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -268,16 +276,37 @@ def p_sandbox() -> None:
     dom = net.get("allowedDomains", [])
     broad = [d for d in dom if d in ("*", "*.*") or re.fullmatch(r"\*\.(com|net|org|io|dev|app)", d)]
     res("ok" if not broad else "fail", f"allowed domains: {len(dom)}", "too broad: " + ", ".join(broad) if broad else "", "Use specific domains.")
-    exc = sb.get("excludedCommands", [])
+    # Commands that leave the sandbox: the user settings (strict, ADR-013) plus what the normal level adds.
+    exc = sb.get("excludedCommands", []) + jload(H / ".config/claude-levels/normal-adds.json").get("sandbox", {}).get("excludedCommands", [])
+    res("ok" if not sb.get("excludedCommands") else "warn", "the user settings exclude no command from the sandbox",
+        ", ".join(sb.get("excludedCommands", [])[:8]), "Move them to ~/.config/claude-levels/normal-adds.json (the normal level adds them).")
     # Dangerous outside the sandbox: interpreters, network clients and docker that creates or enters containers
     # (read-only docker ps/logs/inspect do not give access to the filesystem).
     dangerous = [e for e in exc if re.match(r"(bash|sh|zsh|python3?|node|podman|curl|wget|ssh|scp|nc|socat|env|sudo)\b", e)
                   or re.fullmatch(r"docker \*|docker\s+(run|exec|cp|build|pull|push|compose\s+(up|run|exec))\b.*", e)]
     res("ok" if not dangerous else "fail", f"commands outside the sandbox: {len(exc)}", "can leave the sandbox entirely: " + ", ".join(dangerous) if dangerous else ", ".join(exc[:12]),
         "Remove interpreters, docker and network clients from excludedCommands.")
+    # A repository's own settings are added to every level, full included (WS-AI-002): excluded commands in either
+    # project file, or allow rules in the committed one, widen what the kit's profiles promise.
+    roots = [Path(p) for p in (os.environ.get("REPOS", ""), str(H / "code")) if p and Path(p).is_dir()]
+    widen = []
+    for root in roots:
+        for f in sorted(glob.glob(f"{root}/*/.claude/settings.json") + glob.glob(f"{root}/*/.claude/settings.local.json")
+                        + glob.glob(f"{root}/*/*/.claude/settings.json") + glob.glob(f"{root}/*/*/.claude/settings.local.json")):
+            d = jload(Path(f))
+            what = (["excludedCommands"] if d.get("sandbox", {}).get("excludedCommands") else []) \
+                + (["allow"] if f.endswith("/settings.json") and d.get("permissions", {}).get("allow") else [])
+            if what:
+                widen.append(f"{Path(f).parent.parent.name} ({', '.join(what)})")
+    res("ok" if not widen else "warn", f"repositories whose .claude settings widen every level: {len(widen)}", ", ".join(widen[:6]),
+        "Review those rules: a repo's excluded commands and allow rules apply even at the full level.")
+    # Solo mode (ADR superseding part of ADR-012, WS-AI-004): auto mode INSIDE the sandbox. The profile only turns on
+    # autoAllowBashIfSandboxed; permissions, deny, hooks and the network allowlist stay the normal ones.
     solo = jload(H / ".config/claude-solo/settings.json")
-    res("ok" if solo == {"sandbox": {"enabled": False}} else "warn", "solo mode profile", json.dumps(solo)[:90],
-        "It must disable only the sandbox; permissions, deny and hooks stay the normal ones.")
+    want = {"sandbox": {"enabled": True, "autoAllowBashIfSandboxed": True}}
+    res("ok" if solo == want else ("fail" if solo.get("sandbox", {}).get("enabled") is False else "warn"), "solo mode profile",
+        json.dumps(solo)[:90], f"It must be exactly {json.dumps(want)}: solo keeps the sandbox (tmux-solo this --unsandboxed is the "
+        "audited exception).")
     # Environment variables with secrets: the sandbox does NOT filter the environment.
     suspect = [k for k in os.environ if re.search(r"(TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|CLIENT_SECRET|CONNECTION_STRING)", k) and k not in ("GPG_TTY",)]
     res("ok" if not suspect else "fail", "secrets in environment variables", ", ".join(suspect), "Claude and its commands inherit the environment: move them to a vault.")
@@ -315,6 +344,84 @@ def escape_tests() -> None:
 
 
 # ============================================================================================
+AUDIT_DIR = Path(os.environ.get("CLAUDE_AUDIT_DIR") or H / ".claude/audit")
+
+
+def anchors_file(d: Path) -> Path | None:
+    """Anchor file written by audit.sh on session end: CLAUDE_AUDIT_ANCHORS, else the Windows profile it cached."""
+    if os.environ.get("CLAUDE_AUDIT_ANCHORS"):
+        return Path(os.environ["CLAUDE_AUDIT_ANCHORS"])
+    try:
+        w = (d / ".winhome").read_text(encoding="utf-8").strip()
+    except OSError:
+        w = ""
+    return Path(w, "ws-telemetry/audit-anchors.txt") if w else None
+
+
+def verify_log(d: Path = AUDIT_DIR, quiet: bool = False) -> tuple[int, list[str]]:
+    """Recomputes the chain of «prev» hashes written by audit.sh and checks the anchors. Returns (lines checked,
+    problems). Lines from before the chain existed (no «prev») are accepted only before the first chained line; the
+    first line of the oldest kept file may point to a file deleted by retention."""
+    import hashlib
+    problems: list[str] = []
+    files = sorted(d.glob("[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9].jsonl"))
+    prev: str | None = None
+    chained = False
+    total = legacy = 0
+    hashes: dict[str, list[str]] = {}
+    for f in files:
+        rows = f.read_bytes().split(b"\n")
+        if rows and rows[-1] == b"":
+            rows.pop()
+        hs = hashes.setdefault(f.stem, [])
+        for i, raw in enumerate(rows, 1):
+            total += 1
+            h = hashlib.sha256(raw).hexdigest()
+            try:
+                p = json.loads(raw).get("prev")
+            except (ValueError, AttributeError):
+                problems.append(f"{f.name}:{i} is not a JSON object (partial or edited line)")
+                p = "?"
+            if p is None:
+                if chained:
+                    problems.append(f"{f.name}:{i} has no prev after the chain started (inserted or edited line)")
+                legacy += 1
+            elif p != "?":
+                if chained and p != prev:
+                    where = "the last line of the previous day file" if i == 1 else f"line {i - 1}"
+                    problems.append(f"{f.name}:{i} prev does not match {where}: a line was edited, deleted or reordered")
+                chained = True
+            prev = h
+            hs.append(h)
+    a = anchors_file(d)
+    checked_anchors = 0
+    if a and a.is_file():
+        oldest = files[0].stem if files else "9999"
+        for n, line in enumerate(a.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            parts = line.split()
+            if len(parts) < 3 or not parts[2].isdigit():
+                continue
+            day, h, count = parts[0], parts[1], int(parts[2])
+            if day not in hashes:
+                if day >= oldest:
+                    problems.append(f"anchor {n}: the audit file of {day} is missing (deleted)")
+                continue
+            checked_anchors += 1
+            hs = hashes[day]
+            if count > len(hs):
+                problems.append(f"anchor {n}: {day} had {count} lines at session end, now {len(hs)} (lines deleted)")
+            elif count and hs[count - 1] != h:
+                problems.append(f"anchor {n}: line {count} of {day} changed after the session ended")
+    if not quiet:
+        for p in problems:
+            print(f"  \033[31mFAIL\033[0m  {p}")
+        anchor_note = f"{checked_anchors} anchors checked" if a and a.is_file() else "no anchor file yet"
+        print(f"{'FAIL' if problems else 'ok'}: {total} lines in {len(files)} files ({legacy} from before the chain), "
+              f"{anchor_note}, {len(problems)} problems")
+    return total, problems
+
+
+# ============================================================================================
 def p_security() -> None:
     pillar("Security")
     for p, max_mode in (("~/.claude/.credentials.json", 0o600), ("~/.claude-personal/.credentials.json", 0o600),
@@ -325,8 +432,52 @@ def p_security() -> None:
             continue
         mode = stat.S_IMODE(f.stat().st_mode)
         res("ok" if mode & ~max_mode == 0 else "fail", f"permissions {p}: {oct(mode)}", "", f"chmod {oct(max_mode)[2:]} {p}")
+    if AUDIT_DIR.is_dir():
+        n, bad = verify_log(AUDIT_DIR, quiet=True)
+        res("ok" if not bad else "fail", f"audit log hash chain: {n} lines", "; ".join(bad[:3]),
+            "Something edited the audit log: ws-audit --verify-log lists every break; keep a copy and investigate.")
     _, hp = sh("git config --global core.hooksPath")
     res("ok" if hp else "warn", f"global git gate: {hp or 'no core.hooksPath'}")
+    # Repos where the gate does not run in full (WS-SEC-004): a local hooksPath or committing without gitleaks fail;
+    # skipping single checks (ws.gate.skip) is a documented per-repo choice and only warns.
+    rc, by = sh("ws-gate bypasses 2>/dev/null", 120)
+    lines = [l for l in by.splitlines() if "\t" in l]
+    hard = [l for l in lines if "ws.gate.skip=" not in l]
+    if rc in (0, 1):
+        res("fail" if hard else ("warn" if lines else "ok"), f"repos that bypass the git gate: {len(lines)}",
+            "; ".join(l.replace("\t", ": ") for l in lines[:4]),
+            "Remove the local core.hooksPath or ws.gate.allowNoGitleaks (install gitleaks: ws-tools install base).")
+    else:
+        res("warn", "repos that bypass the git gate", "ws-gate bypasses did not run", "Reinstall the kit (ws-gate).")
+    optlog = H / ".local/state/ws-gate/opt-outs.log"
+    if optlog.exists():
+        n = sum(1 for _ in optlog.open(encoding="utf-8", errors="replace"))
+        res("info", f"commits made without gitleaks (opt-out log): {n}", str(optlog))
+    # The last light backup must be encrypted (WS-SEC-013).
+    try:
+        last = (H / ".local/state/ws-backup-lite.log").read_text(encoding="utf-8", errors="replace").splitlines()[-1]
+    except (OSError, IndexError):
+        last = ""
+    if last:
+        res("fail" if "UNENCRYPTED" in last else "ok", "last light backup is encrypted", last[-120:] if "UNENCRYPTED" in last else "",
+            "Run ws-backup-cloud setup once (and sudo apt-get install age), then ws-backup-lite --now.")
+    # Pinned npm packages and local MCP executables (WS-AI-009).
+    if shutil.which("ws-pinned"):
+        rc, pv = sh("ws-pinned verify 2>&1", 120)
+        res("ok" if rc == 0 else "fail", "pinned npm packages match their locks", pv[-200:] if rc else "",
+            "Reinstall the pinned package (ws-pinned install <name>) and review why it changed.")
+        trust = H / ".local/share/ws-kit/mcp-trust.tsv"
+        servers = jload(H / ".claude.json").get("mcpServers", {})
+        try:
+            rows = [r.split("\t") for r in trust.read_text(encoding="utf-8").splitlines() if r.count("\t") >= 2]
+        except OSError:
+            rows = []
+        for name, path, *_ in rows:
+            if name not in servers:
+                continue
+            rc, _ = sh(f"ws-pinned local-check {shlex.quote(name)} {shlex.quote(path)}")
+            res("ok" if rc == 0 else "fail", f"local MCP executable {name} matches its pinned sha256", "" if rc == 0 else path,
+                f"Review the change, then: bash install.sh --mcp-accept {name}")
     # A single pattern for audit and cleanup: it lives in ws-history (no values are shown, only the count).
     _, hist = sh("ws-history --count 2>/dev/null || echo 0")
     n = int(hist.splitlines()[-1]) if hist.splitlines() and hist.splitlines()[-1].isdigit() else 0
@@ -419,6 +570,13 @@ tr.fail b{{color:#c0392b}}tr.warn b{{color:#b07b1f}}tr.ok b{{color:#3f7d4e}}tr.i
 
 
 if __name__ == "__main__":
+    if "--compliance" in sys.argv:   # continuous compliance evidence (WS-GOV-005): ~/.local/lib/ws_compliance.py
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+        import ws_compliance  # noqa: E402 — only this mode needs it
+        sys.exit(ws_compliance.main([a for a in sys.argv[1:] if a != "--compliance"]))
+    if "--verify-log" in sys.argv:
+        rest = sys.argv[sys.argv.index("--verify-log") + 1:]
+        sys.exit(1 if verify_log(Path(rest[0]) if rest else AUDIT_DIR)[1] else 0)
     for f in (p_tmux, p_shortcuts, p_claude, p_sandbox, p_security, p_resilience, p_performance, p_observability):
         try:
             f()

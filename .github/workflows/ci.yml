@@ -1,6 +1,7 @@
 # CI for the claude-workstation kit: Lint → SAST/secrets → Test on every push and PR.
 # Build/DAST/Deploy do not apply: the kit is scripts and configuration that install.sh copies to HOME.
-# Third-party actions: none. Tools are installed with a pinned version and checksum.
+# Third-party actions: none. GitHub's own actions are pinned by commit SHA with the version as a comment (Dependabot
+# keeps both current); tools are installed with a pinned version and checksum (WS-SEC-016, WS-SEC-017).
 name: ci
 
 on:
@@ -21,7 +22,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
       - name: Dependencies
@@ -72,7 +73,7 @@ jobs:
       GITLEAKS_VERSION: 8.21.2
       BANDIT_VERSION: 1.7.10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
       - name: bandit (medium severity or higher)
@@ -89,19 +90,82 @@ jobs:
           tar -xzf "$tgz" gitleaks
           ./gitleaks dir --config .gitleaks.toml --redact --no-banner .
 
+  zizmor:
+    name: Workflow security (zizmor)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      ZIZMOR_VERSION: 1.33.1
+      ZIZMOR_SHA256: 3e6a301c7a820a2501915f5a9de8c0486da82bdec7965f068477538a98743d43
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      # Official release binary, verified against the sha256 GitHub records for the asset (pinned here).
+      - name: zizmor (template injection, unpinned uses, excessive permissions, credential persistence)
+        run: |
+          tgz=zizmor-x86_64-unknown-linux-gnu.tar.gz
+          curl -fsSLO "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/${tgz}"
+          echo "${ZIZMOR_SHA256}  ${tgz}" | sha256sum -c -
+          tar -xzf "$tgz" zizmor
+          ./zizmor --offline --min-severity low .github/workflows/
+
+  sbom:
+    name: SBOM (CycloneDX)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      # Third-party components the kit installs or calls (WS-SEC-018); release.yml attaches it to each release.
+      - name: Generate and validate
+        run: |
+          python3 .github/scripts/sbom.py -o sbom.cdx.json
+          python3 .github/scripts/sbom.py --check sbom.cdx.json
+          jq -r '.components[] | [.name, (.version // "-")] | @tsv' sbom.cdx.json | column -t | head -100
+
   test:
     name: Kit tests
     runs-on: ubuntu-24.04
     needs: [lint, sast]
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
       - name: Dependencies
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq tmux >/dev/null
       - name: tests/run.sh
         run: bash tests/run.sh
+
+  suites:
+    name: Security suites (tests/*.sh)
+    runs-on: ubuntu-24.04
+    needs: [lint]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      # age and zstd for the encrypted backups; npm (already on the runner) for the pinned packages; tmux for the
+      # tests/run.sh cases that tests/compliance.sh runs as control checks.
+      - name: Dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq tmux age zstd >/dev/null
+      # Every standalone suite except run.sh (the test job runs it); all of them run, the job fails if one does.
+      # tests/compliance.sh is the continuous compliance evidence (WS-GOV-005) and tests/ai-bom.sh keeps the AI-BOM
+      # in step with the kit (WS-GOV-002).
+      - name: guard, hooks, audit, memory, spend, solo, supply chain, Telegram, backups, gate, interop, compliance, AI-BOM
+        run: |
+          git config --global user.email ci@example.invalid; git config --global user.name ci
+          failed=()
+          for t in tests/*.sh; do
+            [[ "$t" == tests/run.sh ]] && continue
+            echo "::group::$t"
+            bash "$t" || failed+=("$t")
+            echo "::endgroup::"
+          done
+          (( ${#failed[@]} == 0 )) || { echo "Failed: ${failed[*]}"; exit 1; }
 
   install:
     name: Clean install (Ubuntu 24.04)
@@ -111,7 +175,7 @@ jobs:
     # First version: reports without blocking the merge; becomes required once it runs stably.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
       - name: Dependencies

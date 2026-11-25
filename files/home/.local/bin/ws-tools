@@ -2,7 +2,8 @@
 #
 # ws-tools — inventory of the workstation's tools in WSL (what is there, which version, what
 # is missing) and installation per tool or per group from official sources: apt (signed
-# repos), pipx (PyPI) or GitHub binaries verified against the checksum of their release.
+# repos), pipx (PyPI), GitHub binaries verified against the checksum of their release, or npm packages pinned with
+# a committed package-lock.json (ws-pinned: exact version and sha512 of every tarball, install scripts off).
 #
 # Usage:
 #   ws-tools                                 inventory
@@ -67,6 +68,8 @@ TOOLS=(
   "ruff|python|ruff --version|fn:ruff"
   "node-lts|web|node -e 'process.exit(+process.versions.node.split(\".\")[0] % 2)' && node --version|fn:fnm"
   "pnpm|web|pnpm --version|fn:pnpm"
+  "agent-browser|web|$HOME/.local/bin/agent-browser --version|fn:agent_browser"
+  "chrome-devtools-mcp|web|$HOME/.local/share/ws-kit/npm/chrome-devtools-mcp/node_modules/.bin/chrome-devtools-mcp --version|fn:chrome_devtools_mcp"
   "angular|web|command -v ng|manual:per project with npx ng …, or npm i -g @angular/cli with the fnm Node"
   "rustup|rust|rustup --version|fn:rustup"
   "cargo|rust|cargo --version|fn:rustup"
@@ -89,13 +92,13 @@ version_of() {
 
 inventory() {
   local t n g v how ok=0 miss=0
-  printf '%-12s %-13s %-7s %s\n' TOOL GROUP STATUS "VERSION / HOW TO INSTALL"
+  printf '%-19s %-13s %-7s %s\n' TOOL GROUP STATUS "VERSION / HOW TO INSTALL"
   for t in "${TOOLS[@]}"; do
     n="$(field "$t" 1)"; g="$(field "$t" 2)"; how="$(field "$t" 4)"
     if v="$(version_of "$(field "$t" 3)")" && [[ -n "$v" ]]; then
-      printf '%-12s %-13s \033[32m%-7s\033[0m %s\n' "$n" "$g" OK "$v"; ok=$((ok + 1))
+      printf '%-19s %-13s \033[32m%-7s\033[0m %s\n' "$n" "$g" OK "$v"; ok=$((ok + 1))
     else
-      printf '%-12s %-13s \033[31m%-7s\033[0m %s\n' "$n" "$g" MISSING "${how#*:}"; miss=$((miss + 1))
+      printf '%-19s %-13s \033[31m%-7s\033[0m %s\n' "$n" "$g" MISSING "${how#*:}"; miss=$((miss + 1))
     fi
   done
   printf '\n%d installed, %d missing. Install with: ws-tools install <group|tool>\n' "$ok" "$miss"
@@ -186,6 +189,19 @@ fn_sqlcmd() {
       sudo dpkg -i /tmp/pmp.deb && sudo apt-get update -qq
   fi
   sudo apt-get install -y sqlcmd
+}
+# Pinned npm packages (ws-pinned): the kit's package-lock.json, npm ci --ignore-scripts, a hash of the installed tree.
+fn_agent_browser() {
+  "$HOME/.local/bin/ws-pinned" install agent-browser || return 1
+  # Chrome for Testing in agent-browser's own profile and cache (downloaded from Google over HTTPS; Google publishes
+  # no checksum for it). System libraries, if Chrome does not start: agent-browser install --with-deps (sudo).
+  "$HOME/.local/bin/agent-browser" install || echo "  Chrome for Testing was not installed: agent-browser install (or --with-deps)"
+  echo "  Allowed domains: ~/.config/agent-browser/allowed-domains.txt (kit, localhost) + allowed-domains.local.txt (yours)."
+}
+fn_chrome_devtools_mcp() {
+  "$HOME/.local/bin/ws-pinned" install chrome-devtools-mcp || return 1
+  echo "  Opt-in MCP server: it needs a Chrome reachable from WSL (docs/USAGE.md, chrome-devtools). Register it with:"
+  echo "  bash ~/code/claude-workstation/install.sh --mcp-opt-in chrome-devtools"
 }
 fn_azd() { curl -fsSL https://aka.ms/install-azd.sh -o /tmp/install-azd.sh && bash /tmp/install-azd.sh; }
 

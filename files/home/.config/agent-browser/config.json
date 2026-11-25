@@ -1,0 +1,5 @@
+{
+  "contentBoundaries": true,
+  "maxOutput": 50000,
+  "actionPolicy": "@HOME@/.config/agent-browser/policy.json"
+}

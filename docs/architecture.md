@@ -89,9 +89,9 @@ flowchart TB
   subgraph claudel["Claude Code layer"]
     settings["settings.json<br/>permissions, sandbox, env"]
     state["tmux-state.sh"]
-    guard["audit.sh, guard.sh"]
+    guard["audit.sh, guard.sh<br/>ws-runtime-gate.sh, memory-gate.sh"]
     traces["ws-traces.sh"]
-    other["ws-routing.sh, intent-route.sh<br/>lint-on-edit.sh, read-convert.sh<br/>win-notify.sh, win-hook.sh"]
+    other["ws-routing.sh, intent-route.sh<br/>lint-on-edit.sh, read-convert.sh<br/>untrusted-content.sh, prompt-screen.sh<br/>config-change.sh, memory-filter.sh<br/>win-notify.sh, win-hook.sh"]
     sl["statusline.sh"]
     agents["agents/*.md"]
   end
@@ -131,9 +131,14 @@ flowchart TB
 | Watcher | `tmux-watch`, `tmux-background` | Run on every status refresh: waiting and stalled tabs, spend rate, reminders, keeping `ws-otel` alive, background tasks. |
 | State | `.claude/hooks/tmux-state.sh`, `tmux-status` | Hooks record the phase per tab; the painter turns it into a label with elapsed time and corrects it against the screen. |
 | Views | `tmux-dash`, `tmux-find`, `tmux-active`, `tmux-favorites`, `tmux-recent`, `tmux-agents`, `tmux-summary`, `tmux-hud` | Dashboard, the finder and the lists behind its views (active tabs, favorites, recent conversations), live subagents, tab summary, compute monitor. |
-| Protection | `tmux-level`, `tmux-solo`, `.config/claude-solo/settings.json`, `tmux-claude-restart` | Restart Claude in a tab with a generated settings profile; restart all idle tabs. |
+| Protection | `tmux-level`, `tmux-solo`, `claude-resume`, `.config/claude-levels/normal-adds.json`, `.config/claude-solo/settings.json`, `tmux-claude-restart` | Restart Claude in a tab with a profile generated on top of the strict base; agent identities; solo expiry; restart all idle tabs. |
 | Claude settings | `.claude/settings.json`, `.claude/statusline.sh`, `.claude/agents/` | Model, permission rules, sandbox, OpenTelemetry export, hook wiring, status line, subagents. |
-| Guard and audit | `.claude/hooks/guard.sh`, `audit.sh` | Deterministic PreToolUse blocking; a local audit log of metadata. |
+| Guard and audit | `.claude/hooks/guard.sh`, `audit.sh`, `config-change.sh`, `.local/lib/ws-credential-paths.txt` | Deterministic PreToolUse blocking (fails closed), including the agent's own configuration and credential paths; a hash-chained local audit log of metadata; configuration changes recorded. |
+| Content and memory gates | `.claude/hooks/untrusted-content.sh`, `prompt-screen.sh`, `memory-gate.sh`, `memory-filter.sh`, `ws-memory` | Label untrusted tool output and screen it for injection markers; stop prompts that carry secrets; ask for every memory write with stamped provenance; keep `<private>` text out of memory. |
+| Containment | `.claude/hooks/ws-runtime-gate.sh`, `ws-stop-all`, `ws-anomaly` | The emergency stop and the hard spend limit, held in every Claude by one hook; anomaly detection over the audit log and sandbox hits. |
+| Supply chain | `files/mcp-servers.lock.json`, `.local/lib/ws-npm/`, `ws-pinned`, `ws-kit-update`, `.config/ws-kit/allowed_signers`, `agent-browser` | Pinned MCP servers and agent tools; signed kit releases; the browser wrapper's safe defaults. |
+| Managed policy | `files/etc/claude-code/managed-settings.json` (installed by `install.sh --managed`) | The deny floor and the guard as a root-owned drop-in. |
+| Compliance | `.local/lib/ws_compliance.py` (`ws-audit --compliance`), `docs/compliance/`, `tests/compliance.sh`, `tests/ai-bom.sh` | Run the catalogue's machine-checkable checks; keep the catalogue, the assessment and the AI-BOM in step with the code. |
 | Routing | `.claude/hooks/ws-routing.sh`, `intent-route.sh`, `.local/lib/ws-routing.sh`, `cr`, `ws-routing-confirm` | Suggest a model per task and ask before switching. |
 | Telemetry | `ws-traces.sh`, `ws-otel`, `ws-telemetry`, `ws-report`, `ws-hooks` | Collect, aggregate and report. |
 | Commit gate | `.config/git/hooks/_chain`, `ws-gate` | Checks on commit and push, then the repository's own hooks. |
@@ -155,10 +160,15 @@ that directory. Both scripts read it through `lib.sh`.
 | 1 | Deletes `files/` and copies each manifest path from `$HOME` to `files/home/`, keeping file modes and skipping `*.bak.*`. | Copies `files/` to a temporary directory. |
 | 2 | Writes the user-level MCP servers from `~/.claude.json` to `files/mcp-servers.json` and copies the Windows `.wslconfig` for reference. | Replaces the placeholders with the target machine's values (`render_templates`). |
 | 3 | Replaces personal paths and user names with `@WINHOME@`, `@WIN_USER@`, `@HOME@`, `@LINUX_USER@` (`templatize`). | For each file prints `new`, `same` (identical, untouched) or `changed` (the existing file is copied to `~/.local/share/ws-kit/backup.<timestamp>/<path>` first; the newest 10 folders are kept). |
-| 4 | Scans the result for secret patterns; on a hit it deletes `files/` and exits. `secrets-allow.txt` lists files that contain the detection patterns themselves (for example `guard.sh`). | Appends the kit's lines to `~/.bashrc` if they are missing, installs TPM and the tmux plugins, and registers MCP servers whose executable exists. |
+| 4 | Scans the result for secret patterns; on a hit it deletes `files/` and exits. `secrets-allow.txt` lists files that contain the detection patterns themselves (for example `guard.sh`). | Appends the kit's lines to `~/.bashrc` if they are missing, installs TPM and the tmux plugins, and registers the MCP servers that `files/mcp-servers.lock.json` vouches for: npm servers installed by `ws-pinned` from their committed lock, local executables whose sha256 matches the one pinned on first use, remote servers whose URL matches. Opt-in servers need `--mcp-opt-in`. |
 
 `install.sh` deletes none of your files, does not apply `.wslconfig`, and sets git's global hooks path to the kit hooks
 only when none is configured (`--no-git-hooks` skips it). `--dry-run` prints the same listing without writing.
+`export.sh` merges the user MCP servers into `files/mcp-servers.json` instead of replacing it, so opt-in servers
+that are not registered on the exporting machine stay, and it keeps `files/mcp-servers.lock.json` and `files/etc/`.
+`install.sh --managed` is a separate run: with `sudo`, after you confirm, it installs
+`files/etc/claude-code/managed-settings.json` as the drop-in `/etc/claude-code/managed-settings.d/50-ws-kit.json`,
+a root copy of `guard.sh` in `/etc/claude-code/hooks/` and the credential list in `/etc/claude-code/`.
 
 Before it copies anything, `install.sh` calls `migrate_names` (`migrate.sh`), which moves an installation made before
 3.0 to the English names. `renames.tsv` lists each old path, its new path and one of three kinds:
@@ -182,8 +192,12 @@ OneDrive folder `Respaldos\estacion-wsl`, the personal repository `~/code/estaci
 one mapping table per script; the files are never rewritten) and the Spanish keys of files the user edits. tmux live
 state has no compatibility code: the server is restarted after the upgrade.
 
-`ws-kit-update` wraps the installer for updates: `git pull --ff-only`, `install.sh`, then `ws-test`; if the tests fail
-it returns to the previous commit and reinstalls. It does nothing when the kit has local changes or unpushed commits.
+`ws-kit-update` wraps the installer for updates. It fetches the release tags into `refs/ws-kit/tags`, takes the
+newest `vX.Y.Z` ahead of the checkout, verifies it with `git verify-tag` against the **installed**
+`~/.config/ws-kit/allowed_signers` (so a release cannot vouch for itself), then `git merge --ff-only <tag>`,
+`install.sh` and `ws-test`; if the tests fail it returns to the previous commit and reinstalls. It never follows the
+branch tip, and does nothing when the kit has local changes or commits the release does not contain
+([ADR 0018](adr/0018-supply-chain-pinning-and-signed-releases.md)).
 
 ## tmux layer
 
@@ -206,26 +220,54 @@ it returns to the previous commit and reinstalls. It does nothing when the kit h
 
 ## Claude Code layer
 
-`~/.claude/settings.json` wires thirteen hook events. The scripts follow one rule: hooks that observe always exit 0
-and print nothing, so their own failure never blocks Claude; only `guard.sh` (and `read-convert.sh` for unreadable
-binaries) can block.
+`~/.claude/settings.json` wires fourteen hook events. The scripts follow one rule: hooks that observe always exit 0
+and print nothing on failure, so their own failure never blocks Claude. Only the gates block, each with its own
+failure mode: `guard.sh` fails closed (and `onFailure: block` makes a missing or crashing guard block too);
+`prompt-screen.sh` and the budget part of `ws-runtime-gate.sh` fail open; the stop marker blocks with or without
+`jq`; `memory-gate.sh` fails closed for memory writes it cannot read; `read-convert.sh` blocks unreadable binaries.
 
 | Hook script | Events | Effect |
 |---|---|---|
 | `tmux-state.sh` | SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, Notification, Stop, StopFailure, SubagentStart, SubagentStop, PreCompact, SessionEnd | Writes the tab's phase and details into tmux window options; keeps a subagent registry. |
-| `audit.sh` | SessionStart, UserPromptSubmit, PreToolUse, PermissionDenied, SessionEnd (and blocks reported by the guard) | Appends metadata to `~/.claude/audit/YYYY-MM-DD.jsonl`: tool, command with secrets redacted, file path, prompt length. No prompt text. Files older than 90 days are deleted. |
-| `guard.sh` | PreToolUse | Blocks policy violations with exit 2. See the [threat model](THREAT_MODEL.md#the-guard-hook). |
-| `ws-traces.sh` | All thirteen | One JSON line per event with counts, timings and names. |
+| `audit.sh` | SessionStart, UserPromptSubmit, PreToolUse, PermissionDenied, SessionEnd (and events reported by the other hooks: `blocked`, `held`, `injection-suspect`, `memory-write`, `config-change`, `stop-all`…) | Appends metadata to `~/.claude/audit/YYYY-MM-DD.jsonl`: tool, command with secrets redacted, file path, the WebFetch URL without its query, the WebSearch query, a redacted summary of MCP arguments (the input hash for MemPalace), prompt length. No prompt text. Each line carries the sha256 of the previous one; on SessionEnd the day's head goes to `%UserProfile%\ws-telemetry\audit-anchors.txt`. Files older than 395 days are deleted. |
+| `guard.sh` | PreToolUse (`onFailure: block`) | Blocks policy violations with exit 2. See the [threat model](THREAT_MODEL.md#the-guard-hook). |
+| `ws-runtime-gate.sh` | UserPromptSubmit, PreToolUse | Holds every prompt and tool while `~/.local/state/ws-stop-all` exists, and in projects listed in `~/.local/state/ws-budget-over` (hard budget). The usual case starts no process. |
+| `memory-gate.sh` | PreToolUse (`mcp__.*mempalace.*`), UserPromptSubmit | Asks for every MemPalace write (`permissionDecision: ask`), stamps provenance with `updatedInput`, blocks `<private>` text; on a prompt with `<private>`, adds a note for Claude. |
+| `memory-filter.sh` | Wraps the MemPalace hooks (SessionStart, Stop, PreCompact, SessionEnd) and recall (UserPromptSubmit) | Replaces `<private>` spans in the prompt and hands MemPalace a redacted copy of a transcript that contains them (`~/.cache/ws-memory/`); runs the wrapped command with the filtered input. |
+| `prompt-screen.sh` | UserPromptSubmit | Blocks a prompt that `ws-redact` would change (a secret), unless it starts with `#allow-secret`. |
+| `untrusted-content.sh` | PostToolUse (`WebFetch`, `WebSearch`, `mcp__.*`; Bash only through `if` rules for `curl`, `wget`, `gh api`, `gh issue/pr/run/release view`, `gh pr diff`, `gh search`) | Adds context that the result is untrusted data and names any injection markers found; logs hits. Never blocks. |
+| `config-change.sh` | ConfigChange | Records every settings, policy or skill file that changes during a session. Never blocks. |
+| `ws-traces.sh` | Thirteen (all but ConfigChange) | One JSON line per event with counts, timings and names. |
 | `ws-routing.sh`, `intent-route.sh` | UserPromptSubmit | Model routing with confirmation; a context note suggesting a subagent. |
 | `lint-on-edit.sh` | PostToolUse (Edit, Write, MultiEdit) | Runs `ws-gate file` on the edited file and returns findings as context. Never blocks. |
 | `read-convert.sh` | PreToolUse (Read) | Converts PDF and Office files to Markdown with `ws-tomd` before Claude reads them. |
 | `win-notify.sh` | UserPromptSubmit, Notification, Stop | Windows notification, and Telegram if configured, when a tab you are not looking at needs you or finishes a long turn. |
-| `win-hook.sh` | SessionStart, Stop, PreCompact, SessionEnd, UserPromptSubmit | Runs a Windows-side hook executable (the author's memory and retrieval tools), translating paths. |
+| `win-hook.sh` | SessionStart, Stop, PreCompact, SessionEnd, UserPromptSubmit (behind `memory-filter.sh`) | Runs a Windows-side hook executable (the author's memory and retrieval tools), translating paths. |
 | `ws-cache` (as a hook wrapper) | SessionStart | Returns the last result of a slow hook at once and refreshes it in the background. |
 
 Session start does not wait for slow hooks: the SessionStart hooks that take seconds run through `ws-cache`, which
 returns the last result at once and refreshes it in the background (a result older than `--max` seconds is not
 trusted and the hook is run and awaited).
+
+### Hooks pipeline
+
+The order below is the order in `settings.json`. Claude Code runs the hooks that match one event in parallel and
+combines their answers: one exit 2 (or `decision: block`) blocks, an `ask` from a hook forces the permission prompt.
+The permission rules and the sandbox apply after the PreToolUse hooks.
+
+| Event | Hooks (matcher) |
+|---|---|
+| UserPromptSubmit | `prompt-screen.sh`, `tmux-state.sh prompt`, `audit.sh prompt`, `intent-route.sh`, recall through `memory-filter.sh` and `win-hook.sh`, `win-notify.sh prompt`, `ws-routing.sh`, `ws-traces.sh`, `ws-runtime-gate.sh`, `memory-gate.sh` |
+| PreToolUse | `tmux-state.sh tool`; `audit.sh tool` and `guard.sh` (`onFailure: block`); `read-convert.sh` (Read); `ws-traces.sh`; `ws-runtime-gate.sh`; `memory-gate.sh` (`mcp__.*mempalace.*`) |
+| PostToolUse | `ws-sandbox-notice.sh` (Bash), `tmux-state.sh posttool`, `lint-on-edit.sh` (Edit, Write, MultiEdit), `ws-traces.sh`, `untrusted-content.sh` (`^(WebFetch\|WebSearch\|mcp__.*)$`, and Bash through nine `if` rules) |
+| PostToolUseFailure | `ws-sandbox-notice.sh` (Bash), `tmux-state.sh posttool`, `ws-traces.sh` |
+| PermissionDenied | `audit.sh denied`, `ws-traces.sh` |
+| SessionStart | `tmux-state.sh start`, `audit.sh start`, the MemPalace health check (`ws-cache`), MemPalace through `memory-filter.sh`, recall start (`ws-cache`), `ws-traces.sh` |
+| Stop | `tmux-state.sh done`, MemPalace through `memory-filter.sh`, `win-notify.sh done`, `ws-traces.sh` |
+| PreCompact | MemPalace through `memory-filter.sh`, `ws-traces.sh`, `tmux-state.sh compact` |
+| SessionEnd | `tmux-state.sh end`, `audit.sh end` (writes the anchor), MemPalace through `memory-filter.sh`, `ws-traces.sh` |
+| ConfigChange | `config-change.sh` |
+| Notification, StopFailure, SubagentStart, SubagentStop | `tmux-state.sh`, `win-notify.sh` (Notification), `ws-traces.sh` |
 
 `statusline.sh` is Claude Code's status line: model, context, cost, usage limits and branch. It also publishes the
 context percentage to the tab (`@cctx`) and writes per-session cost samples to `/tmp/claude-burn-<uid>/`, which
@@ -234,40 +276,47 @@ context percentage to the tab (`@cctx`) and writes per-session cost samples to `
 ### Protection levels per tab
 
 `tmux-level` restarts Claude in the tab with the chosen level and resumes the conversation. The bar shows 🔒 for
-`full` and 🔓 for `bare`.
+`full` and 🔓 for `bare`. The user settings are the strict base: they exclude no command from the sandbox, and each
+level adds or removes on top of them ([ADR 0019](adr/0019-strict-base-and-level-profiles.md)).
 
 | Level | Sandbox | Kit `allow` / `ask` rules | Floor: `deny` rules + `guard.sh` | Use it for |
 |---|---|---|---|---|
 | **Full** (`full`) 🔒 | On, no unsandboxed commands and no excluded commands (`az`, `gh`, `git push`, `kubectl`… stay inside and mostly fail) | On | On | Untrusted repositories, risky changes |
-| **Normal** (`normal`) | On, with the excluded commands of `~/.claude/settings.json` | On | On | Daily work |
+| **Normal** (`normal`) | On, with the excluded commands that `~/.config/claude-levels/normal-adds.json` adds | On | On | Daily work |
 | **Pure** (`bare`) 🔓 | Off | Off (Claude asks as it would without the kit) | On | Comparing against stock Claude Code |
-| **Solo mode** 🤖 | Off | On; Claude runs in `auto` permission mode | On | Leaving Claude to work alone on a task |
+| **Solo mode** 🤖 | On (`autoAllowBashIfSandboxed`), with normal's excluded commands judged by the auto-mode classifier; expires after 4 h. `--unsandboxed` turns it off as an audited exception | On; Claude runs in `auto` permission mode | On | Leaving Claude to work alone on a task ([ADR 0016](adr/0016-solo-mode-inside-the-sandbox.md)) |
 
 The floor is the part no level turns off ([ADR 0013](adr/0013-minimum-protection-floor.md)): the `deny` rules
 (credential files, `ws-secret get`, cloud keys and connection strings, bypassing the git gate) and the `guard.sh`
 PreToolUse hook, which fails closed. Hooks that do not restrict anything (state, traces, notifications) also stay on in
 every level. Organization-managed settings and each repository's own `.claude/settings*.json` always apply. The
-original design is in [ADR 0012](adr/0012-per-tab-protection.md); phase 2 of ADR 0013 is still pending and is listed
-in the [threat model](THREAT_MODEL.md#pending-work).
+original design is in [ADR 0012](adr/0012-per-tab-protection.md). `install.sh --managed` can install the floor as a
+root-owned managed policy as well.
 
 Protection levels are applied by restarting Claude with different arguments, not by editing `settings.json`:
 
 | Level | Command `tmux-level` / `tmux-solo` types into the pane |
 |---|---|
-| `normal` | `claude-resume` |
+| `normal` | `claude-resume --settings ~/.config/claude-levels/normal.json` (on top of every settings source) |
 | `full` | `claude-resume --setting-sources project,local --settings ~/.config/claude-levels/full-<hash>.json` (one profile per project folder; `full.json` when no folder is given) |
 | `bare` | `claude-resume --setting-sources project,local --settings ~/.config/claude-levels/bare.json` |
-| solo mode | `claude-resume --permission-mode auto --settings ~/.config/claude-solo/settings.json` |
+| solo mode | `claude-resume --permission-mode auto --settings ~/.config/claude-levels/solo.json`; with `--unsandboxed`, `solo-unsandboxed.json` |
+| any level with `--agent NAME` | The same command prefixed with `WS_AGENT=NAME AZURE_CONFIG_DIR=… GH_CONFIG_DIR=… KUBECONFIG=…` under `~/.config/ws-agent/NAME/` ([ADR 0020](adr/0020-agent-scoped-identities.md)) |
 
 `claude-resume` runs `claude --continue` with those flags when the folder has a conversation and plain `claude` with
-the same flags when it has none (a tab where Claude never received a message).
+the same flags when it has none (a tab where Claude never received a message). Called without `--settings` or
+`--setting-sources` (tab launchers, tmux-resurrect, `claude-account`), it adds the normal profile itself, so every kit
+launcher starts at the normal level; a `claude` typed by hand runs at the strict base.
 
-The `full` and `bare` profiles are generated from the current `~/.claude/settings.json` on every change (mode
-0600). `full` is the whole file with the sandbox forced on, unsandboxed commands disallowed and the excluded
-command list removed. `bare` is the whole file with `permissions` reduced to the `deny` list and the sandbox disabled;
-hooks, including `guard.sh`, are kept. User settings are not loaded as a source in either case, because Claude Code
-merges lists across the sources it loads and a list cannot be removed by overriding it
-([ADR 0013](adr/0013-minimum-protection-floor.md)).
+The profiles are generated on every change (mode 0600). `full` is the whole `~/.claude/settings.json` with the
+sandbox forced on, unsandboxed commands disallowed, the excluded command list removed and, with a project folder,
+reads limited to that project. `bare` is the whole file with `permissions` reduced to the `deny` list and
+`disableBypassPermissionsMode`, and the sandbox disabled; hooks, including `guard.sh`, are kept. User settings are
+not loaded as a source in either case, because Claude Code merges lists across the sources it loads and a list cannot
+be removed by overriding it ([ADR 0013](adr/0013-minimum-protection-floor.md)). `normal.json` is only
+`normal-adds.json`, which Claude Code merges on top of the user settings; `solo.json` is
+`~/.config/claude-solo/settings.json` merged with it. Swarm agents start at `full` with a profile that also denies
+`git push` and `gh pr create`/`merge`.
 
 ## Telemetry
 
@@ -361,12 +410,13 @@ The SessionStart hook records which account the tab's Claude actually started wi
 | `tmux-recover` | Guards against an empty save overwriting a good one; lists saves and restores a chosen one | Not applicable | On server start and after each save |
 | `tmux-backup` | Copies resurrect saves to the Windows profile | `%UserProfile%\.tmux-resurrect-backup` | After each save |
 | `ws-backup` | Conversations and the audit log, incremental, never deleting at the destination | `%UserProfile%\.claude-wsl-backup` | After a save, rate-limited |
-| `ws-backup-lite` | Claude data, tmux saves, tmux-claude configuration, an inventory for reinstalling. Never credentials. Optional `age` encryption | `%UserProfile%\WSL-Backups\lite`, rotation of 14 | When the last one is older than 20 h |
+| `ws-backup-lite` | Claude data (including the audit log and a copy of its anchors), tmux saves, tmux-claude configuration, an inventory for reinstalling. Never credentials. Encrypted with `age` to the cloud key and any `age-recipients`; in clear only with a warning and an `UNENCRYPTED` log line. After each backup it prunes the `ws-backup` and `tmux-backup` copies older than 30 days (`WS_BACKUP_COPY_DAYS`) | `%UserProfile%\WSL-Backups\lite`, rotation of 14 | When the last one is older than 20 h |
 | `ws-backup-cloud` | The last light backup, always encrypted with `age` | OneDrive (the organization's folder when there is one), `Backups\workstation-wsl` | Optional; when the last copy is older than 20 h |
 | `ws-personal` | Personal configuration listed in `include.txt` | A private git repository | Once a day |
 
 `ws-restore-lite --test` extracts a backup into a temporary folder and verifies it without touching `$HOME`;
-`--restore` extracts into `$HOME`, keeps differing files as `<file>.~N~`, and refuses to run while Claude is open.
+`--restore` extracts into `$HOME`, keeps differing files as `<file>.~N~`, and refuses to run while Claude is open. An
+encrypted backup is opened with `--identity <age file>` or, by default, with the cloud key from Credential Manager.
 
 ## Screensaver
 
@@ -489,6 +539,38 @@ sequenceDiagram
   G-->>R: only if the branch, dependency and IaC checks allow it
 ```
 
+### A tool call through the gates
+
+The flowchart shows the gates a prompt and a tool call cross, in the order Claude Code applies them.
+
+```mermaid
+flowchart TB
+  prompt(["Prompt typed or pasted"]) --> ups{{"UserPromptSubmit<br/>prompt-screen.sh: secret? · ws-runtime-gate.sh: stop or budget?<br/>memory-gate.sh: note on &lt;private&gt; · audit.sh: prompt length"}}
+  ups -- "blocked or held" --> back(["Reason shown to you"])
+  ups -- "sent" --> model["Model proposes a tool call"]
+  model --> pre{{"PreToolUse hooks<br/>guard.sh (fails closed) · ws-runtime-gate.sh<br/>memory-gate.sh (MemPalace writes) · audit.sh"}}
+  pre -- "exit 2: blocked or held" --> denied["Tool not run; reason to Claude;<br/>audit: blocked / held"]
+  pre -- "ask (memory write)" --> human{{"You approve or reject<br/>(or Telegram, PIN for risky dialogs)"}}
+  pre -- "pass" --> rules{{"Permission rules<br/>deny, ask, allow"}}
+  rules -- "deny" --> denied
+  rules -- "ask" --> human
+  human -- "no" --> denied
+  human -- "yes" --> run
+  rules -- "allow" --> run{"Bash command?"}
+  run -- "sandboxed" --> sbx["Sandbox (bubblewrap)<br/>denyRead credentials, network allow list"]
+  run -- "excluded command (normal and solo only)" --> host["Your shell privileges<br/>az, gh, git push…"]
+  run -- "other tool (Read, Edit, WebFetch, MCP…)" --> tool["Tool runs"]
+  sbx --> post
+  host --> post
+  tool --> post{{"PostToolUse hooks<br/>untrusted-content.sh: label + injection markers<br/>lint-on-edit.sh · ws-traces.sh"}}
+  post -- "marker found" --> audit[("~/.claude/audit<br/>hash-chained, injection-suspect")]
+  post --> result["Result and context back to the model"]
+  denied --> audit
+```
+
+What each gate holds back is in the [threat model](THREAT_MODEL.md); the hooks and their failure modes are in
+[Claude Code layer](#claude-code-layer).
+
 ### Telemetry pipeline
 
 The flowchart shows how raw local data becomes the dashboard, the report and the exports.
@@ -602,6 +684,8 @@ Window options written by the state hook and read by everything else:
 | `@csub` | Active subagents, counted from `/tmp/claude-agents-<uid>/<pane>/` |
 | `@cctx`, `@cctxc` | Context percentage and its color (from the status line) |
 | `@clevel`, `@clevel_ico`, `@csolo` | Protection level, its icon, solo-mode flag |
+| `@csolo_until`, `@csolo_nosb` | Epoch at which solo mode expires (enforced by `tmux-watch`); set when solo runs without the sandbox |
+| `@cagent` | Agent identity the tab starts with (`tmux-level --agent`) |
 | `@caccount` | Account the tab's Claude started with (`work` or `personal`) |
 
 ### State on disk
@@ -609,12 +693,21 @@ Window options written by the state hook and read by everything else:
 | Path | Content | Format and mode | Lifetime |
 |---|---|---|---|
 | `~/.local/share/ws-telemetry/` | `dashboard.html`, `turns.jsonl`, `traces/`, `otel/`, `raw/`, `routing/`, `telegram/`, `reports/`, `weekly/`, `data/`, `levels/`, `notices/`, `focus/`, `asks/`, `handoffs/`, `learning/` | HTML, JSONL, Markdown and CSV, 0700 | `otel/`: compressed after 35 days, deleted after 395; `traces/`: compressed after 35 days, deleted after 13 months |
-| `~/.claude/audit/` | Audit log, one file per day | JSONL, 0700 | 90 days |
+| `~/.claude/audit/` | Audit log, one file per day, each line chained to the previous one by sha256 | JSONL, 0700 | 395 days |
+| `%UserProfile%\ws-telemetry\audit-anchors.txt` | One line per session end: date, head hash, line count, time | Text, on the Windows side | Kept; copied into the light backup |
 | `~/.config/tmux-claude/` | `lang` (language), `appearance` (theme and screensaver), `settings` (`groups=`), `favorites`, `roots.txt`, `templates/`, `gallery/` | Text, one value or `key=value` per line | Until changed with `ws-lang`, `tmux-theme`, `tmux-saver`, `tmux-favorites` or by hand |
 | `~/.config/ws-routing/` | `rules.conf`, `rules.es.conf`, `settings.conf` (kit files) and the optional `models.conf` | Text | Edited by hand |
 | `~/.local/share/tmux-swarm/` | One `<id>.json` per swarm (`id`, `root`, `base`, `goal`, `created`, `tasks`) | JSON, folder 0700 | `tmux-swarm clean` renames it to `<id>.json.done` |
 | `~/.local/share/ws-kit/pre-english.<date>/` | Files of the pre-3.0 installation that the migration set aside, with their path under `$HOME` | As they were | Until the user deletes the folder |
-| `~/.config/claude-levels/` | Generated `full.json`, `full-<hash>.json` (one per project) and `bare.json` | JSON, 0700 / 0600 | Regenerated on every level change |
+| `~/.config/claude-levels/` | `normal-adds.json` (kit file); generated `normal.json`, `solo.json`, `solo-unsandboxed.json`, `full.json`, `full-<hash>.json` (one per project) and `bare.json` | JSON, 0700 / 0600 | Regenerated on every level change |
+| `~/.config/ws-guard/` | `production.conf` (yours), `allow-config-writes` (the window's end, written by you) | Text | Until you change it; the window closes at its epoch |
+| `~/.config/ws-agent/<name>/` | `azure/`, `gh/`, `kube/config` of an agent identity | The tools' own formats | Until you log out or delete it |
+| `~/.local/state/ws-stop-all`, `ws-budget-over`, `ws-budget-override` | Emergency-stop marker; projects over a hard budget; overrides with their expiry | Text | Marker until `ws-stop-all --clear`; the budget flag is ignored after 2 h |
+| `~/.local/state/ws-gate/opt-outs.log`, `ws-kit-update.log`, `ws-backup-lite.log` | Commits without gitleaks; updates applied or refused; each backup with `encrypted` or `UNENCRYPTED` | Text | Appended |
+| `~/.local/share/ws-kit/npm/<name>/`, `mcp-trust.tsv` | Installed pinned npm trees and their recorded hashes; sha256 of local MCP executables pinned on first use | Files, TSV | Until the pin changes |
+| `~/.cache/ws-memory/` | Redacted transcript copies handed to MemPalace when a transcript holds `<private>` | Files, 0700 | 2 days |
+| `~/.local/share/ws-telemetry/compliance.json` | The last `ws-audit --compliance` result | JSON | Overwritten on each run |
+| `/etc/claude-code/` (optional) | `managed-settings.d/50-ws-kit.json`, `hooks/guard.sh`, `ws-credential-paths.txt` | Root-owned, 0644 / 0755 | Until `install.sh --managed` runs again |
 | `~/.config/claude-accounts/` | `active`, `projects.conf` | Text; `projects.conf` 0600 | Until changed with `claude-account` |
 | `~/.config/ws-telegram/`, `~/.local/state/ws-telegram/` | Chat id and switches; pending one-time codes | Text and JSON, created with umask 077 | Codes expire in 10 minutes; the rest until `ws-telegram forget` |
 | `/tmp/claude-agents-<uid>/`, `/tmp/claude-watch-<uid>/`, `/tmp/claude-burn-<uid>/` | Subagent registry, reminder timestamps, cost samples | Files | Temporary |
@@ -626,7 +719,9 @@ Window options written by the state hook and read by everything else:
 | Pattern | Where | Why |
 |---|---|---|
 | Observer hooks | `tmux-state.sh`, `audit.sh`, `ws-traces.sh`, `win-notify.sh` | Hooks that observe exit 0 and print nothing, so their own failure never blocks Claude |
-| Fail-closed guard | `guard.sh` | Blocking is reserved for one deterministic hook that blocks when it cannot read the action |
+| Fail-closed guard | `guard.sh` (`onFailure: block`) | Blocking is reserved for deterministic gates; the guard blocks when it cannot read the action, and Claude Code blocks when the guard cannot run |
+| One marker, every process | `ws-stop-all`, `ws-runtime-gate.sh` | A file checked by a hook in every Claude stops tabs that do not close and headless runs alike |
+| Pin by content | `files/mcp-servers.lock.json`, `ws-pinned`, `allowed_signers` | What runs is identified by its hash or its signature, not by a tag or a branch |
 | Chain of hooks | `.config/git/hooks/_chain` | Runs `ws-gate` and then the repository's own hook, so the gate does not replace existing hooks |
 | Templates with placeholders | `export.sh`, `install.sh` | Personal paths and user names become `@WINHOME@`, `@WIN_USER@`, `@HOME@`, `@LINUX_USER@` and are rendered on the target machine |
 | Generated profiles | `tmux-level`, `~/.config/claude-levels/` | Protection profiles are generated from the live settings on every change instead of being kept by hand |
@@ -640,16 +735,20 @@ Window options written by the state hook and read by everything else:
 
 - **Local first.** Telemetry, audit and reports stay on the machine. Anything the kit itself sends out passes through
   `ws-redact` first.
-- **Observing hooks never block.** They exit 0 and write nothing to stdout. Blocking is reserved for the guard, which
-  fails closed.
+- **Observing hooks never block.** They exit 0 and write nothing to stdout on failure. Blocking is reserved for the
+  gates (guard, runtime gate, memory gate, prompt screen), each with a stated failure mode.
+- **The agent does not write what steers it.** Settings, hooks, profiles, the guard's lists, the audit log and the
+  kit's update keys are written by you in a plain shell; instructions only inside a window you open.
 - **Write tmux options only when they change.** Every write redraws the bar; a tool fires several events per second.
 - **No clobbering.** The installer backs up every file it changes; restores keep differing files.
 - **Human in the loop** for anything destructive or outbound: model switches, swarm integration, learning, Telegram
   replies and pushes all wait for a decision.
 - **Generated, not hand-kept.** Protection profiles are generated from the live settings; the manual is generated from
   the installed menus (`ws-menus --manual`).
-- **The floor stays on.** The `deny` rules and `guard.sh` apply in every protection level, including `bare` and solo
-  mode.
+- **The floor stays on.** The `deny` rules, `disableBypassPermissionsMode` and `guard.sh` apply in every protection
+  level, including `bare` and solo mode.
+- **A strict base.** The user settings exclude no command from the sandbox; only the normal and solo profiles add
+  the exclusions.
 
 ## Decisions
 
@@ -665,3 +764,8 @@ The decisions behind this architecture are recorded in [docs/adr/](adr/README.md
 | [0013](adr/0013-minimum-protection-floor.md) | A minimum protection floor that no mode turns off |
 | [0014](adr/0014-local-opentelemetry-collector.md) | Local OpenTelemetry collector and full on-machine logging |
 | [0015](adr/0015-english-names-and-language-selector.md) | English names and a language selector |
+| [0016](adr/0016-solo-mode-inside-the-sandbox.md) | Solo mode inside the sandbox, with expiry |
+| [0017](adr/0017-defence-in-depth-for-agent-configuration.md) | Defence in depth for agent configuration and untrusted content |
+| [0018](adr/0018-supply-chain-pinning-and-signed-releases.md) | Supply-chain pinning and signed kit releases |
+| [0019](adr/0019-strict-base-and-level-profiles.md) | A strict base with level profiles, and the optional managed policy |
+| [0020](adr/0020-agent-scoped-identities.md) | Agent-scoped identities |

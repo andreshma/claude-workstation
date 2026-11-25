@@ -22,7 +22,7 @@ ${M}CLAUDE CODE${R}
   ${Y}Ctrl+B${R} (in tmux: Ctrl+b Ctrl+b) send the task to the background   ${Y}/tasks${R} tasks and subagents
   ${Y}Ctrl+T${R} checklist   ${Y}Ctrl+R${R} history   ${Y}Ctrl+G${R} editor   ${Y}Shift+Enter${R} new line   ${Y}?${R} Claude help
   ${Y}!${R} your own command (outside the sandbox)   ${Y}@${R} file   ${Y}/compact /model /sandbox /exit${R}
-  ${Y}claude -c${R} resume   ${Y}claude -r${R} pick a conversation
+  ${Y}claude-resume${R} resume (normal level)   ${Y}claude-resume -r${R} pick a conversation   ${Y}claude${R} alone: strict, no exclusions
 
 ${M}SHELL${R}  ${B}tw${R} repo · ${B}two${R} with Opus · ${B}twt${R} worktree · ${B}tp${R} pane · ${B}ws-check ws-health ws-update${R} · ${B}claude-report${R}
 ${M}POWERSHELL${R}  ${B}dev devo devdash devagents devsave devcheck devsnapshot devrestoretest${R}

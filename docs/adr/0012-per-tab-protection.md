@@ -1,6 +1,6 @@
 # 0012. Three per-tab protection levels for Claude
 
-- Status: Accepted
+- Status: Accepted. Superseded in part by [0016](0016-solo-mode-inside-the-sandbox.md) (solo mode)
 - Date: 2026-11-20
 
 ## Context and problem statement

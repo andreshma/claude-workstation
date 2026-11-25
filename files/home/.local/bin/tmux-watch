@@ -4,15 +4,21 @@
 # (#(tmux-watch)) and its output is the traffic light you see on the right:
 #   ⚠ 2,5      tabs waiting for your approval or with an API error
 #   ⏳ 3(12m)  tabs with no Claude activity for a while (stalled?)
+#   ⛔ STOP    the emergency stop is on (ws-stop-all; resume with ws-stop-all --clear)
+#   🚨 2       sessions with repeated guard blocks, denials or sandbox hits (ws-anomaly; Windows alert with the tab)
 #   ◉ $4.1/h   estimated usage of all sessions over the last 10 min (green/yellow/red)
 #   5h 82%     usage limits, if your plan exposes them
 # It also sends Windows reminders (via win-notify.sh alert), with a pause between them.
 # Thresholds (tmux options, with their default value):
 #   @cwatch_remind 3 (min)   @cwatch_stall 10 (min)   @cburn_warn 5   @cburn_crit 15 (USD/h)
+#   @canomaly_n 5 (blocks)   @canomaly_min 10 (min)
+# Solo mode expiry (WS-AI-004): a tab whose @csolo_until has passed is returned to normal mode (tmux-solo normal).
+# WS_WATCH_STATE and WS_WATCH_BURN override the state folders in /tmp (tests).
 # Usage: tmux-watch          output for the bar
 #      tmux-watch --goto     jumps to the first tab that is waiting or stalled
 set -uo pipefail
-uid="$(id -u)"; burn="/tmp/claude-burn-$uid"; st="/tmp/claude-watch-$uid"; mkdir -p "$st" && chmod 700 "$st"
+uid="$(id -u)"; burn="${WS_WATCH_BURN:-/tmp/claude-burn-$uid}"; st="${WS_WATCH_STATE:-/tmp/claude-watch-$uid}"
+mkdir -p "$st" && chmod 700 "$st"
 now="$(date +%s)"
 opt() { local v; v="$(tmux show -gqv "$1")"; echo "${v:-$2}"; }
 remind=$(( $(opt @cwatch_remind 3) * 60 )); stall=$(( $(opt @cwatch_stall 10) * 60 ))
@@ -60,6 +66,30 @@ while IFS='|' read -r wid idx name pane main ts sub; do
   esac
 done < <(tmux list-windows -a -F '#{window_id}|#{window_index}|#{window_name}|#{pane_id}|#{@cmain}|#{@cts}|#{@csub}' 2>/dev/null)
 
+# Solo mode that expired: back to normal mode, once (the mark is cleared before tmux-solo runs).
+while IFS='|' read -r wid pane until name; do
+  [[ "$until" =~ ^[0-9]+$ ]] && (( now >= until )) || continue
+  tmux set -wu -t "$wid" @csolo_until 2>/dev/null
+  ( "$HOME/.local/bin/tmux-solo" normal "$pane" >/dev/null 2>&1 & )
+  alert "solo-$wid" 60 "$pane" "Claude · ${name#🤖}" "Solo mode expired: the tab went back to normal mode (same conversation)"
+done < <(tmux list-windows -a -f '#{@csolo}' -F '#{window_id}|#{pane_id}|#{@csolo_until}|#{window_name}' 2>/dev/null)
+
+# Anomalies (WS-AI-030): ws-anomaly runs in the background at most once a minute; the bar shows its last answer.
+anom=()
+if [[ -x "$HOME/.local/bin/ws-anomaly" ]]; then
+  if (( now - $(stat -c %Y "$st/anomaly" 2>/dev/null || echo 0) >= 60 )); then
+    : >> "$st/anomaly"; touch "$st/anomaly"
+    ( "$HOME/.local/bin/ws-anomaly" --tsv --threshold "$(opt @canomaly_n 5)" --minutes "$(opt @canomaly_min 10)" \
+        > "$st/anomaly.tmp" 2>/dev/null && mv "$st/anomaly.tmp" "$st/anomaly" & )
+  fi
+  while IFS=$'\t' read -r ases n kinds proj apane; do
+    [[ -n "$ases" ]] || continue
+    anom+=("$proj")
+    alert "anomaly-${ases//[^A-Za-z0-9_-]/_}" 1800 "${apane:-$(tmux display -p '#{pane_id}' 2>/dev/null)}" "Claude · $proj: $n blocked actions" \
+      "In $(opt @canomaly_min 10) min ($kinds). An agent may be probing. Menu → Claude → Emergency stop, or ws-stop-all --pane ${apane:-<pane>}"
+  done < "$st/anomaly"
+fi
+
 if [[ "${1:-}" == --goto ]]; then
   # Jumps to the NEXT one waiting for you, not the one already in front of you (it used to pick the first, which was
   # often the current one, and seemed to do nothing). switch-client also switches group; select-window only within it.
@@ -92,6 +122,8 @@ case "$level" in crit) c="$(tcolor alert colour196)" ;; warn) c="$(tcolor tool c
   "Estimated usage of \$${rate}/h over the last 10 min$( (( lim >= 0 )) && echo "; usage limit at ${lim}%")"
 
 out=""
+[[ -e "${WS_STATE_DIR:-$HOME/.local/state}/ws-stop-all" ]] && out+="#[fg=$(tcolor alert colour196),bold,reverse] ⛔ STOP #[default] "
+(( ${#anom[@]} )) && out+="#[fg=$(tcolor alert colour196),bold]🚨 ${#anom[@]}#[default] "
 (( ${#waiting[@]} )) && out+="#[fg=$(tcolor alert colour196),bold]⚠ $(IFS=,; echo "${waiting[*]}")#[default] "
 (( ${#stalled[@]} )) && out+="#[fg=$(tcolor tool colour214)]⏳ $(IFS=,; echo "${stalled[*]}")#[default] "
 [[ "$rate" != 0.0 || "$level" != ok ]] && out+="#[fg=$c]◉ \$${rate}/h#[default] "

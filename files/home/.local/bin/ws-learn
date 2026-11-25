@@ -4,10 +4,13 @@
   ws-learn facts [--days 14]   Claude (with the MemPalace tools, read-only) reviews your diary and your recent
                                   sessions and PROPOSES stable facts about you: preferences, conventions,
                                   architecture decisions, tools, projects. You choose which ones; only those are
-                                  saved to the MemPalace graph (mempalace_kg_add). That way any Claude with
+                                  saved to the MemPalace graph through «ws-memory save-facts». That way any Claude with
                                   MemPalace looks them up before answering.
   ws-learn commands            from the requests you repeat (ws-report), Claude proposes your own slash commands
-                                  (~/.claude/commands/<name>.md). You choose which are created; never overwrites.
+                                  (~/.claude/commands/<name>.md). Each proposal is checked (shape, secrets, invisible
+                                  characters, what the guard blocks) and you read its full text (fzf preview) before
+                                  you choose which are created; never overwrites.
+It refuses to run from inside Claude (CLAUDECODE set): what it saves steers later sessions, so a person approves it.
 Log of what was learned: ~/.local/share/ws-telemetry/learning/YYYY-MM-DD.jsonl.
 """
 from __future__ import annotations
@@ -16,9 +19,11 @@ import datetime as dt
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess  # nosec B404 — claude, ws-report, fzf with fixed arguments
 import sys
+import tempfile
 from pathlib import Path
 
 HOME = Path.home()
@@ -26,7 +31,14 @@ BIN = HOME / ".local/bin"
 DATA = Path(os.environ.get("WS_TELEMETRY_DIR", HOME / ".local/share/ws-telemetry"))
 CMDS = Path(os.environ.get("WS_LEARN_COMMANDS", HOME / ".claude/commands"))
 READ_TOOLS = "mcp__mempalace__mempalace_diary_read,mcp__mempalace__mempalace_search,mcp__mempalace__mempalace_kg_query,mcp__mempalace__mempalace_kg_stats"
-WRITE_TOOLS = "mcp__mempalace__mempalace_kg_add"
+# Checks on a proposed slash command (WS-AI-014, WS-AI-017): the model wrote it, and it will steer later sessions.
+NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,40}")
+SECRET_RE = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|AccountKey=[A-Za-z0-9+/=]{20,}|sk-ant-[A-Za-z0-9_-]{20,}"
+                       r"|gh[pousr]_[A-Za-z0-9]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}|SharedAccess[S]ignature=|[?&]sig=[A-Za-z0-9%]{30,}")
+INVISIBLE_RE = re.compile("[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff\U000e0000-\U000e007f]")
+RISKY_RE = re.compile(r"(curl|wget)[^|\n]*\|\s*(sudo\s+)?(ba|z|da)?sh\b|--no-verify|--dangerously|bypassPermissions|core\.hooksPath"
+                      r"|ws\.gate\.|\.claude/(settings|hooks)|\.claude\.json|claude\s+(mcp|plugin)\s+(add|install)|allowed-tools", re.I)
+URL_RE = re.compile(r"https?://[^\s)>\]\"']+")
 
 
 def lang_name() -> str:
@@ -61,16 +73,25 @@ def json_of(text: str):
         return []
 
 
-def choose(options: list[str]) -> list[int]:
-    """Chosen indexes: fzf multi (Tab) if there is a terminal; otherwise a line of numbers (e.g. "1 3 4" or "all")."""
+def choose(options: list[str], previews: list[str] | None = None) -> list[int]:
+    """Chosen indexes: fzf multi (Tab) if there is a terminal; otherwise a line of numbers (e.g. "1 3 4" or "all").
+    With previews, the full text of each option is shown before choosing (fzf preview pane, or printed under it)."""
     if not options:
         return []
     if sys.stdin.isatty() and shutil.which("fzf"):
-        r = subprocess.run(["fzf", "--multi", "--reverse", "--prompt", "save> ", "--header", "Tab marks · Enter saves the marked ones · Esc saves nothing"],  # nosec B603 B607
-                           input="\n".join(f"{i + 1}\t{o}" for i, o in enumerate(options)), capture_output=True, text=True).stdout
+        with tempfile.TemporaryDirectory(prefix="ws-learn.") as tmp:
+            args = ["fzf", "--multi", "--reverse", "--prompt", "save> ", "--header", "Tab marks · Enter saves the marked ones · Esc saves nothing"]
+            if previews:
+                for i, p in enumerate(previews, 1):
+                    Path(tmp, f"{i}.md").write_text(p, encoding="utf-8")
+                args += ["--delimiter", "\t", "--preview", f"cat -- {shlex.quote(tmp)}/{{1}}.md", "--preview-window", "down,60%,wrap"]
+            r = subprocess.run(args, input="\n".join(f"{i + 1}\t{o}" for i, o in enumerate(options)),  # nosec B603 B607
+                               capture_output=True, text=True).stdout
         return [int(l.split("\t", 1)[0]) - 1 for l in r.splitlines() if l.strip()]
     for i, o in enumerate(options, 1):
         print(f"  {i}. {o}")
+        if previews:
+            print("\n".join("       " + l for l in previews[i - 1].splitlines()))
     r = input("Which ones do I save? (numbers separated by spaces, \"all\" or Enter for none): ").strip().lower()
     if r in ("all", "todos"):
         return list(range(len(options)))
@@ -98,12 +119,33 @@ def facts(days: int) -> int:
     if not chosen:
         print("Nothing was saved."); return 0
     sel = [props[i] for i in chosen]
-    out = claude("Save EXACTLY these facts to the MemPalace graph, one by one, with mempalace_kg_add "
-                 "(subject, predicate, object; source = 'ws-learn'). Do not add or change anything. At the end say how many you saved.",
-                 WRITE_TOOLS, json.dumps(sel, ensure_ascii=False))
-    log("facts", sel)
-    print(out.strip() or f"Saved {len(sel)} facts.")
-    return 0
+    # The approved path (WS-AI-012/013): ws-memory allows only these exact facts through the memory gate, stamps the
+    # provenance, checks each save in the tool results and logs «facts-saved» itself.
+    r = subprocess.run([str(BIN / "ws-memory"), "save-facts"], input=json.dumps(sel, ensure_ascii=False), text=True)  # nosec B603
+    return r.returncode
+
+
+def check_command(c) -> tuple[dict | None, str]:
+    """Shape and safety check of one proposed slash command: (clean command, "") or (None, why it was rejected)."""
+    if not isinstance(c, dict):
+        return None, "not an object"
+    name, desc, prompt = c.get("name"), c.get("description", ""), c.get("prompt")
+    if not isinstance(name, str) or not NAME_RE.fullmatch(name):
+        return None, "invalid name"
+    if not isinstance(desc, str) or len(desc) > 200 or "\n" in desc or "\r" in desc:
+        return None, "the description is not one line of up to 200 characters"
+    if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 8000:
+        return None, "the prompt is missing or over 8000 characters"
+    text = f"{desc}\n{prompt}"
+    if SECRET_RE.search(text):
+        return None, "it contains something that looks like a secret"
+    if INVISIBLE_RE.search(text):
+        return None, "it contains invisible Unicode characters"
+    if RISKY_RE.search(text):
+        return None, "it asks for what the guard blocks (download and run, skipping a gate, editing settings or hooks, adding MCP servers or tools)"
+    if prompt.lstrip().startswith("---"):
+        return None, "the prompt would add its own frontmatter"
+    return {"name": name, "description": desc.strip(), "prompt": prompt.strip(), "urls": sorted(set(URL_RE.findall(text)))}, ""
 
 
 def commands() -> int:
@@ -119,16 +161,25 @@ def commands() -> int:
                "\"description\":\"…\",\"prompt\":\"command text in Markdown; use $ARGUMENTS where the variable part goes\"}] "
                f"with at most 8. Lowercase names with hyphens; description and prompt in {lang_name()}.",
                "", json.dumps(rec, ensure_ascii=False))
-    props = [c for c in json_of(r) if isinstance(c, dict) and re.fullmatch(r"[a-z0-9][a-z0-9-]{1,40}", str(c.get("name", "")))]
+    props = []
+    for c in json_of(r):
+        ok, why = check_command(c)
+        if ok:
+            props.append(ok)
+        else:
+            print(f"  rejected /{c.get('name', '?') if isinstance(c, dict) else '?'}: {why}")
     if not props:
-        print("Claude proposed no commands."); return 0
-    chosen = choose([f"/{c['name']} — {c.get('description', '')}" for c in props])
+        print("Claude proposed no commands that pass the checks."); return 0
+    chosen = choose([f"/{c['name']} — {c['description']}" + ("  ⚠ has URLs" if c["urls"] else "") for c in props],
+                    [(f"⚠ URLs in this command (check them): {' '.join(c['urls'])}\n\n" if c["urls"] else "")
+                     + f"/{c['name']} — {c['description']}\n\n{c['prompt']}" for c in props])
     CMDS.mkdir(parents=True, exist_ok=True); created = []
     for i in chosen:
         c = props[i]; f = CMDS / f"{c['name']}.md"
         if f.exists():
             print(f"  skipped /{c['name']} ({f} already exists)"); continue
-        f.write_text(f"---\ndescription: {c.get('description', '')}\n---\n\n{c['prompt']}\n", encoding="utf-8")
+        # JSON string = valid YAML scalar: the description cannot add keys (allowed-tools…) to the frontmatter.
+        f.write_text(f"---\ndescription: {json.dumps(c['description'], ensure_ascii=False)}\n---\n\n{c['prompt']}\n", encoding="utf-8")
         print(f"  done    /{c['name']} → {f}"); created.append(c["name"])
     log("commands", created)
     if created:
@@ -140,6 +191,8 @@ def main() -> int:
     a = sys.argv[1:]
     if not a or a[0] not in ("facts", "commands"):
         print(__doc__); return 2
+    if os.environ.get("CLAUDECODE"):
+        sys.exit("✖ ws-learn saves what YOU approve: run it yourself in a terminal (Menu → Usage), not from Claude")
     if a[0] == "facts":
         return facts(int(a[a.index("--days") + 1]) if "--days" in a else 14)
     return commands()

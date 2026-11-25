@@ -27,6 +27,7 @@ from pathlib import Path
 
 SETTINGS = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
 OTEL = Path(os.environ.get("WS_OTEL_DIR") or Path(os.environ.get("WS_TELEMETRY_DIR") or Path.home() / ".local/share/ws-telemetry") / "otel")
+WRAPPERS = {"win-hook.sh", "memory-filter.sh"}
 NO_RUN = {"PreToolUse", "PermissionRequest", "PermissionDenied"}
 INPUT = {"SessionStart": {"source": "startup"}, "SessionEnd": {"reason": "other"}, "UserPromptSubmit": {"prompt": "ws-hooks measurement"},
            "Notification": {"notification_type": "idle_prompt", "message": "measurement"}, "PreCompact": {"trigger": "manual"}}
@@ -52,7 +53,8 @@ def hooks(event: str | None = None) -> list[tuple[str, str, list[str], int | Non
 def name(cmd: str, args: list[str]) -> str:
     """Short name: the script and what tells it apart (the .ps1, the .py or the subcommand)."""
     base = cmd.split()[0].replace("\\", "/").split("/")[-1]
-    rest = cmd.split()[1:] + args
+    # Wrappers (memory-filter.sh runs win-hook.sh, which runs the Windows program) are skipped: the label is the hook.
+    rest = [a for a in cmd.split()[1:] + args if a.replace("\\", "/").split("/")[-1] not in WRAPPERS]
     key = next((a.replace("\\", "/").split("/")[-1] for ext in ((".ps1", ".py", ".sh"), (".exe",)) for a in rest if a.lower().endswith(ext)), "")
     extra = key or " ".join(a for a in rest if not a.startswith("-"))[:30]
     return f"{base} {extra}".strip()

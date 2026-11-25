@@ -1,0 +1,53 @@
+# Monthly continuous evidence (WS-GOV-005, WS-GOV-004): the control catalogue, the AI-BOM and the framework editions.
+# tests/compliance.sh and tests/ai-bom.sh also run on every push in ci.yml (suites job); this schedule catches what
+# changes without a commit: an implemented control's check that starts failing on a fresh runner, and a new edition
+# of the OWASP LLM or agentic Top 10 (the run turns red with an issue-ready summary; network errors only warn).
+# GitHub's own actions are pinned by commit SHA with the version as a comment (Dependabot keeps them current).
+name: compliance-monthly
+
+on:
+  schedule:
+    - cron: "17 6 1 * *"     # 06:17 UTC on the first of each month
+  workflow_dispatch:
+
+permissions:
+  contents: read            # least privilege: read the repo only
+
+concurrency:
+  group: compliance-monthly
+  cancel-in-progress: false
+
+jobs:
+  catalogue:
+    name: Compliance catalogue and AI-BOM
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      # The suites the catalogue's checks run need these (jq, tmux for tests/run.sh, age and zstd for backups).
+      - name: Dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq tmux age zstd >/dev/null
+      - name: tests/compliance.sh (schema, traceability, evidence, implemented checks, coverage tables)
+        run: |
+          git config --global user.email ci@example.invalid; git config --global user.name ci
+          bash tests/compliance.sh
+      - name: tests/ai-bom.sh (the AI-BOM matches the files it describes)
+        run: bash tests/ai-bom.sh
+      - name: Coverage report
+        run: |
+          python3 files/home/.local/lib/ws_compliance.py --ci --kit . --no-run --json > compliance.json
+          jq -r '"Controls: \(.total.controls) · implemented \(.total.implemented) · partial \(.total.partial) · missing \(.total.missing)"' \
+            compliance.json >> "$GITHUB_STEP_SUMMARY"
+
+  currency:
+    name: Framework editions still current
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: OWASP Top 10 for LLM and for agentic applications
+        run: python3 .github/scripts/framework_currency.py --summary "$GITHUB_STEP_SUMMARY"

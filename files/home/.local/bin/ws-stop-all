@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+#
+# ws-stop-all — emergency stop for every agent (WS-AI-025). In this order, so containment does not wait for the panes:
+#   1. writes ~/.local/state/ws-stop-all: the ws-runtime-gate.sh hook then blocks every prompt and every tool call
+#      in every Claude (a tab that does not close, a headless «claude -p», a swarm agent), and ws-telegram refuses
+#      remote runs and button answers;
+#   2. turns Telegram off (ws-telegram off);
+#   3. records an audit event (audit.sh stop-all);
+#   4. interrupts (Escape) and closes (/exit) the Claude in every tmux pane; after 10 s Ctrl+C twice. Panes still
+#      running after 20 s are listed by name, and so are headless Claude processes outside tmux (--kill ends them).
+# Nothing resumes on its own: «ws-stop-all --clear» removes the marker; Telegram stays off until «ws-telegram on».
+# Usage:
+#   ws-stop-all [--yes] [--kill] [--reason TEXT]   everything (asks first when run in a terminal without --yes)
+#   ws-stop-all --pane %ID [--yes]                 only the Claude of that pane (no marker; Telegram stays on)
+#   ws-stop-all --session NAME [--yes]             only the Claudes of one tmux session (a swarm: swarm-<id>)
+#   ws-stop-all --clear                            removes the marker (prompts and tools run again)
+#   ws-stop-all --status | --list                  marker state · panes that have a Claude now
+# Menu → Claude → Emergency stop. WS_STATE_DIR overrides ~/.local/state (tests); WS_STOP_WAIT the 20 s.
+set -uo pipefail
+PATH="$HOME/.local/bin:$PATH"
+ST="${WS_STATE_DIR:-$HOME/.local/state}"; MARK="$ST/ws-stop-all"
+WAIT="${WS_STOP_WAIT:-20}"
+say() { if [[ -n "${TMUX:-}" && ! -t 1 ]]; then tmux display -d 8000 "$1" 2>/dev/null; fi; printf '%s\n' "$1"; }
+audit() { printf '{"cwd":"%s"}' "$PWD" | "$HOME/.claude/hooks/audit.sh" "$1" "$2" >/dev/null 2>&1 || true; }
+
+# claude_running <pane> — same test as tmux-solo: the foreground command is not a shell, or a claude process
+# (the native binary is named after its version, e.g. 2.1.325) hangs from the pane's shell.
+claude_running() {
+  local root cur
+  cur="$(tmux display -p -t "$1" '#{pane_current_command}' 2>/dev/null)" || return 1
+  [[ -n "$cur" ]] || return 1
+  [[ "$cur" =~ ^(bash|zsh|sh|fish|dash)$ ]] || return 0
+  root="$(tmux display -p -t "$1" '#{pane_pid}' 2>/dev/null)"
+  ps -e -o pid=,ppid=,comm=,args= | awk -v r="$root" '
+    { parent[$1] = $2
+      if ($3 ~ /^claude$/ || $4 ~ /(^|\/)claude$/ || $4 ~ /\/claude\/versions\// || ($3 == "node" && $0 ~ /claude/)) c[$1] = 1 }
+    END { for (p in c) for (q = parent[p]; q > 1; q = parent[q]) if (q == r) { found = 1; break }
+          exit !found }'
+}
+# panes [session] — "%id<TAB>label" of every pane with a Claude
+panes() {
+  local id label; local -a scope=(-a)
+  [[ -n "${1:-}" ]] && scope=(-s -t "$1")
+  while IFS=$'\t' read -r id label; do
+    [[ -n "$id" ]] && claude_running "$id" && printf '%s\t%s\n' "$id" "$label"
+  done < <(tmux list-panes "${scope[@]}" -F '#{pane_id}	#{session_name}:#{window_index} #{window_name}' 2>/dev/null)
+}
+headless() { ps -e -o pid=,args= | awk '$0 ~ /(^|[ \/])claude( |$)/ && $0 ~ / -p( |$)/ && $0 !~ /awk/ { print $1 "\t" substr($0, index($0, $2), 80) }'; }
+
+confirm() {
+  [[ "$yes" == 1 || ! -t 0 ]] && return 0
+  local r; read -r -p "$1 [y/N] " r; [[ "$r" =~ ^[yYsS] ]]
+}
+
+# stop <pane list file> — interrupts and closes them all at once; prints the ones still running.
+stop() {
+  local f="$1" id label i left
+  [[ -s "$f" ]] || return 0
+  while IFS=$'\t' read -r id _; do tmux send-keys -t "$id" Escape 2>/dev/null; done < "$f"; sleep 0.5
+  while IFS=$'\t' read -r id _; do tmux send-keys -t "$id" C-c 2>/dev/null; done < "$f"; sleep 0.4
+  while IFS=$'\t' read -r id _; do
+    tmux send-keys -t "$id" -l "/exit" 2>/dev/null; tmux send-keys -t "$id" Enter 2>/dev/null
+  done < "$f"
+  for (( i = 0; i < WAIT * 2; i++ )); do
+    left=0
+    while IFS=$'\t' read -r id _; do claude_running "$id" && left=$((left + 1)); done < "$f"
+    (( left == 0 )) && return 0
+    if (( i == WAIT )); then
+      while IFS=$'\t' read -r id _; do
+        claude_running "$id" && { tmux send-keys -t "$id" C-c; sleep 0.3; tmux send-keys -t "$id" C-c; }
+      done < "$f"
+    fi
+    sleep 0.5
+  done
+  while IFS=$'\t' read -r id label; do claude_running "$id" && printf '%s\t%s\n' "$id" "$label"; done < "$f"
+}
+
+yes=0 kill=0 reason="manual" mode=all target=""
+while (( $# )); do
+  case "$1" in
+    --yes|-y) yes=1 ;;
+    --kill) kill=1 ;;
+    --reason) reason="${2:-manual}"; shift ;;
+    --pane) mode=pane; target="${2:?pane}"; shift ;;
+    --session) mode=session; target="${2:?session}"; shift ;;
+    --clear)
+      [[ -e "$MARK" ]] || { echo "The emergency stop is not on."; exit 0; }
+      rm -f "$MARK"; audit stop-all-clear "cleared"
+      echo "Emergency stop cleared: prompts and tools run again. Telegram stays off until: ws-telegram on"; exit 0 ;;
+    --status)
+      if [[ -e "$MARK" ]]; then echo "ON since $(sed -n 's/^ts=//p' "$MARK") ($(sed -n 's/^reason=//p' "$MARK")). ws-stop-all --clear to resume."
+      else echo "off"; fi; exit 0 ;;
+    --list) panes; exit 0 ;;
+    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "usage: ws-stop-all [--yes] [--kill] [--reason TEXT] | --pane %ID | --session NAME | --clear | --status | --list" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+list="$(mktemp)"; trap 'rm -f "$list"' EXIT
+case "$mode" in
+  pane)
+    [[ "$target" =~ ^%[0-9]+$ ]] || { echo "✖ --pane needs a pane id like %12" >&2; exit 2; }
+    confirm "Stop the Claude in pane $target?" || exit 0
+    claude_running "$target" && printf '%s\t%s\n' "$target" "$(tmux display -p -t "$target" '#{session_name}:#{window_index} #{window_name}' 2>/dev/null)" > "$list"
+    audit stop-pane "$target: $reason" ;;
+  session)
+    confirm "Stop every Claude in tmux session $target?" || exit 0
+    panes "$target" > "$list"
+    audit stop-session "$target: $reason" ;;
+  all)
+    confirm "EMERGENCY STOP: block every Claude, close them all and turn Telegram off?" || exit 0
+    mkdir -p "$ST" && chmod 700 "$ST"
+    printf 'ts=%s\nreason=%s\nby=%s\n' "$(date -Is)" "${reason//$'\n'/ }" "${USER:-?}" > "$MARK"; chmod 600 "$MARK"
+    command -v ws-telegram >/dev/null && ws-telegram off >/dev/null 2>&1
+    audit stop-all "$reason"
+    panes > "$list" ;;
+esac
+
+n="$(grep -c . "$list")"
+left="$(stop "$list")"
+msg="Stopped $(( n - $(grep -c . <<<"$left") )) of $n Claude tabs"
+[[ "$mode" == all ]] && msg="⛔ Emergency stop ON: every prompt and tool is blocked. $msg; Telegram off"
+[[ -n "$left" ]] && msg+=". Still running (close them by hand): $(cut -f2 <<<"$left" | paste -sd, | sed 's/,/, /g')"
+if [[ "$mode" == all ]]; then
+  h="$(headless)"
+  if [[ -n "$h" ]]; then
+    if (( kill )); then cut -f1 <<<"$h" | xargs -r kill 2>/dev/null; msg+=". Ended $(grep -c . <<<"$h") headless Claude processes"
+    else msg+=". Headless Claude processes (blocked by the marker; --kill ends them): $(cut -f1 <<<"$h" | paste -sd' ')"; fi
+  fi
+  msg+=". Resume: ws-stop-all --clear"
+fi
+say "$msg"
+[[ -z "$left" ]]

@@ -50,6 +50,9 @@ setup() {
   # The kit's libraries (ws-routing.sh, ws-lang.sh and its packs); not the rest of ~/.local/lib.
   mkdir -p "$TH/.local/lib"; for d in "$RH"/.local/lib/ws-*; do [[ -e "$d" ]] && cp -a "$d" "$TH/.local/lib/"; done
   for d in tmux-claude claude-solo ws-telemetry; do [[ -d "$RH/.config/$d" ]] && cp -a "$RH/.config/$d" "$TH/.config/"; done
+  # What the normal level adds (only the kit file: the generated profiles of your home stay out).
+  mkdir -p "$TH/.config/claude-levels"
+  [[ -f "$RH/.config/claude-levels/normal-adds.json" ]] && cp "$RH/.config/claude-levels/normal-adds.json" "$TH/.config/claude-levels/"
   # Your own choices come along with the copy and could flip a test: they are dropped from the copy only.
   rm -f "$TH/.config/tmux-claude/"{no-ble,appearance,settings,lang}
   [[ -f "$RH/.tmux.conf" ]] && cp "$RH/.tmux.conf" "$TH/.tmux.conf"
@@ -69,6 +72,7 @@ setup() {
 #!/bin/bash
 # --version and any non-interactive use answer and exit: only "wait for /exit" in a pane.
 [[ "${1:-}" == --version ]] && { echo "2.1.999 (Claude Code)"; exit 0; }
+[[ "${1:-}" == --help ]] && { echo "  --setting-sources <sources>"; exit 0; }
 if [[ "${1:-}" == auth && "${2:-}" == status ]]; then
   if [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then echo "Organization: ${ORG_PERSONAL:-Personal Org}"; else echo "Organization: Company"; fi
   echo "Email: test@example.com"; exit 0
@@ -93,7 +97,7 @@ EOF
 # Variables of the isolated environment for each test command.
 # The XDG folders are unset so the scripts use the isolated home: CI runners set XDG_CONFIG_HOME, and the kit's
 # scripts then read and wrote favorites and folder roots outside it.
-E() { env -u TMUX -u CLAUDE_CONFIG_DIR -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_STATE_HOME -u XDG_CACHE_HOME HOME="$TH" TMUX_TMPDIR="$T/s/$SOCK" PATH="$TH/.local/bin:$FB:/usr/bin:/bin" \
+E() { env -u TMUX -u CLAUDE_CONFIG_DIR -u CLAUDECODE -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_STATE_HOME -u XDG_CACHE_HOME HOME="$TH" TMUX_TMPDIR="$T/s/$SOCK" PATH="$TH/.local/bin:$FB:/usr/bin:/bin" \
       TERM=xterm-256color WST_LOG="$T/claude.log" WS_TELEMETRY_WIN="$T/win" WS_BACKUP_DEST="$T/dest" WS_BACKUP_LOCK="$T/backup.lock" WS_BACKUP_MIN_GB=0 WS_RECOVER_WAIT=3 "$@"; }
 tm() { E tmux "$@"; }
 have() { [[ -x "$TH/.local/bin/$1" ]]; }
@@ -155,12 +159,12 @@ test_solo_mode() {
   conversation_in "$T/repos" no
   E tmux-solo this "$p" >/dev/null 2>&1; sleep 2
   [[ "$(tm show -wqv -t dev: @csolo)" == 1 ]] && ok "switching to solo mode marks the tab" || fail "solo mode: no @csolo mark"
-  tail -1 "$T/claude.log" | grep -q -- 'args=--permission-mode auto --settings' && ok "in a tab without a conversation, solo mode starts a new Claude with the same flags" || fail "solo mode without a conversation ($(tail -1 "$T/claude.log"))"
+  tail -1 "$T/claude.log" | grep -q -- 'args=--permission-mode auto --settings .*/solo\.json$' && ok "in a tab without a conversation, solo mode starts a new Claude with the same flags" || fail "solo mode without a conversation ($(tail -1 "$T/claude.log"))"
   conversation_in "$T/repos"
   E tmux-solo this "$p" >/dev/null 2>&1; sleep 2
-  tail -1 "$T/claude.log" | grep -q -- 'args=--continue --permission-mode auto --settings' && ok "reopens Claude in auto without sandbox, resuming the conversation" || fail "solo mode: Claude was not reopened with the flags ($(tail -1 "$T/claude.log"))"
+  tail -1 "$T/claude.log" | grep -q -- 'args=--continue --permission-mode auto --settings' && ok "reopens Claude in auto inside the sandbox, resuming the conversation" || fail "solo mode: Claude was not reopened with the flags ($(tail -1 "$T/claude.log"))"
   E tmux-solo normal "$p" >/dev/null 2>&1; sleep 2
-  [[ -z "$(tm show -wqv -t dev: @csolo)" ]] && tail -1 "$T/claude.log" | grep -q 'args=--continue$' && ok "going back to normal resumes with the sandbox" || fail "going back to normal ($(tail -1 "$T/claude.log"))"
+  [[ -z "$(tm show -wqv -t dev: @csolo)" ]] && tail -1 "$T/claude.log" | grep -q 'args=--continue --settings .*/normal\.json$' && ok "going back to normal resumes at the normal level" || fail "going back to normal ($(tail -1 "$T/claude.log"))"
   git -C "$T/repos" init -q -b main 2>/dev/null; git -C "$T/repos" -c user.email=t@t -c user.name=t -c core.hooksPath=/dev/null commit -q --allow-empty -m "chore: test repo"
   E tmux-solo worktree "$T/repos" >/dev/null 2>&1; sleep 1
   ls -d "$T"/repos.wt/solo-* >/dev/null 2>&1 && ok "worktree solo/<date> created" || fail "solo mode worktree"
@@ -180,10 +184,10 @@ test_accounts() {
   # A tab where Claude never received a message: the switch starts a new Claude instead of failing to continue.
   conversation_in "$T/repos" no
   E claude-account tab "$p" >/dev/null 2>&1; sleep 2
-  tail -1 "$T/claude.log" | grep -q "cfg=$TH/.claude-personal args=\$" && ok "in a tab without a conversation, switching account starts a new Claude with its login" || fail "switch without a conversation ($(tail -1 "$T/claude.log"))"
+  tail -1 "$T/claude.log" | grep -q "cfg=$TH/.claude-personal args=--settings [^ ]*/normal\.json\$" && ok "in a tab without a conversation, switching account starts a new Claude with its login" || fail "switch without a conversation ($(tail -1 "$T/claude.log"))"
   conversation_in "$T/repos"
   E claude-account tab "$p" >/dev/null 2>&1; sleep 2
-  tail -1 "$T/claude.log" | grep -q 'cfg=work args=--continue' && ok "back to the work account" || fail "going back to the work account ($(tail -1 "$T/claude.log"))"
+  tail -1 "$T/claude.log" | grep -q 'cfg=work args=--continue --settings [^ ]*/normal\.json$' && ok "back to the work account" || fail "going back to the work account ($(tail -1 "$T/claude.log"))"
   E claude-account tab "$p" >/dev/null 2>&1; sleep 2
   tail -1 "$T/claude.log" | grep -q "cfg=$TH/.claude-personal args=--continue" && ok "switching to personal reopens the same conversation with its login" || fail "switch to personal ($(tail -1 "$T/claude.log"))"
   E claude-account tab "$p" >/dev/null 2>&1; sleep 2   # the checks below start from the work account
@@ -554,6 +558,15 @@ EOF
   grep -q 'CHOSEN:1' <<<"$(TMUX_TMPDIR="$tt" tmux capture-pane -p -t tg)" && ok "your button 1 reaches the tab" || fail "the button did not reach the tab"
   [[ -z "$(ls "$g"/st/pending/ 2>/dev/null)" ]] && ok "the code is single-use" || fail "the code is still valid"
   grep -q 'You answered' "$g/calls" && ok "marks the message as answered" || fail "did not mark the message"
+  # Emergency stop (ws-stop-all): a button pressed on the phone sends nothing.
+  TMUX_TMPDIR="$tt" tmux new-window -d -t tg -n stop "bash -c 'printf \" Do you want to proceed?\n ❯ 1. Yes\n   2. No (esc)\n\"; read -rsn1 k; echo STOPPED:\$k; sleep 60'"
+  local pst; sleep 0.5; pst="$(TMUX_TMPDIR="$tt" tmux display -p -t tg:stop '#{pane_id}')"
+  mkdir -p "$g/state"; : > "$g/state/ws-stop-all"; rm -f "$g"/st/pending/*.json
+  WS_STATE_DIR="$g/state" tg_env "$W" notify wait "$pst" "Claude needs your permission to use Bash"
+  echo "42 1" > "$g/cb"; WS_STATE_DIR="$g/state" tg_env "$W" service --once; sleep 0.5
+  ! grep -q 'STOPPED' <<<"$(TMUX_TMPDIR="$tt" tmux capture-pane -p -t "$pst")" && grep -qs 'stop-all' "$g"/log/*.jsonl \
+    && ok "with the emergency stop on, a button sends nothing" || fail "a button reached the tab during the emergency stop"
+  rm -rf "$g/state"; rm -f "$g"/st/pending/*.json
   # Routing popup answered from Telegram: the answer goes to its file, only if the popup is still waiting.
   mkdir -p "$g/run/ws-routing"; : > "$g/run/ws-routing/remote-7.waiting"
   tg_env "$W" ask "$pane" "Model routing: test" "s=Switch to sonnet;n=Stay;x=Edit" "$g/run/ws-routing/remote-7"
@@ -688,7 +701,7 @@ test_groups() {
   local l; l="$(TMUX_TMPDIR="$tt" tmux list-windows -a -F '#S:#W')"
   grep -qx 'repos:api' <<<"$l" && grep -qx 'code:tool' <<<"$l" && ok "opens each conversation without a tab in the session of its group" || fail "groups: $l"
   grep -q '^repos:' <<<"$l" && ! grep -q '^dev:' <<<"$l" && ok "--reorganize moves the tabs from dev to their group" || fail "reorganize: $l"
-  grep -q 'claude --resume s-api' <<<"$(TMUX_TMPDIR="$tt" tmux capture-pane -p -t '=repos:api')" && ok "leaves the tab ready to resume (Enter)" || fail "did not leave the resume command"
+  grep -q 'claude-resume --resume s-api' <<<"$(TMUX_TMPDIR="$tt" tmux capture-pane -p -t '=repos:api')" && ok "leaves the tab ready to resume (Enter), at the normal level" || fail "did not leave the resume command"
 }
 
 test_traces() {
@@ -1208,7 +1221,21 @@ test_level() {
   r="$(E env PATH="$T/fc59:$TH/.local/bin:/usr/bin:/bin" WS_LEVELS_DIR="$T/levels" tmux-level --command bare)"
   [[ "$r" == "claude-resume --setting-sources project,local --settings '$T/levels/bare.json'" && "$(stat -c %a "$T/levels/bare.json")" == 600 ]] \
     && ok "bare starts with --setting-sources project,local and its profile (0600)" || fail "bare command: $r"
-  [[ "$(E tmux-level --command normal)" == claude-resume ]] && ok "normal starts through claude-resume (continues, or starts new when there is no conversation)" || fail "normal command: $(E tmux-level --command normal 2>&1)"
+  r="$(E env WS_LEVELS_DIR="$T/levels" tmux-level --command normal 2>&1)"
+  [[ "$r" == "claude-resume --settings '$T/levels/normal.json'" && "$(stat -c %a "$T/levels/normal.json")" == 600 ]] \
+    && jq -e '.sandbox.excludedCommands | index("az *") and index("git push *")' "$T/levels/normal.json" >/dev/null \
+    && ok "normal starts through claude-resume with the profile that adds the sandbox exclusions (0600)" || fail "normal command: $r"
+  jq -e '.sandbox | has("excludedCommands") | not' "$RH/.claude/settings.json" >/dev/null \
+    && ok "the user settings exclude no command from the sandbox (strict base; normal adds them)" || fail "settings.json still has sandbox.excludedCommands"
+  r="$(printf '%s' '{"permissions":{"allow":["Bash(ls:*)"],"deny":["Read(~/.aws/**)"],"disableBypassPermissionsMode":"disable"}}' > "$T/s-bp.json"; E tmux-level --profile bare "$T/s-bp.json")"
+  jq -e '.permissions == {deny: ["Read(~/.aws/**)"], disableBypassPermissionsMode: "disable"}' <<<"$r" >/dev/null \
+    && ok "bare keeps the bypass-mode lock in the floor" || fail "bare without disableBypassPermissionsMode: $r"
+  mkdir -p "$TH/.config/ws-agent/ops"
+  r="$(E env WS_LEVELS_DIR="$T/levels" tmux-level --command normal --agent ops 2>&1)"
+  [[ "$r" == "WS_AGENT=ops AZURE_CONFIG_DIR='$TH/.config/ws-agent/ops/azure' GH_CONFIG_DIR='$TH/.config/ws-agent/ops/gh' KUBECONFIG='$TH/.config/ws-agent/ops/kube/config' claude-resume --settings"* ]] \
+    && ! E env WS_LEVELS_DIR="$T/levels" tmux-level --command normal --agent missing >/dev/null 2>&1 \
+    && ok "an agent identity starts Claude with its own az, gh and kubectl credentials (and an unknown one is refused)" || fail "agent identity: $r"
+  rm -rf "$TH/.config/ws-agent"
   mkdir -p "$T/lvl"; conversation_in "$T/lvl" no; : > "$T/claude.log"
   tm -f /dev/null new-session -d -s dev -c "$T/lvl" "bash --norc --noprofile"; local p w; p="$(tm display -p -t dev '#{pane_id}')"; w="$(tm display -p -t dev '#{window_id}')"
   E env PATH="$T/fc59:$TH/.local/bin:/usr/bin:/bin" WS_LEVELS_DIR="$T/levels" tmux-level full "$p" >/dev/null 2>&1; sleep 1
@@ -1376,7 +1403,9 @@ case "$p" in
   *"HANDOFF PACKAGE"*) cat >/dev/null; printf '## Goal\nFinish the billing\n' ;;
   *"STABLE FACTS"*) echo '[{"subject":"user","predicate":"prefers","object":"Conventional Commits","evidence":"x"},{"subject":"user","predicate":"uses","object":"tmux","evidence":"y"}]' ;;
   *"slash commands"*) cat >/dev/null; echo '[{"name":"review-billing","description":"Reviews a billing PR","prompt":"Review $ARGUMENTS"}]' ;;
-  *"mempalace_kg_add"*) cat > "$WST_LOG.61.kg"; echo "Saved 1" ;;
+  *"mempalace_kg_add"*) in="$(cat)"; printf '%s' "$in" > "$WST_LOG.61.kg"
+    jq -c 'to_entries[] | {type: "assistant", message: {content: [{type: "tool_use", id: "t\(.key)", name: "mcp__mempalace__mempalace_kg_add", input: .value}]}},
+           {type: "user", message: {content: [{type: "tool_result", tool_use_id: "t\(.key)"}]}}' <<<"$in" ;;
 esac
 FAKE
   chmod +x "$fc/claude"
@@ -1394,6 +1423,9 @@ FAKE
   grep -q 'Conventional Commits' "$T/log.61.kg" 2>/dev/null && ! grep -q '"tmux"' "$T/log.61.kg" \
     && ok "learn: only the facts you choose are saved to MemPalace" || fail "ws-learn facts: $(cat "$T/log.61.kg" 2>/dev/null)"
   grep -q 'mcp__mempalace__mempalace_diary_read' "$T/log.61" && ok "learn: Claude only reads MemPalace when proposing" || fail "ws-learn without the read tools"
+  grep -q -- '--allowedTools mcp__mempalace__mempalace_kg_add' "$T/log.61" \
+    && grep -qs '"type": "facts-saved".*Conventional Commits' "$TH"/.local/share/ws-telemetry/learning/*.jsonl \
+    && ok "learn: the save goes through ws-memory (only kg_add, checked in the tool results, logged)" || fail "ws-learn facts did not go through ws-memory"
   # Spanish on purpose: recurring prompts for the normalizer of ws-report (see test_report).
   for i in 1 2 3; do printf '{"type":"user","sessionId":"ap%s","cwd":"/mnt/c/repos/ap","timestamp":"%s","message":{"content":"Revisa el PR de cobros por favor ahora %s"}}\n' "$i" "$(date -u +%FT%TZ)" "$i" > "$d/ap$i.jsonl"; done
   printf '1\n' | E "${cg[@]}" WS_LEARN_COMMANDS="$T/cmds" ws-learn commands >/dev/null 2>&1

@@ -20,6 +20,9 @@ Usage:
                                                     active hours, turns, cost, model, lines and commits by ticket
   ws-telemetry week [YYYY-Www] [--current] [--telegram]     weekly report in Markdown (against the previous week)
   ws-telemetry budgets [--alerts]                 month's spend against ~/.config/ws-telemetry/budgets.conf
+  ws-telemetry budgets --override <project> [hours]   lets work go on in a project over a hard budget (24 h by default)
+  ws-telemetry prompts [--days 7] [--json] [--alerts [--rate N]]   approval fatigue: approvals per hour, time to answer,
+                                                    answers under 2 s and permanent allow rules (WS-AI-006)
   ws-telemetry export                              CSV of turns, traces and estimation for Excel or Power BI
 """
 from __future__ import annotations
@@ -42,6 +45,7 @@ CLAUDE = Path(os.environ.get("WS_TELEMETRY_CLAUDE", HOME / ".claude"))
 DATA = Path(os.environ.get("WS_TELEMETRY_DIR", HOME / ".local/share/ws-telemetry"))
 RAW, CACHE = DATA / "raw", DATA / "cache"
 RETENTION_DAYS = 395            # 13 months
+STATE = Path(os.environ.get("WS_STATE_DIR") or HOME / ".local/state")
 REFRESH_S = 60
 
 
@@ -932,21 +936,36 @@ def estimate(turns: list[dict], tr: list[dict], by: str = "ticket", since: dt.da
     return sorted(rows, key=lambda f: -f["cost"])
 
 
+def budget_conf() -> tuple[dict, bool]:
+    """(limits, hard) from ~/.config/ws-telemetry/budgets.conf. «hard=1» is a switch, not a project: with it, a
+    project at 100 % is held by the ws-runtime-gate.sh hook (WS-AI-019)."""
+    conf = HOME / ".config/ws-telemetry/budgets.conf"
+    limits: dict[str, float] = {}
+    hard = False
+    try:
+        text = conf.read_text(encoding="utf-8")
+    except OSError:
+        return limits, hard
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if "=" in line:
+            k, v = (x.strip() for x in line.split("=", 1))
+            if k == "hard":
+                hard = v.lower() in ("1", "yes", "true", "on")
+                continue
+            try:
+                limits[k] = float(v)
+            except ValueError:
+                continue
+    return limits, hard
+
+
 def budgets(turns: list[dict]) -> list[dict]:
     """~/.config/ws-telemetry/budgets.conf: lines "project=usd_per_month" (API equivalent); "*=usd" = total.
     Current month's spend, % used and linear projection to the end of the month."""
-    conf = HOME / ".config/ws-telemetry/budgets.conf"
-    if not conf.exists():
+    limits, _ = budget_conf()
+    if not limits:
         return []
-    limits = {}
-    for line in conf.read_text(encoding="utf-8").splitlines():
-        line = line.split("#", 1)[0].strip()
-        if "=" in line:
-            k, v = line.split("=", 1)
-            try:
-                limits[k.strip()] = float(v)
-            except ValueError:
-                continue
     today = dt.date.today()
     start = today.replace(day=1).isoformat()
     month_days = ((today.replace(day=28) + dt.timedelta(days=4)).replace(day=1) - dt.timedelta(days=1)).day
@@ -962,6 +981,53 @@ def budgets(turns: list[dict]) -> list[dict]:
         rows.append({"project": "(total)" if k == "*" else k, "key": k, "spent": round(g, 2), "budget": lim,
                       "pct": round(100 * g / lim) if lim else 0, "projection": round(g / today.day * month_days, 2)})
     return sorted(rows, key=lambda f: -f["pct"])
+
+
+def write_budget_flag(rows: list[dict]) -> None:
+    """With hard=1, ~/.local/state/ws-budget-over lists the projects at or over 100 % (read by ws-runtime-gate.sh,
+    which ignores it once it is 2 h old). Without hard=1 or with nothing over, the file is removed."""
+    _, hard = budget_conf()
+    flag = STATE / "ws-budget-over"
+    over = [{k: r[k] for k in ("project", "pct", "spent", "budget")} for r in rows if r.get("budget") and r["pct"] >= 100]
+    try:
+        if hard and over:
+            STATE.mkdir(parents=True, exist_ok=True)
+            tmp = flag.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"ts": dt.datetime.now().isoformat(timespec="seconds"), "over": over}), encoding="utf-8")
+            os.chmod(tmp, 0o600); tmp.replace(flag)
+        else:
+            flag.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def budget_override(project: str, hours: float) -> int:
+    """Lets work go on in a project over its hard budget for some hours; recorded in the audit log."""
+    if not re.fullmatch(r"[A-Za-z0-9._@*() -]{1,80}", project) or not 0 < hours <= 24 * 31:
+        print("usage: ws-telemetry budgets --override <project> [hours (1 to 744)]", file=sys.stderr); return 2
+    f = STATE / "ws-budget-override"
+    now = time.time()
+    keep = []
+    try:
+        for line in f.read_text(encoding="utf-8").splitlines():
+            parts = line.rsplit(" ", 1)
+            if len(parts) == 2 and parts[1].isdigit() and int(parts[1]) > now and parts[0] != project:
+                keep.append(line)
+    except OSError:
+        pass
+    until = int(now + hours * 3600)
+    keep.append(f"{project} {until}")
+    STATE.mkdir(parents=True, exist_ok=True)
+    f.write_text("\n".join(keep) + "\n", encoding="utf-8"); os.chmod(f, 0o600)
+    audit = HOME / ".claude/hooks/audit.sh"
+    if os.access(audit, os.X_OK):
+        try:
+            subprocess.run([str(audit), "budget-override", f"{project} for {hours:g} h"], input=json.dumps({"cwd": os.getcwd()}),
+                           text=True, timeout=10, capture_output=True)  # nosec B603
+        except (OSError, subprocess.SubprocessError):
+            pass
+    print(f"{project}: work may go on over its budget until {dt.datetime.fromtimestamp(until):%Y-%m-%d %H:%M} (recorded in the audit log)")
+    return 0
 
 
 def _week_range(iso: str | None, current: bool = False) -> tuple[dt.date, dt.date, str]:
@@ -995,6 +1061,18 @@ def _totals(turns: list[dict], tr: list[dict], a: dt.date, b: dt.date) -> dict:
             "lines": sum((t.get("lines_added") or 0) + (t.get("lines_removed") or 0) for t in ended)}
 
 
+def memory_due(days: int = 90) -> int:
+    """Facts due for review according to ws-memory (0 when it is not installed or fails)."""
+    tool = HOME / ".local/bin/ws-memory"
+    if not os.access(tool, os.X_OK):
+        return 0
+    try:
+        out = subprocess.run([str(tool), "review", "--count", "--older-than", str(days)], capture_output=True, text=True, timeout=60).stdout  # nosec B603
+        return int(out.strip() or 0)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return 0
+
+
 def week(iso: str | None = None, current: bool = False) -> tuple[str, str, Path]:
     """Weekly report in Markdown (compared against the previous week). Returns (markdown, short text
     for Telegram, path). It is saved in DATA/weekly/ and in %UserProfile%\\ws-telemetry\\."""
@@ -1024,6 +1102,8 @@ def week(iso: str | None = None, current: bool = False) -> tuple[str, str, Path]
           f"| Tool calls | {delta('tools')} | {P['tools']:,} |",
           f"| Tool errors | {S['error_pct']} % | {P['error_pct']} % |",
           f"| Your wait to approve | {S['wait_min']} min | {P['wait_min']} min |",
+          *([f"| Permission prompts answered (7 d) | {pr['answered']} ({pr['quick_pct']} % under 2 s) | |",
+             f"| Permanent allow rules | {pr['rules']} ({len(pr['broad_rules'])} broad) | |"] if (pr := prompts_summary(7))["answered"] or pr["rules"] else []),
           f"| Commits in sessions | {delta('commits')} | {P['commits']:,} |",
           f"| Lines changed (+/−) | {delta('lines')} | {P['lines']:,} |", ""]
     md += ["## By project", "", "| Project | Cost | Active hours | Turns | Main model | Lines +/− | Commits |", "|---|---:|---:|---:|---|---:|---:|"]
@@ -1038,12 +1118,17 @@ def week(iso: str | None = None, current: bool = False) -> tuple[str, str, Path]
         md += ["", "## Errors by type", "", *[f"- {e['type']}: {e['n']}" for e in det["errors_by_type"]]]
     if det["denied"]:
         md += ["", "## Denied permissions", "", *[f"- `{d['action']}`: {d['n']}" for d in det["denied"]]]
+    due = memory_due()
+    if due:   # WS-AI-013: the weekly report is what schedules the memory review
+        md += ["", "## Memory review", "", f"{due} facts saved to MemPalace through ws-learn are older than 90 days (or were last kept "
+               "90 days ago). Keep or invalidate them: `ws-memory review`."]
     md += ["", f"_Generated {dt.datetime.now():%Y-%m-%d %H:%M} by `ws-telemetry week`. Local data; no conversation text._", ""]
     text = "\n".join(md)
     top = ", ".join(f"{e['key']} ${e['cost']:,.0f}" for e in est_p[:3]) or "no activity"
     short = (f"📊 Week {name}: ${delta('cost', '{:,.2f}')} equivalent · {delta('hours', '{:,.1f}')} active h · "
              f"{delta('turns')} turns · {S['commits']} commits\nTop: {top}\n"
-             f"Tools: {S['tools']:,} calls, {S['error_pct']} % with errors · your wait to approve: {S['wait_min']} min")
+             f"Tools: {S['tools']:,} calls, {S['error_pct']} % with errors · your wait to approve: {S['wait_min']} min"
+             + (f"\n🧠 {due} memory facts are due for review: ws-memory review" if due else ""))
     out = DATA / "weekly"; out.mkdir(parents=True, exist_ok=True)
     path = out / f"week-{name}.md"; path.write_text(text, encoding="utf-8")
     w = windows_dir()
@@ -1342,6 +1427,103 @@ def otel_summary(days: int = 30) -> dict | None:
 
 
 # ---------------------------------------------------------------------------------------------
+# Approval fatigue (WS-AI-006): how many permission prompts you answer, how fast, and what you allowed for good
+# ---------------------------------------------------------------------------------------------
+USER_SOURCES = ("user_temporary", "user_permanent", "user_reject", "user_abort")
+BROAD_ALLOW = re.compile(r"^(Bash|Write|Edit|MultiEdit|NotebookEdit|WebFetch|Read)(\(\*{0,2}\))?$|^Bash\((curl|wget|ssh|scp|rm|sudo|"
+                         r"docker|kubectl|az|aws|gh|git push|terraform|python3?|node|bash|sh)[ :]?\*?\)$|^mcp__[^_]+(__\*)?$")
+
+
+def allow_files() -> list[Path]:
+    """settings.local.json files where «Yes, don't ask again» answers are kept: the user one and the one of every project
+    Claude Code knows (the keys of ~/.claude.json «projects»)."""
+    out = [CLAUDE / "settings.local.json"]
+    try:
+        projects = json.loads((HOME / ".claude.json").read_text(encoding="utf-8")).get("projects") or {}
+    except (OSError, ValueError, AttributeError):
+        projects = {}
+    out += [Path(k) / ".claude/settings.local.json" for k in projects if isinstance(k, str) and k.startswith("/")]
+    return [f for f in dict.fromkeys(out) if f.is_file()]
+
+
+def permanent_rules() -> list[dict]:
+    """Every allow rule in those files, with the day it was first seen (kept in cache/allow-rules.json)."""
+    seen_f = CACHE / "allow-rules.json"
+    try:
+        seen = json.loads(seen_f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        seen = {}
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    rows = []
+    for f in allow_files():
+        try:
+            allow = (json.loads(f.read_text(encoding="utf-8")).get("permissions") or {}).get("allow") or []
+        except (OSError, ValueError, AttributeError):
+            continue
+        for r in allow:
+            if not isinstance(r, str):
+                continue
+            k = f"{f}\t{r}"
+            seen.setdefault(k, now)
+            rows.append({"file": str(f).replace(str(HOME), "~"), "rule": r, "first_seen": seen[k], "broad": bool(BROAD_ALLOW.match(r))})
+    try:
+        CACHE.mkdir(parents=True, exist_ok=True); seen_f.write_text(json.dumps(seen), encoding="utf-8")
+    except OSError:
+        pass
+    return sorted(rows, key=lambda r: r["first_seen"], reverse=True)
+
+
+def prompts_summary(days: int = 7) -> dict:
+    """Permission prompts you answered (OpenTelemetry tool_decision events with a user source) and the time each one
+    waited for you (tool.blocked_on_user spans). Report only: nothing here blocks."""
+    decisions, waits = [], []
+    if OTEL.is_dir():
+        for f in otel_rows(days):
+            n = (f.get("name") or "").removeprefix("claude_code.")
+            if f.get("signal") == "event" and n == "tool_decision" and f.get("source") in USER_SOURCES:
+                decisions.append((_ts(f.get("ts")), f.get("source"), f.get("decision") or "?"))
+            elif f.get("signal") == "span" and n == "tool.blocked_on_user":
+                try:
+                    waits.append((_ts(f.get("ts")), float(f.get("dur_ms"))))
+                except (TypeError, ValueError):
+                    pass
+    approvals = [d for d in decisions if d[2] == "accept"]
+    per_hour = Counter(dt.datetime.fromtimestamp(t).strftime("%Y-%m-%d %H") for t, _, _ in approvals if t)
+    now = time.time()
+    w = [x[1] for x in waits]
+    quick = sum(1 for x in w if x < 2000)
+    rules = permanent_rules()
+    lim = (dt.datetime.now() - dt.timedelta(days=days)).isoformat()
+    return {"days": days, "answered": len(decisions), "approvals": len(approvals),
+            "rejections": sum(1 for d in decisions if d[2] != "accept"),
+            "permanent_grants": sum(1 for d in approvals if d[1] == "user_permanent"),
+            "last_hour": sum(1 for t, _, _ in approvals if t >= now - 3600),
+            "max_per_hour": max(per_hour.values(), default=0),
+            "med_per_active_hour": _pct(list(per_hour.values()), 50) or 0,
+            "wait_n": len(w), "wait_med_s": round((_pct(w, 50) or 0) / 1000, 1),
+            "quick_pct": round(100 * quick / len(w)) if w else 0,
+            "rules": len(rules), "broad_rules": [r for r in rules if r["broad"]][:20],
+            "new_rules": [r for r in rules if r["first_seen"] >= lim][:20]}
+
+
+def prompts_alerts(p: dict, rate: int, quick_pct: int, min_n: int = 10) -> list[str]:
+    """Lines «kind<TAB>value<TAB>text» for ws-telegram (and the terminal) when approvals look rubber-stamped."""
+    out = []
+    if p["last_hour"] >= rate:
+        out.append(f"rate\t{p['last_hour']}\t{p['last_hour']} approvals in the last hour (threshold {rate}): are you reading them?")
+    if p["wait_n"] >= min_n and p["quick_pct"] >= quick_pct:
+        out.append(f"quick\t{p['quick_pct']}\t{p['quick_pct']} % of {p['wait_n']} prompts answered in under 2 s in {p['days']} days")
+    day = (dt.datetime.now() - dt.timedelta(days=1)).isoformat()
+    new = [r for r in p["new_rules"] if r["first_seen"] >= day]
+    if new:
+        out.append(f"permanent\t{len(new)}\tnew permanent allow rules in 24 h: " + ", ".join(f"{r['rule']} ({r['file']})" for r in new[:5]))
+    broad = [r for r in p["broad_rules"] if r["first_seen"] >= day]
+    if broad:
+        out.append(f"broad\t{len(broad)}\tbroad allow rules: " + ", ".join(r["rule"] for r in broad[:5]))
+    return out
+
+
+# ---------------------------------------------------------------------------------------------
 # Ratios for estimating: how much model, text and machine each unit of work costs
 # ---------------------------------------------------------------------------------------------
 def resources_by_day(days: int) -> dict[str, dict]:
@@ -1513,7 +1695,17 @@ def cli_51(action: str, args: list[str]) -> int | None:
             print(f"{text}\nSaved to: {path}")
         return 0
     if action == "budgets":
+        if "--override" in args:
+            i = args.index("--override")
+            if i + 1 >= len(args):
+                print("usage: ws-telemetry budgets --override <project> [hours]", file=sys.stderr); return 2
+            try:
+                hours = float(args[i + 2]) if i + 2 < len(args) else 24.0
+            except ValueError:
+                print("hours must be a number", file=sys.stderr); return 2
+            return budget_override(args[i + 1], hours)
         rows = budgets(all_turns())
+        write_budget_flag(rows)
         if "--alerts" in args:   # project<TAB>pct<TAB>spent<TAB>budget<TAB>projection (only ≥ 80 %)
             for f in rows:
                 if f["pct"] >= 80:
@@ -1522,6 +1714,27 @@ def cli_51(action: str, args: list[str]) -> int | None:
         if not rows:
             print("No budgets. Create ~/.config/ws-telemetry/budgets.conf with lines \"project=usd_per_month\" (\"*=…\" for the total)."); return 0
         _print_table(rows, [("Project", "project", 28), ("Spent", "spent", 9), ("Budget", "budget", 9), ("%", "pct", 5), ("Projection", "projection", 10)])
+        print("\nHard limit: " + ("on (hard=1): projects at 100 % are held until ws-telemetry budgets --override <project>"
+                                if budget_conf()[1] else "off (alerts only; add hard=1 to budgets.conf to hold work at 100 %)"))
+        return 0
+    if action == "prompts":
+        days = int(opt("--days", "7"))
+        p = prompts_summary(days)
+        if "--json" in args:
+            print(json.dumps(p, ensure_ascii=False, indent=1)); return 0
+        if "--alerts" in args:
+            for line in prompts_alerts(p, int(opt("--rate", "30")), int(opt("--quick-pct", "50"))):
+                print(line)
+            return 0
+        print(f"Permission prompts in {days} days: {p['answered']} answered · {p['approvals']} approved "
+              f"({p['permanent_grants']} with «don't ask again») · {p['rejections']} rejected")
+        print(f"Approvals per hour: last hour {p['last_hour']} · busiest hour {p['max_per_hour']} · median active hour {p['med_per_active_hour']}")
+        print(f"Time to answer: median {p['wait_med_s']} s over {p['wait_n']} prompts · {p['quick_pct']} % under 2 s")
+        print(f"Permanent allow rules in settings.local.json: {p['rules']} ({len(p['broad_rules'])} broad, {len(p['new_rules'])} new in {days} days)")
+        for r in p["broad_rules"][:10]:
+            print(f"  broad  {r['rule']:40} {r['file']}")
+        for r in p["new_rules"][:10]:
+            print(f"  new    {r['rule']:40} {r['file']} (since {r['first_seen'][:10]})")
         return 0
     if action == "export":
         print(f"CSV in: {export()}"); return 0
@@ -1543,8 +1756,10 @@ def build(if_due: bool = False) -> Path:
     data["words"] = words_summary(turns)
     data["net"] = net_24h(turns)
     data.update(dashboard_analysis(turns))
+    write_budget_flag(data["budgets"])
     data["trends"] = trends(turns)
     data["otel"] = otel_summary(30)
+    data["prompts"] = prompts_summary(7)
     data["ratios"] = ratios(turns, 30)
     template = Path(os.environ.get("WS_TELEMETRY_TEMPLATE", HOME / ".config/ws-telemetry/dashboard.template.html"))
     content = template.read_text(encoding="utf-8").replace("/*__DATA__*/null", json.dumps(data, ensure_ascii=False).replace("</", "<\\/"))   # a branch or file name with </script> does not close the block

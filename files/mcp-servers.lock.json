@@ -1,0 +1,50 @@
+{
+  "_comment": "Supply-chain lock of files/mcp-servers.json (WS-AI-009). npm servers: exact version and the sha512 npm publishes (dist.integrity); the full tree is in files/home/.local/lib/ws-npm/<npm>/package-lock.json and must agree (tests/supply-chain.sh). local: executables built on each machine, pinned by sha256 on first registration (trust on first use) in ~/.local/share/ws-kit/mcp-trust.tsv. remote: HTTP servers, pinned by URL. optIn: not registered unless install.sh --mcp-opt-in <name>.",
+  "version": 1,
+  "servers": {
+    "mempalace": {
+      "source": "local",
+      "trust": "first-use"
+    },
+    "recall": {
+      "source": "local",
+      "trust": "first-use"
+    },
+    "microsoft-learn": {
+      "source": "remote",
+      "url": "https://learn.microsoft.com/api/mcp"
+    },
+    "azure": {
+      "source": "npm",
+      "npm": "azure-mcp",
+      "package": "@azure/mcp",
+      "version": "4.0.0-beta.7",
+      "integrity": "sha512-0bvsAd6giuwRIY7Mu9t7touhSy+3S6N5x/WUEX9FDYNW8EYoVmKtK1H4+t8ty9xBwkGyeCTElm/XiQ2dPWvbBQ==",
+      "prerelease": true,
+      "prereleaseReason": "The tool set and names the ask rules in settings.json were written against (4.0.0 betas); the newest stable, 3.0.0, has not been checked for the same tools. Move to the first stable 4.x when it ships."
+    },
+    "ms-release-comms": {
+      "source": "remote",
+      "url": "https://www.microsoft.com/releasecommunications/mcp"
+    },
+    "chrome-devtools": {
+      "source": "npm",
+      "npm": "chrome-devtools-mcp",
+      "package": "chrome-devtools-mcp",
+      "version": "1.14.0",
+      "integrity": "sha512-sO7GYmqnvmjQ0l9jiuvw2DyPxi3nBATFbxvNU8ArapYOUXE79z6fbigKuDbJ8/jsi/4OA3OvHlGq83mHLwemGA==",
+      "optIn": true,
+      "optInReason": "Needs a Chrome reachable from WSL (Google Chrome installed in WSL, or a Windows Chrome with a separate profile and a remote-debugging port, which needs mirrored networking)."
+    }
+  },
+  "tools": {
+    "agent-browser": {
+      "source": "npm",
+      "npm": "agent-browser",
+      "package": "agent-browser",
+      "version": "0.44.0",
+      "integrity": "sha512-OIrY/BlPwdg8XB9rzEbBuDva0S/lQmQBCW735y+B80kDvZ8CDQsuYV8i6hmUr70qIZeTyjd74aymlUzHKbvO4Q==",
+      "installedBy": "ws-tools install agent-browser"
+    }
+  }
+}

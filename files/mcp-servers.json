@@ -29,10 +29,8 @@
   },
   "azure": {
     "type": "stdio",
-    "command": "npx",
+    "command": "@HOME@/.local/share/ws-kit/npm/azure-mcp/node_modules/.bin/azmcp",
     "args": [
-      "-y",
-      "@azure/mcp@4.0.0-beta.7",
       "server",
       "start"
     ],
@@ -41,5 +39,19 @@
   "ms-release-comms": {
     "type": "http",
     "url": "https://www.microsoft.com/releasecommunications/mcp"
+  },
+  "chrome-devtools": {
+    "type": "stdio",
+    "command": "@HOME@/.local/share/ws-kit/npm/chrome-devtools-mcp/node_modules/.bin/chrome-devtools-mcp",
+    "args": [
+      "--isolated",
+      "--no-usage-statistics",
+      "--no-performance-crux",
+      "--redact-network-headers"
+    ],
+    "env": {
+      "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS": "1",
+      "CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS": "1"
+    }
   }
 }

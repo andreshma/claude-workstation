@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+#
+# agent-browser — runs the kit-pinned agent-browser (Vercel Labs, Apache-2.0; ws-tools install agent-browser) with
+# the kit's safe defaults, so that an agent driving a browser stays on the sites you allowed:
+#   · domain allow list: ~/.config/agent-browser/allowed-domains.txt (kit: localhost only) plus your
+#     allowed-domains.local.txt; navigations, sub-resources, WebSockets and beacons elsewhere are blocked
+#   · action policy ~/.config/agent-browser/policy.json: eval, download and upload denied
+#   · page output wrapped in content boundaries (untrusted data) and capped at 50,000 characters
+#   · flags that would attach to your real browser or replace these settings are refused: --config,
+#     --allowed-domains, --action-policy, --cdp, --auto-connect, --profile, --state, --restore
+# The browser is Chrome for Testing in its own profile (agent-browser install), never your Windows Chrome.
+# agent-browser sends no usage telemetry (checked in 0.44.0); its only automatic request is the outdated-Chrome CVE
+# check (chromereleases.googleblog.com), kept on.
+#
+# Usage: agent-browser <command> [args]   (the same commands as upstream: agent-browser --help)
+#   WS_AGENT_BROWSER_DOMAINS="a.com,*.b.com" agent-browser …   adds domains for one run (shown on stderr)
+# These are defaults, not a sandbox boundary: Claude's sandbox and its network allow list still apply.
+set -uo pipefail
+CONF="${AGENT_BROWSER_KIT_CONF:-$HOME/.config/agent-browser}"
+ROOT="${WS_PINNED_ROOT:-$HOME/.local/share/ws-kit/npm}/agent-browser/node_modules"
+die() { echo "agent-browser (kit): $*" >&2; exit 2; }
+
+case "$(uname -m)" in x86_64|amd64) a=x64 ;; aarch64|arm64) a=arm64 ;; *) die "unsupported CPU $(uname -m)" ;; esac
+libc=gnu; ldd --version 2>&1 | grep -qi musl && libc=musl
+exe="$ROOT/@agent-browser/cli-linux-$a-$libc/bin/agent-browser"
+[[ -x "$exe" ]] || { echo "agent-browser is not installed: ws-tools install agent-browser" >&2; exit 127; }
+if command -v ws-pinned >/dev/null && ! ws-pinned verify agent-browser >/dev/null 2>&1; then
+  die "the installed agent-browser does not match its pinned lock (ws-pinned verify agent-browser); not running it"
+fi
+
+for arg in "$@"; do
+  case "$arg" in
+    --config|--config=*|--allowed-domains|--allowed-domains=*|--action-policy|--action-policy=*|--cdp|--cdp=*| \
+    --auto-connect|--profile|--profile=*|--state|--state=*|--restore|--restore=*)
+      die "$arg is refused by the kit's wrapper (it would replace the allow list or attach to another browser)" ;;
+  esac
+done
+
+# Domains: kit list + yours + this run's. An empty result would mean "unrestricted" upstream, so it is refused.
+domains="$(cat "$CONF/allowed-domains.txt" "$CONF/allowed-domains.local.txt" 2>/dev/null \
+           | sed -e 's/#.*//' -e 's/[[:space:]]//g' \
+           | grep -E '^(\*\.)?[A-Za-z0-9.-]+$' | sort -u | paste -sd, -)"
+if [[ -n "${WS_AGENT_BROWSER_DOMAINS:-}" ]]; then
+  [[ "$WS_AGENT_BROWSER_DOMAINS" =~ ^(\*\.)?[A-Za-z0-9.-]+(,(\*\.)?[A-Za-z0-9.-]+)*$ ]] \
+    || die "WS_AGENT_BROWSER_DOMAINS: comma-separated domains only"
+  echo "agent-browser (kit): also allowing $WS_AGENT_BROWSER_DOMAINS for this run" >&2
+  domains="${domains:+$domains,}$WS_AGENT_BROWSER_DOMAINS"
+fi
+[[ -n "$domains" ]] || die "no allowed domains in $CONF/allowed-domains.txt"
+[[ -f "$CONF/config.json" && -f "$CONF/policy.json" ]] || die "kit configuration missing in $CONF (bash install.sh)"
+
+# Inherited settings cannot widen the defaults: they are replaced, not merged.
+WIDEN='^AGENT_BROWSER_(CONFIG|ALLOWED_DOMAINS|ACTION_POLICY|CDP|AUTO_CONNECT|PROFILE|STATE|RESTORE|PLUGINS|EXTENSIONS'
+WIDEN+='|INIT_SCRIPTS|ALLOW_FILE_ACCESS|EXECUTABLE_PATH)$'
+while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep -E "$WIDEN")
+export AGENT_BROWSER_CONFIG="$CONF/config.json" AGENT_BROWSER_ALLOWED_DOMAINS="$domains" \
+       AGENT_BROWSER_ACTION_POLICY="$CONF/policy.json" AGENT_BROWSER_CONTENT_BOUNDARIES=1 \
+       AGENT_BROWSER_IDLE_TIMEOUT_MS="${AGENT_BROWSER_IDLE_TIMEOUT_MS:-900000}"
+exec "$exe" "$@"

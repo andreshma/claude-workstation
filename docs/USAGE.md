@@ -47,6 +47,9 @@ On the workstation itself, two things are always up to date because they read wh
 | tmux | 3.3 or newer |
 | Claude Code | Installed and logged in |
 | Base packages | `tmux git jq fzf gh bubblewrap socat rsync shellcheck` |
+| gitleaks | Required for commits: the gate blocks a commit without it (`ws-tools install base`) |
+| `age` | Encrypts the light backups (`ws-backup-cloud setup` installs it) |
+| `npm` | Installs the pinned MCP servers and agent tools (`ws-pinned`) |
 | Optional: `python3-numpy` | 12 of the 25 screensaver scenes use a numpy shading engine |
 | Optional: `chafa` | The `gallery` screensaver scene |
 
@@ -78,6 +81,12 @@ On the workstation itself, two things are always up to date because they read wh
    ```
 
 4. On Windows, run `windows\install.ps1` from PowerShell to add the terminal profile and shortcuts.
+5. Once, in a plain shell: `ws-backup-cloud setup` (the key that encrypts the backups), `ws-telegram text pin` if you
+   use Telegram, and `claude plugin install claude-security@claude-plugins-official` (the settings enable it; the guard
+   blocks installing plugins from inside Claude).
+
+Upgrading an existing installation has steps of its own for each release: see "Upgrade notes" in
+[CHANGELOG.md](../CHANGELOG.md).
 
 `install.sh` copies every file it changes to `~/.local/share/ws-kit/backup.<date>/`, under the same path it has in
 your home, before replacing it; the folder is named in the line `Files (backup: …)` and the newest 10 are kept.
@@ -96,6 +105,62 @@ hooks (commit gate) unless you already use another hooks path.
 | `--no-mcp` | Skip MCP server registration |
 | `--no-git-hooks` | Do not set git's global hooks path |
 | `--remove-shims` | Only delete the wrappers left under the command names used before 3.0, then exit (see [Upgrading from 2.x names](#18-upgrading-from-2x-names)) |
+| `--mcp-opt-in NAME` | Also register an MCP server the lock marks opt-in (`chrome-devtools`); repeatable |
+| `--mcp-accept NAME` | Re-pin a local MCP executable (MemPalace, recall) whose sha256 changed, after you reviewed the change |
+| `--mcp-refresh` | Re-register the kit's MCP servers whose registered definition differs from `files/mcp-servers.json` (for example an old `npx` registration) |
+| `--managed` | Install only the managed policy, as root (see [Managed policy](#managed-policy-optional)); combine with `--dry-run` to see the commands |
+
+### MCP servers
+
+`install.sh` registers the servers of `files/mcp-servers.json` only when `files/mcp-servers.lock.json` vouches for
+them ([ADR 0018](adr/0018-supply-chain-pinning-and-signed-releases.md)):
+
+| Kind | Servers | How it is pinned |
+|---|---|---|
+| npm | `azure`, `chrome-devtools` (opt-in) | Exact version and sha512; installed by `ws-pinned install` with `npm ci --ignore-scripts` into `~/.local/share/ws-kit/npm/<name>/`, never through `npx -y` |
+| local | `mempalace`, `recall` | Built on each machine: the sha256 of the executable is pinned on first registration; a changed one is skipped until `--mcp-accept NAME` |
+| remote | `microsoft-learn`, `ms-release-comms` | By URL |
+
+A server that fails its check is skipped with a warning and the session runs without it. `ws-pinned verify` checks
+the installed trees later; `ws-update` runs `ws-pinned verify --online` (registry signatures). Moving a pin is a
+reviewed change to the kit: [runbook](runbook.md#pinned-npm-packages).
+
+### Browser tools (optional)
+
+Two ways to let an agent drive a browser, both off until you install them:
+
+- **agent-browser** (`ws-tools install agent-browser`): the pinned agent-browser behind the kit's wrapper
+  `~/.local/bin/agent-browser`, with Chrome for Testing in its own profile (Google publishes no checksum for that
+  download). The wrapper enforces a domain allow list (`~/.config/agent-browser/allowed-domains.txt`: localhost only;
+  add yours in `allowed-domains.local.txt`, or `WS_AGENT_BROWSER_DOMAINS="a.com,*.b.com"` for one run), an action
+  policy that denies `eval`, download and upload, and content boundaries around page output; it refuses flags that
+  would attach to your real browser or replace those settings. These are defaults, not a sandbox boundary: an agent
+  could call the binary directly, so Claude's sandbox and its network allow list remain the control.
+- **chrome-devtools** MCP server (opt-in): `ws-tools install chrome-devtools-mcp`, then
+  `bash install.sh --mcp-opt-in chrome-devtools`. It starts with `--isolated --no-usage-statistics
+  --no-performance-crux --redact-network-headers` and with update checks and usage statistics off. It needs a Chrome
+  reachable from WSL, in one of three ways:
+
+  | Option | How | Notes |
+  |---|---|---|
+  | a. Google Chrome inside WSL (recommended) | `curl -fsSLO https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && sudo apt-get install -y ./google-chrome-stable_current_amd64.deb` | The window shows through WSLg; add `--headless` to the server's arguments if there is none |
+  | b. Chrome for Testing from agent-browser | Add `--executablePath <path that agent-browser doctor prints>` to the server's arguments | Reuses the browser agent-browser downloaded |
+  | c. Windows Chrome | Start it with `--remote-debugging-port=9222 --user-data-dir=%TEMP%\cdp-profile` (never your daily profile), set `networkingMode=mirrored` in `.wslconfig`, and replace `--isolated` with `--browserUrl http://127.0.0.1:9222` | While that port is open, any local process can drive that browser |
+
+### Managed policy (optional)
+
+`bash install.sh --managed` installs, with `sudo` and only after you answer `y`, a drop-in that neither the agent nor
+your own files can change ([ADR 0019](adr/0019-strict-base-and-level-profiles.md)):
+
+| File (root-owned) | Content |
+|---|---|
+| `/etc/claude-code/managed-settings.d/50-ws-kit.json` | The `deny` floor, `disableBypassPermissionsMode`, `enableAllProjectMcpServers: false` and the guard hook failing closed |
+| `/etc/claude-code/hooks/guard.sh` | A copy of the guard that the managed hook runs |
+| `/etc/claude-code/ws-credential-paths.txt` | The credential paths the guard also reads |
+
+It prints every command first; `--dry-run` only prints them. An organization's own `managed-settings.json` is left
+alone. Restart Claude afterwards (`/status` shows the managed source). After a kit update that changes `guard.sh`, run
+it again; `install.sh` warns when the root copy is older.
 
 ## 3. First run
 
@@ -276,6 +341,7 @@ it. The title shows the group, the tab, Claude's state and the context percentag
 | | `f` | Always use the account of this tab for this project (pin the project) |
 | | `L` | Log in to the personal account |
 | | `+` | More Claude commands › (editor, draft, fast mode, redraw, `/status`, `/usage`, `/mcp`, `/effort`) |
+| Emergency | `X` | Emergency stop: block and close every Claude, Telegram off (asks first; see [Emergency stop and anomalies](#emergency-stop-and-anomalies)) |
 
 ### "Tabs and session" (`s`)
 
@@ -466,8 +532,8 @@ it is open, the tab takes the size of the finder window.
 | Choose the model for a task | `cr "task"` classifies it, says which tier and why, and sends it after you confirm. `cr -t sonnet "task"` forces a tier; `cr --dry-run` only classifies |
 | Change the tab's model | Menu → "Claude in this tab" → "Model". Only this tab changes |
 | Be asked before a mismatched model is used | Automatic routing: when a rule in `~/.config/ws-routing/rules.conf` says the task belongs to another tier, a popup offers `y` switch and send, `n` send as is, `x` return the text. No answer in 30 seconds sends with the current model. Toggle it in the "Model" submenu |
-| Leave Claude working alone | Menu → "Claude in this tab" → "Protection" → "Solo Claude in a new tab" or "Solo Claude in a new worktree" |
-| Run several Claudes on one goal | Menu → "Claude in this tab" → "Swarm: several Claudes in parallel on one goal". Claude proposes 2–6 independent subtasks, you edit and confirm, each gets its worktree, branch and tab. `tmux-swarm integrate <id>` merges them into an integration branch; it never pushes |
+| Leave Claude working alone | Menu → "Claude in this tab" → "Protection" → "Solo Claude in a new tab (own worktree in a repo)" or "Solo Claude in a new worktree". Solo mode runs inside the sandbox and expires after 4 hours (see [Protection levels](#11-protection-levels)) |
+| Run several Claudes on one goal | Menu → "Claude in this tab" → "Swarm: several Claudes in parallel on one goal". Claude proposes 2–6 independent subtasks, you edit and confirm, each gets its worktree, branch and tab, at the `full` level with `git push` and `gh pr create`/`merge` denied. `tmux-swarm new --budget USD` stops the swarm when its branches together reach that spend (while the dashboard runs). The swarm refuses to start if your Claude has no `--setting-sources` (`WS_SWARM_LEVEL=normal` is the audited exception). `tmux-swarm integrate <id>` merges them into an integration branch; it never pushes |
 | Send the same text to several tabs | Menu → "Claude in this tab" → "Same text to several Claude tabs" |
 | Hand the work to another Claude | `ws-handoff` (menu key `E`): a Markdown package with a summary, branch, changes, commits, diff, task list and touched files, saved and copied to the clipboard. `--conversation` adds the transcript |
 | Restart Claude so it picks up new settings | Menu → "Claude in this tab" → "Protection" → "Restart without changing the protection (resumes the conversation)", or for every tab `tmux-claude-restart --all` |
@@ -534,34 +600,85 @@ Rules:
 Each tab has its own level. Changing it restarts Claude in that tab and resumes the conversation; anything half done
 in that turn is lost.
 
+The user settings (`~/.claude/settings.json`) are the strict base: no command leaves the sandbox. Each level is a
+generated profile that adds or removes permissions on top of it
+([ADR 0019](adr/0019-strict-base-and-level-profiles.md)):
+
 | Level | Menu key | What changes |
 |---|---|---|
-| Full (`full`) 🔒 | `c` | Sandbox on with no way out: no unsandboxed commands and no excluded commands, so `az`, `gh`, `git push`, `kubectl` and similar run inside the sandbox, without network or credentials, and mostly fail. All kit rules stay |
-| Normal (`normal`) | `n` | Your `~/.claude/settings.json` as it is: sandbox on, with the excluded commands that need network and credentials |
+| Full (`full`) 🔒 | `c` | Sandbox on with no way out: no unsandboxed commands and no excluded commands, so `az`, `gh`, `git push`, `kubectl` and similar run inside the sandbox, without network or credentials, and mostly fail. Sandboxed commands read only the tab's project. All kit rules stay |
+| Normal (`normal`) | `n` | The strict base plus what `~/.config/claude-levels/normal-adds.json` adds: the commands excluded from the sandbox that need network and credentials (`az`, `gh`, `git push`, `terraform`, `kubectl`…). Every kit launcher, `claude-resume` and a restored tab start here |
 | Pure (`bare`) 🔓 | `p` | No sandbox and none of the kit's `allow`/`ask` rules: Claude asks as it would without the kit |
-| Solo mode 🤖 | `s` | Claude in `auto` permission mode without the sandbox, to work alone. The `ask` rules still ask you. `t` starts it in a new tab and `w` in a new worktree |
+| Solo mode 🤖 | `s` | Claude in `auto` permission mode **inside** the sandbox: commands run without asking one by one, but in bubblewrap and the network allow list; the excluded commands of normal run outside it only after the auto-mode classifier. The `ask` rules still ask you. It expires after 4 hours. `t` starts it in a new tab and `w` in a new worktree ([ADR 0016](adr/0016-solo-mode-inside-the-sandbox.md)) |
 
-In every level, including `bare` and solo mode, two things stay on: the `deny` rules (credential files, printing
-secrets, bypassing the git gate) and the `guard.sh` hook (forced pushes, pushes to `main`, `--no-verify`, production
-changes, secrets written to files). State, traces and notifications also keep working.
+A `claude` typed by hand in a shell starts at the strict base, without the excluded commands; start it with
+`claude-resume` (or restart the tab) to get the normal level.
+
+In every level, including `bare` and solo mode, the floor stays on: the `deny` rules (credential files, printing
+secrets, bypassing the git gate, the agent's own configuration), `disableBypassPermissionsMode` and the `guard.sh`
+hook, which fails closed (forced pushes, pushes to `main`, `--no-verify`, production changes, secrets written to
+files, writes to settings and hooks). State, traces, notifications and the other gates below also keep working.
 
 ```bash
 tmux-level full                # current tab
 tmux-level normal %12          # a given pane
+tmux-level normal --agent ops  # the tab acts as agent identity "ops" (below); --agent none drops it
 tmux-level --command bare      # prints the command Claude would be started with
-tmux-solo this | normal        # this tab into / out of solo mode
-tmux-solo new [folder]         # new tab in solo mode
-tmux-solo worktree [folder]    # new tab in a fresh worktree <repo>.wt/solo-<date>
+tmux-solo this [--hours N]     # this tab into solo mode (1 to 24 hours; default 4, @csolo_hours, WS_SOLO_HOURS)
+tmux-solo normal               # back to normal
+tmux-solo new [folder] [--here]  # new tab in solo mode; in a git repo, its own worktree unless --here
+tmux-solo worktree [folder]    # new tab in a fresh worktree <repo>.wt/solo-<date> (branch solo/<date>)
+tmux-solo this --unsandboxed   # the old solo mode, sandbox off: an audited exception (🔓 in the tab name)
 ```
 
 In the "Protection" submenu, "Active rules (/permissions)" and "Sandbox status (/sandbox)" show what Claude actually
-loaded. After a restart of the workstation, restored tabs are started again with `claude-resume`, that is, with your
-normal settings.
+loaded. After a restart of the workstation, restored tabs are started again with `claude-resume`, that is, at the
+normal level.
 
 When Claude reports a read-only file system or a blocked command, that is the sandbox or the guard working. Run the
 command yourself with `!` or in a floating shell (`Ctrl+b g`).
 
 Telegram never offers to run commands in a `bare` or solo-mode tab.
+
+### Agent identities
+
+`tmux-level <level> --agent NAME` starts Claude with `WS_AGENT=NAME` and the `az`, `gh` and `kubectl` credentials of
+`~/.config/ws-agent/NAME/` (`AZURE_CONFIG_DIR=…/azure`, `GH_CONFIG_DIR=…/gh`, `KUBECONFIG=…/kube/config`), so cloud
+and git logs show the agent, not you. Create the folder and log in there yourself with a reduced-scope identity; an
+unknown name is refused. The tab remembers it (`@cagent`) for later level changes. With `WS_AGENT` set, the guard
+refuses to point those variables elsewhere, `--kubeconfig`, `az login` and `gh auth login`/`switch`; Claude cannot read
+`~/.config/ws-agent/` ([ADR 0020](adr/0020-agent-scoped-identities.md)).
+
+### What the gates do in a session
+
+| You notice | What it is | What you can do |
+|---|---|---|
+| "BLOCKED by policy (guard.sh)" when Claude edits `settings.json`, hooks, `~/.claude.json`, plugins, the level profiles, `~/.config/git/hooks` or the kit's lists | The agent never writes its own configuration ([ADR 0017](adr/0017-defence-in-depth-for-agent-configuration.md)); `claude mcp add`, `claude plugin install` and running `ws-learn` from Claude are blocked too | Edit it yourself in a plain shell |
+| The same for `CLAUDE.md`, commands, agents, skills or the Windows-side `.claude` folder | Writable only inside a window you open | `date -d '+30 min' +%s > ~/.config/ws-guard/allow-config-writes` opens 30 minutes; each write is audited (`config-write-allowed`) |
+| A production change is blocked although its name has no "prod" | It is listed in `~/.config/ws-guard/production.conf` | Lines `subscription <id or name>` and `context <kube context>`; also checked for mutating Azure MCP tools |
+| "the prompt seems to contain a secret" | `prompt-screen.sh` ran the prompt through `ws-redact` | Remove the secret, or start the prompt with `#allow-secret` (audited, the prompt is never logged) |
+| A note next to a web page, search, MCP result or `curl`/`gh api` output that the content is untrusted | `untrusted-content.sh` labels it and screens it for injection markers; a hit is logged as `injection-suspect` | Read what it flagged before you let Claude act on it |
+| Every MemPalace write asks, also after "don't ask again" and in solo mode | `memory-gate.sh` asks, stamps the provenance and logs the hash of the input | Approve or reject; `ws-memory review --older-than 90` and `ws-memory log` in a terminal |
+| Text you do not want stored | Wrap it in `<private>` … `</private>` in the prompt | Memory writes that contain it are blocked, and the lifecycle hooks hand MemPalace and recall a redacted copy. A paraphrase is not recognised; `WS_MEMORY_PRIVATE=skip` sends nothing of such a session |
+| Every `.exe` command asks | Windows executables run outside the sandbox | Approve the ones you expect ([runbook](runbook.md#wsl-interop)) |
+| Prompts and tools are "held" | The emergency stop is on, or a hard budget is spent | `ws-stop-all --clear`, or `ws-telemetry budgets --override <project> [hours]`, in a terminal |
+
+### Emergency stop and anomalies
+
+```bash
+ws-stop-all                       # blocks every Claude, closes them all, turns Telegram off (asks first)
+ws-stop-all --pane %12 --yes      # only one tab
+ws-stop-all --session swarm-<id>  # only one tmux session, for example a swarm
+ws-stop-all --status | --list     # marker state · panes that have a Claude now
+ws-stop-all --clear               # lets prompts and tools run again (Telegram stays off: ws-telegram on)
+ws-anomaly [--minutes 10] [--threshold 5] [--tsv|--json]   # sessions with repeated blocks, denials or sandbox hits
+```
+
+The menu entry is Menu → "Claude in this tab" → "Emergency stop: block and close every Claude, Telegram off" (`X`).
+`tmux-watch` runs `ws-anomaly` once a minute: a session at the threshold shows 🚨 in the bar and raises a Windows
+alert, and Telegram offers "⛔ Stop this tab". The thresholds are the tmux options `@canomaly_n` and
+`@canomaly_min`. What the stop does step by step, and how to verify the audit log afterwards, is in the
+[runbook](runbook.md#emergency-stop).
 
 ## 12. Reports and telemetry
 
@@ -608,12 +725,21 @@ ws-telemetry estimate --by branch|project  # grouped by branch or project
 ws-telemetry estimate --csv ABC            # CSV, filtered
 ws-telemetry week                          # last week against the one before, Markdown
 ws-telemetry budgets                       # month to date against ~/.config/ws-telemetry/budgets.conf
+ws-telemetry budgets --override api 4      # with hard=1: lets project "api" go on over its budget for 4 h (audited)
+ws-telemetry prompts [--days 7] [--json]   # approval fatigue: approvals per hour, time to answer, answers under 2 s
+ws-telemetry prompts --alerts [--rate 30]  # what Telegram would alert on (high rate, rubber-stamping, broad rules)
 ws-telemetry traces --days 7               # tools: uses, time, errors, approximate cost
 ws-telemetry export                        # CSV of turns, traces and estimation
 ws-telemetry sql                           # DuckDB with the views `turns` and `traces` (English column names)
 ```
 
 The ticket comes from the branch name (`feature/ABC-123-…`).
+
+Budgets are warnings by default. A line `hard=1` in `budgets.conf` makes them a limit: `ws-telemetry build` writes
+the projects at or over 100 % to `~/.local/state/ws-budget-over`, and the `ws-runtime-gate.sh` hook holds prompts and
+tools there until `ws-telemetry budgets --override <project> [hours]` (24 h by default, 1 to 744; run it in a
+terminal, Claude is denied it). A flag older than 2 hours is ignored, so a stopped dashboard never blocks work. The
+"Prompts" numbers also appear in the weekly report; they need the OpenTelemetry collector.
 
 ### OpenTelemetry collector and hook timing
 
@@ -643,8 +769,19 @@ Notes:
 | Command | What it shows |
 |---|---|
 | `claude-report [days]` | Summary of the audit log: sessions, prompts, actions per repository and tool, blocked and denied actions |
-| `ws-audit` | Read-only audit of the workstation by pillar, with a report |
+| `ws-audit` | Read-only audit of the workstation by pillar, with a report. Among other checks it fails on repositories where the gate does not run in full (a local `core.hooksPath` or `ws.gate.allowNoGitleaks`; `ws.gate.skip` only warns), an unencrypted last backup, a pinned package that no longer matches its lock (`ws-pinned verify`) and a broken audit chain, checks that the user settings are the strict base, and warns on a repository's `.claude/settings*.json` that widens every level |
+| `ws-audit --verify-log [folder]` | Only the hash chain of the audit log and its anchors: exit 1 if a line was edited, deleted or reordered ([runbook](runbook.md#verifying-the-audit-log)) |
+| `ws-audit --compliance [--json] [--kit DIR] [--catalogue FILE]` | Runs the machine-checkable `check` of every control in the kit's `docs/compliance/controls.yaml` and prints a table per framework with the coverage (see below) |
+| `ws-memory review [--older-than 90] [--list\|--count]`, `ws-memory log [--days 30]` | Facts saved through `ws-learn` that are due for review (invalidate or keep), and the memory writes, redactions and private blocks in the audit log. Run them in a terminal |
 | `tmux-focus 25` | Focus mode for 25 minutes: minimal bar, no Windows notifications |
+
+`ws-audit --compliance` finds the catalogue in the kit checkout: `$WS_KIT/docs/compliance/controls.yaml`, with
+`WS_KIT` defaulting to `~/code/claude-workstation` as for `ws-kit-update` (`--kit DIR` or `--catalogue FILE`
+override it). It treats the YAML as untrusted input and runs only checks of an allow list of read-only forms
+(`bash tests/<suite>.sh`, `test -f`, `jq`, `grep`, kit commands with read-only flags); anything else, and checks that
+need something this machine lacks, are reported as `not-run`, not as failures. It changes nothing, writes the result
+to `~/.local/share/ws-telemetry/compliance.json` (`--json` prints it) and exits 1 when a control marked
+`implemented` fails its check. The catalogue and the assessment are in [compliance/](compliance/assessment.md).
 
 ## 13. Notifications and Telegram
 
@@ -659,14 +796,21 @@ ws-telegram status         # configuration, service and recent events
 ws-telegram test           # sends a test message
 ws-telegram on | off
 ws-telegram text on        # free-text replies, protected by a 4–6 digit PIN (off by default)
+ws-telegram text pin       # sets or changes the PIN (also needed to approve risky dialogs from the phone)
+ws-telegram approve risky  # default: the PIN only for risky approvals · approve pin: for every approval
 ws-telegram forget         # deletes token, chat and state
 ```
 
 | From the phone | How |
 |---|---|
-| Answer a permission or question dialog | Tap one of the buttons (the dialog's options, or "⎋ Cancel"). Codes are single-use and expire in 10 minutes |
+| Answer a permission or question dialog | Tap one of the buttons (the dialog's options, or "⎋ Cancel"). Codes are single-use and expire in 10 minutes. Approving a risky dialog (an MCP tool, an ask rule, a command that runs outside the sandbox; marked 🔐) asks you to reply with your PIN, and the key is sent only if the same dialog is still on screen. "Don't ask again" and other persistent allows are never offered |
 | Reply with text to an open question | Reply to the message starting with your PIN, then a space and the answer. Requires `ws-telegram text on` |
-| Run a command Claude proposed | Tap "▶ Run" under the command, then reply with your PIN. Dangerous commands arrive as text only, to be run at the PC |
+| Run a command Claude proposed | Tap "▶ Run" under the command, then reply with your PIN. Only read-only commands of an allow list (`git status`, `git log`, `ls`, `kubectl get`, `az account show`…, without shell syntax or `.exe`) get the button; everything else arrives as text only, to be run at the PC |
+| Stop a tab that an anomaly alert names | Tap "⛔ Stop this tab" (runs `ws-stop-all --pane` for it) |
+
+While the emergency stop is on, buttons and ▶ Run send nothing. Without a PIN set, risky approvals from the phone are
+refused. Alert switches in `~/.config/ws-telegram/settings`: `anomaly`, `anomaly_n`, `anomaly_min`, `prompts`,
+`prompts_rate`.
 
 See the [threat model](THREAT_MODEL.md#telegram-remote-control) for what this channel does and does not protect.
 
@@ -772,7 +916,7 @@ Nothing here needs to be run by hand in normal use; these are the commands for c
 |---|---|---|
 | tmux session (tabs, panes) | `~/.local/share/tmux/resurrect`, copied to `%UserProfile%\.tmux-resurrect-backup` | automatic; `Ctrl+b Ctrl+s` to force |
 | Conversations and audit log | `%UserProfile%\.claude-wsl-backup` | automatic (`ws-backup`) |
-| Light backup of Claude data, tmux saves and an inventory for reinstalling; never credentials | `%UserProfile%\WSL-Backups\lite` (14 kept) | `ws-backup-lite` |
+| Light backup of Claude data, tmux saves and an inventory for reinstalling; never credentials. Encrypted with `age` by default | `%UserProfile%\WSL-Backups\lite` (14 kept) | `ws-backup-lite` |
 | Encrypted copy of the light backup | OneDrive | `ws-backup-cloud setup` once, then automatic |
 | Personal configuration | Your private repository | `ws-personal sync` |
 
@@ -785,10 +929,18 @@ name), your budgets, the routing and Telegram settings, your templates, the kit'
 ```bash
 ws-restore-lite                 # tests the latest backup in a temporary folder; does not touch $HOME
 ws-restore-lite --restore     # restores into $HOME (asks; refuses with Claude open; keeps differing files)
+ws-restore-lite --identity <age file> [FILE]   # an encrypted backup with a key other than the cloud key
 ws-backup-cloud test          # decrypts the latest cloud copy into a temporary folder and checks it
 ws-backup-cloud fetch         # decrypts a cloud copy to restore it with ws-restore-lite
 tmux-recover                  # lists tmux saves and restores the one you choose
 ```
+
+The light backup is encrypted to the cloud key of `ws-backup-cloud` and to every key in
+`~/.config/ws-backup/age-recipients`. With neither (run `ws-backup-cloud setup` once), it is made in clear with a loud
+warning and `ws-audit` fails. After each backup, the Windows-side copies of `ws-backup` and `tmux-backup` older than
+`WS_BACKUP_COPY_DAYS` (30) are pruned: conversation copies whose original is gone, and old tmux saves.
+`ws-restore-lite` opens an encrypted backup with the cloud key from Credential Manager
+([runbook](runbook.md#restoring-encrypted-backups)).
 
 Recovering a machine: new Ubuntu → `bash install.sh` → `ws-restore-lite --restore` → `ws-personal restore` →
 logins (`claude auth login`, `az login`, `gh auth login`). The step-by-step version is in the
@@ -802,9 +954,18 @@ ws-kit-update        # the workstation itself, from the kit's repository
 ws-kit-update --check   # only says whether there is a new version
 ```
 
-`ws-kit-update` pulls with `--ff-only`, runs `install.sh` (every changed file is copied to
-`~/.local/share/ws-kit/backup.<date>/` first) and then `ws-test`. If the tests fail it goes back to the previous commit
-and reinstalls. It does nothing when the kit folder has uncommitted changes or unpushed commits.
+`ws-kit-update` installs only signed releases: it fetches the `vX.Y.Z` tags, takes the newest one ahead of your
+checkout and runs `git verify-tag` against the signers in your installed `~/.config/ws-kit/allowed_signers` (plus
+`allowed_signers.local`), never the branch tip. Then `git merge --ff-only <tag>`, `install.sh` (every changed file is
+copied to `~/.local/share/ws-kit/backup.<date>/` first) and `ws-test`. If the tests fail it goes back to the previous
+commit and reinstalls. It does nothing when the kit folder has uncommitted changes or commits the release does not
+contain. `--check` exits 10 when a signed release is waiting and 11 when a newer release fails its signature (Telegram
+raises a security alert); `--allow-unsigned` accepts an unsigned tag for forks, logged in
+`~/.local/state/ws-kit-update.log`. Until the kit ships a maintainer key every release is refused with 11
+([runbook](runbook.md#signing-a-release)).
+
+`ws-update` also verifies the pinned MCP servers and tools (`ws-pinned verify --online`) and the sha256 of the local
+ones, and reports newer versions (`ws-pinned outdated`) without installing them.
 
 An update from 2.x to 3.0 also renames commands, folders and settings: follow
 [Upgrading from 2.x names](#18-upgrading-from-2x-names), which ends with a restart of tmux.
@@ -1015,8 +1176,12 @@ The other `WS_*` variables follow the same pattern: the Spanish word became its 
 | Restart Claude | `tmux-claude-restart` | [9](#9-working-with-claude-in-a-tab) |
 | Swarm and handoff | `tmux-swarm`, `ws-handoff` | [9](#9-working-with-claude-in-a-tab) |
 | Accounts | `claude-account`, `claude-work`, `claude-personal` | [10](#10-accounts) |
-| Protection | `tmux-level`, `tmux-solo` | [11](#11-protection-levels) |
-| Dashboard and reports | `ws-telemetry`, `ws-report`, `ws-otel`, `ws-hooks`, `claude-report`, `ws-audit` | [12](#12-reports-and-telemetry) |
+| Protection | `tmux-level` (`--agent`), `tmux-solo` (`--hours`, `--unsandboxed`) | [11](#11-protection-levels) |
+| Emergency stop and anomalies | `ws-stop-all`, `ws-anomaly` | [11](#emergency-stop-and-anomalies) |
+| Memory review | `ws-memory` | [12](#other) |
+| Dashboard and reports | `ws-telemetry` (`prompts`, `budgets --override`), `ws-report`, `ws-otel`, `ws-hooks`, `claude-report`, `ws-audit` (`--verify-log`, `--compliance`) | [12](#12-reports-and-telemetry) |
+| MCP servers, pinned packages, browser tools | `install.sh --mcp-opt-in/--mcp-accept/--mcp-refresh`, `ws-pinned`, `agent-browser` | [2](#mcp-servers) |
+| Managed policy | `install.sh --managed` | [2](#managed-policy-optional) |
 | Focus mode | `tmux-focus` | [12](#12-reports-and-telemetry) |
 | Telegram | `ws-telegram` | [13](#13-notifications-and-telegram) |
 | Theme and screensaver | `tmux-theme`, `tmux-saver`, `tmux-scene`, `tmux-art` | [14](#14-appearance-and-screensaver) |
@@ -1041,7 +1206,15 @@ The other `WS_*` variables follow the same pattern: the Spanish word became its 
 | `WS_GALLERY_SYMBOLS` | Not set | `ascii` to use letters and signs only |
 | `WS_ART_COLOR` | auto | `24` or `256` forces the color depth of the scenes |
 | `WS_ASK_MODEL` | Haiku | Model for the quick question (`sonnet`, `opus`) |
-| `GUARD_PROD_REGEX` | `prod\|prd\|produccion` | What the guard treats as a production subscription or context |
+| `GUARD_PROD_REGEX` | `prod\|prd\|produccion` | What the guard treats as a production subscription or context, after the list in `~/.config/ws-guard/production.conf` |
+| `WS_KIT` | `~/code/claude-workstation` | The kit checkout `ws-kit-update` and `ws-audit --compliance` use |
+| `WS_SOLO_HOURS` | `4` | Default expiry of solo mode (1 to 24); the tmux option `@csolo_hours` also sets it |
+| `WS_SWARM_LEVEL` | `full` | `normal` starts swarm agents at the normal level (audited exception; push still denied) |
+| `WS_MEMORY_PRIVATE` | Not set | `skip` sends nothing of a session that contains a `<private>` tag to MemPalace |
+| `WS_MEMORY_GATE` | Not set | `warn` keeps the private block and the audit record of memory writes but does not ask (audited on every write; never set it from Claude) |
+| `WS_BACKUP_COPY_DAYS` | `30` | Age after which the Windows-side copies of `ws-backup` and `tmux-backup` are pruned |
+| `WS_AGENT_BROWSER_DOMAINS` | Not set | Extra domains for one `agent-browser` run (`a.com,*.b.com`) |
+| `WS_ANOMALY_MINUTES`, `WS_ANOMALY_THRESHOLD` | `10`, `5` | Defaults of `ws-anomaly` |
 | `CLAUDE_NOTIFY_MIN_SECS` | `20` | Minimum turn length for a "finished" notification |
 | `AI_SHELL_GHOST` | `1` | `0` turns off the grey AI suggestion in the shell |
 
@@ -1056,6 +1229,8 @@ The other `WS_*` variables follow the same pattern: the Spanish word became its 
 | `@cnotify` | on | `off` turns Windows notifications off |
 | `@croute` | on | `off` turns automatic model routing off in all tabs |
 | `@branch_bar` | on | `off` hides CI, pull request and ticket in the bar |
+| `@csolo_hours` | 4 | Default expiry of solo mode, in hours |
+| `@canomaly_n`, `@canomaly_min` | 5, 10 | Blocked or denied actions in that many minutes that make a session anomalous (🚨 in the bar) |
 
 ## 20. Troubleshooting
 
@@ -1072,6 +1247,13 @@ The other `WS_*` variables follow the same pattern: the Spanish word became its 
 | Claude reports a read-only file system | That is the sandbox; run the command yourself or add a justified exclusion |
 | Open tabs do not send OpenTelemetry data | Export starts when Claude starts: restart the tab (`tmux-claude-restart --all`) |
 | WSL is damaged | New Ubuntu → `install.sh` → `ws-restore-lite --restore` → logins |
+| `az`, `gh` or `git push` fail in a Claude started by hand | The base is strict: start it with `claude-resume` or restart the tab ([Protection levels](#11-protection-levels)) |
+| Live tabs lost `az`, `gh` or `git push` after upgrading | They started before the strict base: `tmux-claude-restart --all`, and again for the busy ones |
+| "BLOCKED by policy (guard.sh)" on a settings, hooks or `CLAUDE.md` edit | Edit it yourself, or open the config-write window ([What the gates do](#what-the-gates-do-in-a-session)) |
+| Every commit fails with "gitleaks is missing" | `ws-tools install base` |
+| `ws-kit-update` refuses with exit 11 | The release is not signed by a key you trust ([runbook](runbook.md#signing-a-release)) |
+| An MCP server is "skipped" by `install.sh` | A changed local executable: review, then `--mcp-accept NAME`; an opt-in one: `--mcp-opt-in NAME`; an old registration: `--mcp-refresh` |
+| Every prompt and tool is "held" | The emergency stop is on (`ws-stop-all --status`, then `--clear`) or a hard budget is spent (`ws-telemetry budgets`) |
 
 The full step-by-step guide, with causes, is [runbook.md](runbook.md).
 
@@ -1093,3 +1275,10 @@ The full step-by-step guide, with causes, is [runbook.md](runbook.md).
 - The lock icon in the bar comes from a tmux option set when the level is applied; a Claude started by hand in a pane
   does not update it.
 - Costs are API-equivalent prices, not what a subscription plan bills.
+- A `claude` typed by hand runs at the strict base, without the commands the normal level excludes from the sandbox.
+- The untrusted-content labels and the injection markers are heuristics: plain social-engineering text with no marker
+  is labelled untrusted but not flagged.
+- `<private>` redaction works on the exact text; what Claude paraphrased from it is not recognised.
+- The hard spend limit is updated about once a minute and only while the dashboard is built; a swarm's `--budget` is
+  enforced only while its dashboard runs.
+- agent-browser's domain allow list and action policy are defaults of the wrapper, not a sandbox boundary.

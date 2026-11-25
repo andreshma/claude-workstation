@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+#
+# ws-pinned — installs and verifies the npm packages the kit pins (MCP servers and agent tools). Each package has a
+# committed package.json and package-lock.json in ~/.local/lib/ws-npm/<name>/; the lock carries the sha512 of every
+# tarball, so `npm ci` refuses a tarball that does not match. Nothing runs through `npx -y` or a moving tag.
+#
+# Usage:
+#   ws-pinned list                      pinned packages: name, package@version
+#   ws-pinned install <name>...         npm ci --ignore-scripts into ~/.local/share/ws-kit/npm/<name> and records a
+#                                       hash of the installed tree (same lock and same tree: nothing to do)
+#   ws-pinned verify [--online] [name...]   the installed tree still matches its lock and its recorded hash;
+#                                       --online also runs `npm audit signatures` (registry signatures, provenance)
+#   ws-pinned bin <name> <bin>          path of an installed executable (for wrappers and mcp-servers.json)
+#   ws-pinned outdated [name...]        newest stable and newest release on npm next to the pinned version
+#   ws-pinned local-check <name> <path> local MCP executable (built on this machine): 0 same sha256 as pinned,
+#                                       3 not pinned yet, 1 changed or missing
+#   ws-pinned local-pin <name> <path>   pins (or re-pins, after you reviewed the change) its sha256 (trust on first use)
+# Exit: 0 ok · 1 a mismatch or a failed install · 2 usage. Updating a pin is a reviewed change to the kit: edit the
+# version in ~/.local/lib/ws-npm/<name>/package.json in the repo, run `npm install --package-lock-only
+# --ignore-scripts` there and commit both files (docs/runbook.md, "Pinned npm packages").
+set -uo pipefail
+LOCKS="${WS_NPM_LOCKS:-$HOME/.local/lib/ws-npm}"
+ROOT="${WS_PINNED_ROOT:-$HOME/.local/share/ws-kit/npm}"
+TRUST="${WS_MCP_TRUST:-$HOME/.local/share/ws-kit/mcp-trust.tsv}"   # name<TAB>path<TAB>sha256<TAB>date
+RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; RST=$'\033[0m'
+[[ -t 1 ]] || { RED="" GRN="" YEL="" RST=""; }
+say()  { printf '  %s\n' "$*"; }
+bad()  { printf '  %s✖ %s%s\n' "$RED" "$*" "$RST" >&2; }
+good() { printf '  %s✔ %s%s\n' "$GRN" "$*" "$RST"; }
+note() { printf '  %s! %s%s\n' "$YEL" "$*" "$RST" >&2; }
+
+names() { local d; for d in "$LOCKS"/*/; do [[ -f "$d/package-lock.json" ]] && basename "$d"; done; }
+# pkg_of <name> — the single dependency of the pinned package.json (the package the kit wants).
+pkg_of() { jq -r '.dependencies | keys[0] // empty' "$LOCKS/$1/package.json" 2>/dev/null; }
+# lock_field <lock file> <package> <field> — version or integrity recorded for that package.
+lock_field() { jq -r --arg p "node_modules/$2" --arg f "$3" '.packages[$p][$f] // empty' "$1" 2>/dev/null; }
+tree_hash() {   # tree_hash <dir> — sha256 over every regular file under node_modules (paths and contents)
+  (cd "$1" && find node_modules -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1)
+}
+known() { [[ "$1" =~ ^[a-z0-9][a-z0-9._-]*$ && -f "$LOCKS/$1/package-lock.json" && -f "$LOCKS/$1/package.json" ]]; }
+
+#######################################
+# Checks one installed package against its lock. Outputs: a line per finding. Returns: 0 if it matches.
+#######################################
+verify_one() {
+  local n="$1" d="$ROOT/$1" p want got hash
+  known "$n" || { bad "$n: no pinned lock in $LOCKS"; return 1; }
+  p="$(pkg_of "$n")"; want="$(lock_field "$LOCKS/$n/package-lock.json" "$p" version)"
+  [[ -d "$d/node_modules" ]] || { bad "$n: not installed (ws-pinned install $n)"; return 1; }
+  cmp -s "$LOCKS/$n/package-lock.json" "$d/package-lock.json" \
+    || { bad "$n: installed from another lock (ws-pinned install $n)"; return 1; }
+  got="$(jq -r '.version // empty' "$d/node_modules/$p/package.json" 2>/dev/null)"
+  [[ "$got" == "$want" ]] || { bad "$n: $p is ${got:-missing}, the lock pins $want"; return 1; }
+  [[ "$(lock_field "$d/node_modules/.package-lock.json" "$p" integrity)" \
+     == "$(lock_field "$LOCKS/$n/package-lock.json" "$p" integrity)" ]] \
+    || { bad "$n: the integrity npm recorded differs from the lock"; return 1; }
+  hash="$(cat "$d/.ws-tree.sha256" 2>/dev/null)"
+  [[ -n "$hash" && "$hash" == "$(tree_hash "$d")" ]] \
+    || { bad "$n: files under $d changed after install (reinstall: ws-pinned install $n)"; return 1; }
+  good "$n: $p@$want matches its lock"
+}
+
+install_one() {
+  local n="$1" d="$ROOT/$1" p v tmp
+  known "$n" || { bad "$n: no pinned lock in $LOCKS"; return 1; }
+  command -v npm >/dev/null || { bad "$n: npm is missing (ws-tools install node-lts)"; return 1; }
+  p="$(pkg_of "$n")"; v="$(lock_field "$LOCKS/$n/package-lock.json" "$p" version)"
+  if verify_one "$n" >/dev/null 2>&1; then say "same    $n ($p@$v)"; return 0; fi
+  mkdir -p "$ROOT" && chmod 700 "$ROOT"
+  tmp="$(mktemp -d "$ROOT/.$n.XXXXXX")" || return 1
+  cp "$LOCKS/$n/package.json" "$LOCKS/$n/package-lock.json" "$tmp/"
+  # --ignore-scripts: no install script of any dependency runs (the packages pinned here do not need one).
+  if ! (cd "$tmp" && npm ci --ignore-scripts --omit=dev --no-audit --no-fund --loglevel=error >/dev/null); then
+    rm -rf "$tmp"; bad "$n: npm ci failed (a tarball that does not match the lock is refused); nothing changed"
+    return 1
+  fi
+  tree_hash "$tmp" > "$tmp/.ws-tree.sha256"
+  rm -rf "$d.old"; [[ -d "$d" ]] && mv "$d" "$d.old"
+  mv "$tmp" "$d" && rm -rf "$d.old"
+  say "new     $n ($p@$v)"
+}
+
+outdated_one() {
+  local n="$1" p v latest stable
+  known "$n" || { bad "$n: no pinned lock"; return 1; }
+  p="$(pkg_of "$n")"; v="$(lock_field "$LOCKS/$n/package-lock.json" "$p" version)"
+  latest="$(npm view "$p" dist-tags.latest 2>/dev/null)"
+  # Newest version without a prerelease suffix (npm's "latest" tag can point to a beta).
+  stable="$(npm view "$p" versions --json 2>/dev/null | jq -r 'if type == "array" then . else [.] end
+             | map(select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))) | last // empty' 2>/dev/null)"
+  if [[ -z "$latest" ]]; then note "$n: npm did not answer"; return 0; fi
+  if [[ "$v" == "$latest" ]]; then say "$n: $p@$v is npm's latest${stable:+ (newest stable $stable)}"
+  else say "$n: $p pinned at $v · npm latest $latest${stable:+ · newest stable $stable}: review its changelog, then bump the pin"
+  fi
+}
+
+# local_pinned <name> — sha256 pinned for that local server (last line wins).
+local_pinned() { awk -F'\t' -v n="$1" '$1 == n { h = $3 } END { if (h != "") print h }' "$TRUST" 2>/dev/null; }
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  list)
+    for n in $(names); do
+      printf '%-22s %s@%s\n' "$n" "$(pkg_of "$n")" "$(lock_field "$LOCKS/$n/package-lock.json" "$(pkg_of "$n")" version)"
+    done ;;
+  install)
+    (( $# )) || { echo "usage: ws-pinned install <name>... (ws-pinned list)" >&2; exit 2; }
+    rc=0; for n in "$@"; do install_one "$n" || rc=1; done; exit "$rc" ;;
+  verify)
+    online=0; [[ "${1:-}" == --online ]] && { online=1; shift; }
+    sel=("$@"); (( ${#sel[@]} )) || mapfile -t sel < <(for n in $(names); do [[ -d "$ROOT/$n" ]] && echo "$n"; done)
+    rc=0; for n in "${sel[@]}"; do
+      verify_one "$n" || { rc=1; continue; }
+      if (( online )) && ! (cd "$ROOT/$n" && npm audit signatures >/dev/null 2>&1); then
+        bad "$n: npm audit signatures failed (registry signature or provenance)"; rc=1
+      fi
+    done; exit "$rc" ;;
+  bin)
+    n="${1:-}" b="${2:-}"
+    known "$n" && [[ "$b" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "usage: ws-pinned bin <name> <bin>" >&2; exit 2; }
+    [[ -x "$ROOT/$n/node_modules/.bin/$b" ]] || exit 1
+    printf '%s\n' "$ROOT/$n/node_modules/.bin/$b" ;;
+  outdated)
+    sel=("$@"); (( ${#sel[@]} )) || mapfile -t sel < <(names)
+    for n in "${sel[@]}"; do outdated_one "$n"; done ;;
+  local-check)
+    n="${1:-}" f="${2:-}"
+    [[ -n "$n" && -n "$f" ]] || { echo "usage: ws-pinned local-check <name> <path>" >&2; exit 2; }
+    [[ -f "$f" ]] || exit 1
+    want="$(local_pinned "$n")"; [[ -n "$want" ]] || exit 3
+    [[ "$(sha256sum "$f" | cut -d' ' -f1)" == "$want" ]] ;;
+  local-pin)
+    n="${1:-}" f="${2:-}"
+    [[ "$n" =~ ^[A-Za-z0-9._-]+$ && -f "$f" ]] || { echo "usage: ws-pinned local-pin <name> <existing path>" >&2; exit 2; }
+    mkdir -p "$(dirname "$TRUST")"; h="$(sha256sum "$f" | cut -d' ' -f1)"
+    { awk -F'\t' -v n="$n" '$1 != n' "$TRUST" 2>/dev/null
+      printf '%s\t%s\t%s\t%s\n' "$n" "$f" "$h" "$(date -Is)"; } > "$TRUST.tmp" \
+      && chmod 600 "$TRUST.tmp" && mv "$TRUST.tmp" "$TRUST"
+    say "pinned  $n (sha256 ${h:0:12}…)" ;;
+  -h|--help) sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac

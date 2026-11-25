@@ -146,6 +146,7 @@ else
   read -rp "Open Claude here with $level ($id)? [Y/n] " r
   [[ "$r" =~ ^[nN]$ ]] && { routing_log cr "$level" "$rule" "" rejected "${#task}"; exit 0; }
   routing_log cr "$level" "$rule" "" accepted "${#task}"
-  # --model applies to this session only: it does not change your default model.
-  exec claude --model "$id" "$task"
+  # --model applies to this session only: it does not change your default model. At the normal level (ADR-013).
+  nf="$("$HOME/.local/bin/tmux-level" --settings-file normal 2>/dev/null)" || nf=""
+  exec claude ${nf:+--settings "$nf"} --model "$id" "$task"
 fi

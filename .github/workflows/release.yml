@@ -1,0 +1,62 @@
+# Release: on a vX.Y.Z tag, verifies that the tag is signed by a key in files/home/.config/ws-kit/allowed_signers
+# (the check ws-kit-update makes on every workstation, WS-SEC-015) and attaches the SBOM to the GitHub release
+# (WS-SEC-018). GitHub's own actions only, pinned by commit SHA.
+name: release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Signed tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # The annotated tag object itself (the checkout may only have its commit); then git verify-tag with the
+      # kit's allowed signers. A release made without the maintainer's key fails here and is not published.
+      - name: git verify-tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          git fetch --no-tags --force origin "+refs/tags/${TAG}:refs/tags/${TAG}"
+          grep -vE '^[[:space:]]*(#|$)' files/home/.config/ws-kit/allowed_signers > "$RUNNER_TEMP/signers"
+          [[ -s "$RUNNER_TEMP/signers" ]] || { echo "::error::no maintainer key in files/home/.config/ws-kit/allowed_signers"; exit 1; }
+          [[ "$(git cat-file -t "refs/tags/${TAG}")" == tag ]] || { echo "::error::${TAG} is a lightweight tag"; exit 1; }
+          git -c gpg.ssh.allowedSignersFile="$RUNNER_TEMP/signers" verify-tag "refs/tags/${TAG}"
+
+  sbom:
+    name: Attach SBOM
+    needs: [verify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write          # upload the SBOM to the release; nothing else
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Generate, validate and upload
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          python3 .github/scripts/sbom.py -o "claude-workstation-${TAG}.cdx.json"
+          python3 .github/scripts/sbom.py --check "claude-workstation-${TAG}.cdx.json"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "claude-workstation-${TAG}.cdx.json" --clobber
+          else
+            gh release create "$TAG" --verify-tag --notes-from-tag "claude-workstation-${TAG}.cdx.json"
+          fi
