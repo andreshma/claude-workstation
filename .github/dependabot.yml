@@ -1,4 +1,9 @@
-# Keeps the CI's GitHub actions up to date (actions/checkout). One PR per week at most.
+# Keeps the CI's GitHub actions and the kit's pinned npm packages up to date. One PR per week at most per ecosystem.
+# Actions are pinned by commit SHA with the version as a trailing comment (`uses: x@<sha> # v1.2.3`): Dependabot
+# updates the SHA and the comment together.
+# npm: the MCP servers and agent tools pinned in files/home/.local/lib/ws-npm/<name>/ (package.json + package-lock.json).
+# A bump PR also needs files/mcp-servers.lock.json updated to the new version and integrity (tests/supply-chain.sh
+# fails until it is): a new pin is reviewed, never merged blind.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -13,3 +18,17 @@ updates:
     open-pull-requests-limit: 2
     commit-message:
       prefix: ci
+  - package-ecosystem: npm
+    directories:
+      - /files/home/.local/lib/ws-npm/azure-mcp
+      - /files/home/.local/lib/ws-npm/chrome-devtools-mcp
+      - /files/home/.local/lib/ws-npm/agent-browser
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    # Seven days of cool-down: a compromised release is usually caught and pulled within that window.
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: build
+      include: scope
