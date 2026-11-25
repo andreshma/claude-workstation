@@ -25,6 +25,7 @@ display-menu -O -T "#[align=centre] 🤖  Claude · #W · #{?#{@cs},#{@cs},no Cl
   "Same text to several Claude tabs" D "display-popup -E -w 85% -h 70% -T ' Broadcast ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-broadcast\"" \
   "Swarm: several Claudes in parallel on one goal" Z "display-popup -E -w 92% -h 85% -T ' Swarm ' -d \"#{pane_current_path}\" \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-swarm new\"" \
   "Export my work for another Claude (handoff)" E "display-popup -E -w 92% -h 85% -T ' Handoff ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-pause 'ws-handoff #{pane_id}'\"" \
+  "Emergency stop: block and close every Claude, Telegram off" X "confirm-before -p \"EMERGENCY STOP: block every Claude, close them all and turn Telegram off? (y/n)\" \"run-shell -b '~/.local/bin/ws-stop-all --yes'\"" \
   "-#[nodim]── Account ──" "" "" \
   "Switch this tab to the #{?#{==:#{@caccount},personal},work,personal} account (same conversation)" a "confirm-before -p \"Switch the account of #W? (y/n)\" \"run-shell -b '~/.local/bin/claude-account tab #{pane_id}'\"" \
   "New tabs use: #{?#{==:#{@caccount_def},personal},personal → switch to work,work → switch to personal}" n "run-shell -b '~/.local/bin/claude-account use #{?#{==:#{@caccount_def},personal},work,personal}'" \

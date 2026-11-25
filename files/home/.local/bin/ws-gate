@@ -10,13 +10,18 @@
 #   ws-gate file <file>           lint of a single file (Claude uses it after editing)
 #   ws-gate repo [folder]         full report of the repo in Markdown (prints the path)
 #   ws-gate repo-view [folder]    same, and opens it in less (used by the menu, Q)
+#   ws-gate bypasses [folder]     repos under the folder (default $REPOS and ~/code) where the gate does not run in
+#                                 full: a local core.hooksPath, ws.gate.skip or ws.gate.allowNoGitleaks (ws-audit)
 #
 # Per-repo configuration (git config):
 #   ws.gate.skip       comma-separated list: lint,size,osv,checkov,tflint,clippy,msg
 #   ws.gate.allowMain  true to allow a direct push to main/master (e.g. personal repos)
 #   ws.gate.strict     true so that checkov and tflint also block on pre-push
+#   ws.gate.allowNoGitleaks  true to commit without gitleaks installed (each such commit is logged in
+#                      ~/.local/state/ws-gate/opt-outs.log); without it, a missing gitleaks blocks the commit
 # If the repo has a .pre-commit-config.yaml, its lint rules and only secrets and size are checked here.
-# Tools that are not installed are skipped with a warning (ws-tools installs them).
+# The secret scan is mandatory (ADR 0013): gitleaks missing = commit blocked. The other tools that are not
+# installed are skipped with a warning (ws-tools installs them).
 set -uo pipefail
 MAX_MB=5
 RED=$'\033[31m'; YEL=$'\033[33m'; DIM=$'\033[2m'; RST=$'\033[0m'
@@ -27,6 +32,37 @@ note() { printf '%s· %s%s\n' "$DIM" "$*" "$RST" >&2; }
 has()  { command -v "$1" >/dev/null 2>&1; }
 skip() { [[ ",$(git config --get ws.gate.skip 2>/dev/null)," == *",$1,"* ]]; }
 root() { git rev-parse --show-toplevel 2>/dev/null; }
+
+# opt_out <what> <repo> — records a use of an opt-out of the gate (date, repo, what) for ws-audit and reviews.
+opt_out() {
+  local d="${XDG_STATE_HOME:-$HOME/.local/state}/ws-gate"
+  mkdir -p "$d" 2>/dev/null && printf '%s\t%s\t%s\n' "$(date -Is)" "$2" "$1" >> "$d/opt-outs.log" 2>/dev/null || true
+}
+
+#######################################
+# Lists the repositories under the given folders where the gate does not run in full: a repository-local
+# core.hooksPath (it replaces the global dispatcher), ws.gate.skip or ws.gate.allowNoGitleaks.
+# Arguments: folders (default: $REPOS and ~/code). Outputs: "repo<TAB>finding" lines. Returns: 1 if any.
+#######################################
+bypasses() {
+  local d g r hp found=0 global; global="$(git config --global --get core.hooksPath 2>/dev/null)"
+  (( $# )) || set -- ${REPOS:+"$REPOS"} "$HOME/code"
+  for d in "$@"; do
+    [[ -d "$d" ]] || continue
+    while IFS= read -r g; do
+      r="${g%/.git}"
+      hp="$(git -C "$r" config --local --get core.hooksPath 2>/dev/null)"
+      if [[ -n "$hp" && "$hp" != "$global" ]]; then
+        printf '%s\tlocal core.hooksPath=%s (the global gate does not run)\n' "$r" "$hp"; found=1
+      fi
+      hp="$(git -C "$r" config --get ws.gate.skip 2>/dev/null)"
+      [[ -n "$hp" ]] && { printf '%s\tws.gate.skip=%s\n' "$r" "$hp"; found=1; }
+      [[ "$(git -C "$r" config --type=bool --get ws.gate.allowNoGitleaks 2>/dev/null)" == true ]] \
+        && { printf '%s\tws.gate.allowNoGitleaks=true\n' "$r"; found=1; }
+    done < <(find "$d" -maxdepth 3 -name .git \( -type d -o -type f \) 2>/dev/null | sort)
+  done
+  return "$found"
+}
 
 # lint_file <file> — checks a file according to its type; prints the findings and returns 1 if there are any.
 lint_file() {
@@ -64,7 +100,13 @@ pre_commit() {
   if has gitleaks; then
     gitleaks protect --staged --redact --no-banner >/dev/null 2>&1 || {
       err "gitleaks found possible secrets. Details: gitleaks protect --staged --redact -v"; }
-  else wrn "no gitleaks: secrets were not checked"; fi
+  elif [[ "$(git config --type=bool --get ws.gate.allowNoGitleaks 2>/dev/null)" == true ]]; then
+    wrn "no gitleaks: secrets were NOT checked (ws.gate.allowNoGitleaks is set; logged)"
+    opt_out "allowNoGitleaks" "$r"
+  else
+    err "gitleaks is missing, so secrets cannot be checked: ws-tools install base"
+    note "only if you must commit without it in this repo: git config ws.gate.allowNoGitleaks true (logged)"
+  fi
 
   for f in "${files[@]}"; do
     case "${f##*/}" in
@@ -192,9 +234,10 @@ case "${1:-}" in
   pre-push)   pre_push ;;
   file)       lint_file "${2:?file}"; exit $? ;;
   repo)       repo_report "${2:-}"; exit $? ;;
+  bypasses)   shift; bypasses "$@"; exit $? ;;
   repo-view)  echo "Reviewing $(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")…"
               f="$(repo_report "${2:-}")" || { read -rsn1; exit 1; }; less -R "$f"; exit 0 ;;
-  *) sed -n '3,19p' "$0"; exit 2 ;;
+  *) sed -n '3,26p' "$0"; exit 2 ;;
 esac
 if (( fail )); then printf '%sGate: blocked. Fix what is marked with ✖ (or git config ws.gate.skip …).%s\n' "$RED" "$RST" >&2; exit 1; fi
 (( warn )) && printf '%sGate: passes with warnings.%s\n' "$YEL" "$RST" >&2

@@ -1,0 +1,6 @@
+# allowed-domains.txt — the kit's default domain allow list for agent-browser (one pattern per line; "*.example.com"
+# also matches example.com). Every navigation, sub-resource, WebSocket and beacon to another domain is blocked.
+# This file is the kit's and install.sh replaces it: add your own domains to allowed-domains.local.txt next to it.
+localhost
+127.0.0.1
+*.localhost

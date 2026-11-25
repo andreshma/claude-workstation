@@ -1,0 +1,10 @@
+{
+  "name": "ws-npm-agent-browser",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pinned by the claude-workstation kit (ws-pinned). Edit with care: package-lock.json carries the integrity of every tarball.",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "agent-browser": "0.44.0"
+  }
+}

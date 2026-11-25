@@ -1,0 +1,263 @@
+#!/usr/bin/env python3
+"""ws-memory — approved writes to persistent memory (MemPalace), their provenance and their review (WS-AI-012/013).
+
+Every memory write from Claude goes through the memory-gate.sh hook, which asks you, blocks <private> text and stamps
+the provenance. This command is the path for writes YOU already approved, and for reviewing what memory holds:
+
+  ws-memory save-facts            saves the facts given as a JSON array on stdin ([{subject, predicate, object,
+                                  evidence?}]) with mempalace_kg_add, headless: only those exact facts are allowed
+                                  (their keys go to the gate in WS_MEMORY_APPROVED), source «ws-learn» is stamped by the
+                                  gate, and each save is checked in the tool result before it is logged. ws-learn uses it.
+  ws-memory review [--older-than 90] [--list|--count]
+                                  facts saved through ws-learn that are older than N days (or last kept N days ago):
+                                  you pick the ones to invalidate (mempalace_kg_invalidate, same approved path) and the
+                                  rest are marked as kept today. --list only prints them; --count prints the number.
+  ws-memory log [--days 30]       memory writes, redactions and private blocks recorded in the audit log
+  ws-memory profile <kg_add|kg_invalidate>   prints the generated settings profile that allows that one tool (0600)
+
+The headless run uses «--setting-sources project,local --settings <profile>»: your settings.json with the ask rules
+that match that one tool removed and the tool allowed (Claude Code merges lists across sources, so an ask rule in your
+user settings would otherwise deny it in -p mode). Deny rules and every hook, the gate included, stay.
+Writes refuse to run inside a Claude session (CLAUDECODE is set): an agent must not approve its own memory writes.
+Log: ~/.local/share/ws-telemetry/learning/YYYY-MM-DD.jsonl (types facts-saved, invalidated, kept).
+"""
+from __future__ import annotations
+
+import datetime as dt
+import fnmatch
+import hashlib
+import json
+import os
+import shutil
+import subprocess  # nosec B404 — claude and fzf with fixed arguments
+import sys
+from pathlib import Path
+
+HOME = Path.home()
+SETTINGS = Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude") / "settings.json"
+LEVELS = Path(os.environ.get("WS_LEVELS_DIR") or HOME / ".config/claude-levels")
+DATA = Path(os.environ.get("WS_TELEMETRY_DIR") or HOME / ".local/share/ws-telemetry")
+AUDIT = Path(os.environ.get("CLAUDE_AUDIT_DIR") or HOME / ".claude/audit")
+TOOLS = {"kg_add": "mcp__mempalace__mempalace_kg_add", "kg_invalidate": "mcp__mempalace__mempalace_kg_invalidate"}
+FIELDS = ("subject", "predicate", "object")
+
+
+def key(short: str, f: dict) -> str:
+    """Approval key, the same the gate computes: sha256 of tool, subject, predicate and object joined by U+001F."""
+    return hashlib.sha256("\x1f".join([short, *(str(f.get(k, "")) for k in FIELDS)]).encode()).hexdigest()
+
+
+def profile(short: str) -> Path:
+    """Settings profile that allows exactly one memory tool: user settings minus the ask rules matching it."""
+    tool = TOOLS.get(short)
+    if not tool:
+        sys.exit(f"✖ only {', '.join(TOOLS)} have an approved path")
+    try:
+        s = json.loads(SETTINGS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        s = {}
+    perms = s.setdefault("permissions", {})
+    if any(fnmatch.fnmatchcase(tool, r) for r in perms.get("deny", [])):
+        sys.exit(f"✖ a deny rule in {SETTINGS} covers {tool}: nothing is saved")
+    perms["ask"] = [r for r in perms.get("ask", []) if not fnmatch.fnmatchcase(tool, r)]
+    perms["allow"] = sorted(set(perms.get("allow", [])) | {tool})
+    LEVELS.mkdir(parents=True, exist_ok=True); os.chmod(LEVELS, 0o700)
+    f = LEVELS / f"memory-{short}.json"
+    f.write_text(json.dumps(s, indent=1), encoding="utf-8"); os.chmod(f, 0o600)
+    return f
+
+
+def clean(items) -> list[dict]:
+    """Facts with the three fields as short strings and no private text; anything else is dropped."""
+    out = []
+    for f in items if isinstance(items, list) else []:
+        if not isinstance(f, dict) or not all(isinstance(f.get(k), str) and 0 < len(f[k]) <= 500 for k in FIELDS):
+            continue
+        if any("<private>" in f[k].lower() or "</private>" in f[k].lower() for k in FIELDS):
+            continue
+        out.append({k: f[k] for k in (*FIELDS, "evidence", "valid_from") if isinstance(f.get(k), str)})
+    return out
+
+
+def log(kind: str, data) -> None:
+    d = DATA / "learning"; d.mkdir(parents=True, exist_ok=True)
+    with open(d / f"{dt.date.today():%Y-%m-%d}.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"ts": dt.datetime.now().isoformat(timespec="seconds"), "type": kind, "data": data}, ensure_ascii=False) + "\n")
+
+
+def has_sources() -> bool:
+    try:
+        return "--setting-sources" in subprocess.run(["claude", "--help"], capture_output=True, text=True, timeout=30).stdout  # nosec B603 B607
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def run(short: str, items: list[dict], source: str, instruction: str) -> list[dict]:
+    """Headless Claude with only that tool, the approved keys and the fixed payload. Returns the items whose tool call
+    came back without an error (read from the stream-json tool results, not from what Claude says)."""
+    if not shutil.which("claude"):
+        sys.exit("✖ Claude is not in PATH")
+    tool = TOOLS[short]
+    keys = {key(short, f): f for f in items}
+    args = ["claude", "-p", "--model", "sonnet", "--no-session-persistence", "--output-format", "stream-json", "--verbose"]
+    if has_sources():
+        args += ["--setting-sources", "project,local"]
+    else:
+        print("⚠ Your Claude has no --setting-sources: an ask rule for this tool in settings.json will deny the call", file=sys.stderr)
+    args += ["--settings", str(profile(short)), "--allowedTools", tool, instruction]
+    env = {k: v for k, v in os.environ.items() if k not in ("TMUX_PANE", "TMUX")}
+    env.update(WS_MEMORY_APPROVED=",".join(keys), WS_MEMORY_SOURCE=source)
+    payload = json.dumps([{k: f[k] for k in (*FIELDS, "valid_from") if k in f} for f in items], ensure_ascii=False)
+    try:
+        out = subprocess.run(args, input=payload, capture_output=True, text=True, timeout=600, env=env).stdout  # nosec B603
+    except (OSError, subprocess.SubprocessError) as e:
+        sys.exit(f"✖ Claude did not answer: {e}")
+    calls, ok_ids = {}, set()
+    for line in out.splitlines():
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        for c in ((o.get("message") or {}).get("content") or []) if isinstance(o, dict) else []:
+            if not isinstance(c, dict):
+                continue
+            if c.get("type") == "tool_use" and c.get("name") == tool:
+                calls[c.get("id")] = key(short, c.get("input") or {})
+            elif c.get("type") == "tool_result" and not c.get("is_error"):
+                ok_ids.add(c.get("tool_use_id"))
+    done = {calls[i] for i in ok_ids if i in calls}
+    return [f for k, f in keys.items() if k in done]
+
+
+def save_facts() -> int:
+    try:
+        items = clean(json.loads(sys.stdin.read() or "[]"))
+    except ValueError:
+        sys.exit("✖ expected a JSON array of facts on stdin")
+    if not items:
+        print("Nothing to save."); return 0
+    saved = run("kg_add", items, "ws-learn",
+                "Call mempalace_kg_add once for each item of the JSON array on stdin, with exactly its subject, predicate, "
+                "object (and valid_from if present). Do not add, change, merge or skip anything. Do not call any other tool.")
+    log("facts-saved", {"source": "ws-learn", "facts": saved, "keys": [key("kg_add", f)[:16] for f in saved],
+                        "missing": [f for f in items if f not in saved]})
+    print(f"Saved {len(saved)} of {len(items)} facts (checked in the tool results).")
+    for f in items:
+        if f not in saved:
+            print(f"  not saved: {f['subject']} · {f['predicate']} · {f['object']}")
+    return 0 if len(saved) == len(items) else 1
+
+
+def learning_rows():
+    for f in sorted((DATA / "learning").glob("*.jsonl")):
+        for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(o, dict):
+                yield o
+
+
+def due(days: int) -> list[dict]:
+    """Facts saved through ws-learn whose last save or keep is older than `days`, and not invalidated since."""
+    last: dict[str, tuple[str, dict]] = {}
+    gone: set[str] = set()
+    for o in learning_rows():
+        kind, ts = o.get("type"), str(o.get("ts") or "")
+        data = o.get("data")
+        facts = data.get("facts") if isinstance(data, dict) else data
+        for f in clean(facts or []):
+            k = key("kg_add", f)
+            if kind in ("facts", "facts-saved", "kept"):
+                last[k] = (ts, f); gone.discard(k)
+            elif kind == "invalidated":
+                gone.add(k)
+    lim = (dt.datetime.now() - dt.timedelta(days=days)).isoformat()
+    return sorted(({**f, "since": ts[:10]} for k, (ts, f) in last.items() if k not in gone and ts < lim), key=lambda f: f["since"])
+
+
+def choose(options: list[str]) -> list[int]:
+    if sys.stdin.isatty() and shutil.which("fzf"):
+        r = subprocess.run(["fzf", "--multi", "--reverse", "--prompt", "invalidate> ",  # nosec B603 B607
+                            "--header", "Tab marks the facts to INVALIDATE · Enter confirms · the rest are kept"],
+                           input="\n".join(f"{i + 1}\t{o}" for i, o in enumerate(options)), capture_output=True, text=True).stdout
+        return [int(l.split("\t", 1)[0]) - 1 for l in r.splitlines() if l.strip()]
+    for i, o in enumerate(options, 1):
+        print(f"  {i}. {o}")
+    r = input("Which ones are no longer true? (numbers separated by spaces, Enter for none): ").strip()
+    return [int(x) - 1 for x in r.split() if x.isdigit() and 0 < int(x) <= len(options)]
+
+
+def review(days: int, mode: str) -> int:
+    rows = due(days)
+    if mode == "count":
+        print(len(rows)); return 0
+    if not rows:
+        print(f"No fact saved through ws-learn is older than {days} days."); return 0
+    labels = [f"{f['subject']} · {f['predicate']} · {f['object']}  (since {f['since']}; {f.get('evidence', '')[:60]})" for f in rows]
+    if mode == "list":
+        print("\n".join(labels)); return 0
+    picked = choose(labels)
+    gone = [rows[i] for i in picked]
+    kept = [f for i, f in enumerate(rows) if i not in picked]
+    if gone:
+        done = run("kg_invalidate", [{k: f[k] for k in FIELDS} for f in gone], "ws-memory-review",
+                   "Call mempalace_kg_invalidate once for each item of the JSON array on stdin, with exactly its subject, "
+                   "predicate and object. Do not change or skip anything. Do not call any other tool.")
+        log("invalidated", {"facts": done})
+        print(f"Invalidated {len(done)} of {len(gone)} (checked in the tool results).")
+    if kept:
+        log("kept", {"facts": [{k: f[k] for k in (*FIELDS, "evidence") if k in f} for f in kept]})
+        print(f"Kept {len(kept)}: they come up again in {days} days.")
+    return 0
+
+
+def show_log(days: int) -> int:
+    since = (dt.date.today() - dt.timedelta(days=days)).isoformat()
+    n = 0
+    for f in sorted(AUDIT.glob("*.jsonl")):
+        if f.stem < since:
+            continue
+        for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            ev, reason = o.get("ev"), str(o.get("reason") or "")
+            if ev in ("memory-write", "memory-redact", "memory-skip") or (ev == "blocked" and "private" in reason):
+                n += 1
+                print(f"{str(o.get('ts'))[:19]}  {ev:13} {str(o.get('repo') or '-')[:18]:18} {reason[:70]}  "
+                      f"session {str(o.get('session') or '-')[:8]} {('input ' + o['input_sha'][:12]) if o.get('input_sha') else ''}")
+    if not n:
+        print(f"No memory writes recorded in {days} days.")
+    return 0
+
+
+def main() -> int:
+    a = sys.argv[1:]
+
+    def num(name: str, default: int) -> int:
+        try:
+            return int(a[a.index(name) + 1]) if name in a else default
+        except (ValueError, IndexError):
+            sys.exit(f"✖ {name} needs a number")
+    if not a or a[0] in ("-h", "--help"):
+        print(__doc__); return 0 if a else 2
+    writes = a[0] == "save-facts" or (a[0] == "review" and not {"--list", "--count"} & set(a))
+    if writes and os.environ.get("CLAUDECODE"):
+        # A Claude session must not use the approved path for its own writes: those go through the gate and ask you.
+        sys.exit("✖ ws-memory writes only from your terminal, not from inside Claude (run it in a shell, or through ws-learn)")
+    if a[0] == "save-facts":
+        return save_facts()
+    if a[0] == "review":
+        return review(num("--older-than", 90), "count" if "--count" in a else "list" if "--list" in a else "pick")
+    if a[0] == "log":
+        return show_log(num("--days", 30))
+    if a[0] == "profile" and len(a) > 1:
+        print(profile(a[1].removeprefix("mcp__mempalace__mempalace_"))); return 0
+    print(__doc__); return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -62,7 +62,7 @@ while IFS= read -r l || [[ -n "$l" ]]; do
   l="${l%%$'\r'}"; [[ -z "${l// /}" || "$l" == \#* ]] && continue
   read -r inst rest <<<"$l"
   case "$inst" in
-    claude) run_in "$main_pane" "claude" ;;
+    claude) run_in "$main_pane" "$("$HOME/.local/bin/tmux-level" --command normal 2>/dev/null || echo claude)" ;;
     main|principal) run_in "$main_pane" "$rest" ;;
     right|derecha|below|abajo)
       read -r pct cmd <<<"$rest"; [[ "$pct" =~ ^[0-9]+%$ ]] || { cmd="$rest"; pct=50%; }

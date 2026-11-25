@@ -193,7 +193,7 @@ def latest(folder: str) -> str:
 
 
 def open_conversation(file: str) -> int:
-    """New tab in the group of the conversation's folder, resuming that conversation (claude --resume <id>)."""
+    """New tab in the group of the conversation's folder, resuming that conversation (claude-resume --resume <id>)."""
     info, sid = summarize(Path(file)), Path(file).stem
     if not info or not re.fullmatch(r"[A-Za-z0-9_-]+", sid):
         print(f"Not a conversation that can be resumed: {file}"); return 1
@@ -206,7 +206,7 @@ def open_conversation(file: str) -> int:
         w = sh("tmux", "list-windows", "-t", f"={g}", "-F", "#{window_id}").split()[0]
     else:
         w = sh("tmux", "new-window", "-d", "-P", "-F", "#{window_id}", "-t", f"={g}:", "-c", target, "-n", Path(target).name).strip()
-    sh("tmux", "send-keys", "-t", w, f"claude --resume {sid}", "Enter")
+    sh("tmux", "send-keys", "-t", w, f"claude-resume --resume {sid}", "Enter")   # normal level, that conversation
     sh("tmux", "switch-client", "-t", f"={g}"); sh("tmux", "select-window", "-t", w)
     return 0
 

@@ -1,7 +1,19 @@
 #!/usr/bin/env bash
 #
-# claude-resume — used by tmux-resurrect on restore: resumes the folder's last conversation and,
-# if there is none to resume (no messages ever, or only -p sessions), opens a new Claude.
+# claude-resume — the kit's way to start Claude in a tab (tmux-resurrect on restore, the tab launchers, tmux-level,
+# tmux-solo, claude-account): resumes the folder's last conversation and, if there is none to resume (no messages
+# ever, or only -p sessions), opens a new Claude. With --resume/-r/--continue/-c the caller already chose: it starts
+# Claude with exactly those arguments.
+# Level: when the caller passes no --settings or --setting-sources it starts at the NORMAL level (ADR-013), that is,
+# with the profile tmux-level generates from ~/.config/claude-levels/normal-adds.json (the commands excluded from the
+# sandbox); the user settings stay strict, so a «claude» typed by hand runs with no exclusions.
+# Usage: claude-resume [claude arguments...]
+if [[ " $* " != *" --settings "* && " $* " != *" --setting-sources "* ]] && command -v tmux-level >/dev/null; then
+  f="$(tmux-level --settings-file normal 2>/dev/null)" && [[ -s "$f" ]] && set -- --settings "$f" "$@"
+fi
+case " $* " in
+  *" --resume "*|*" -r "*|*" --continue "*|*" -c "*) exec claude "$@" ;;
+esac
 k="${PWD//[^A-Za-z0-9]/-}"
 if compgen -G "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$k/*.jsonl" >/dev/null; then
   claude --continue "$@" || exec claude "$@"

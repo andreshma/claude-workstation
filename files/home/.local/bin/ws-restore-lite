@@ -9,6 +9,8 @@
 #   --restore  extracts into $HOME. Asks for confirmation; will not run with Claude open; what
 #                already exists and differs is kept as <file>.~N~ (no overwrite).
 #   FILE         by default, the most recent backup in %UserProfile%\WSL-Backups\lite
+#   --identity   age identity for an encrypted (.age) backup; by default the cloud key ws-backup-cloud keeps in
+#                the Windows Credential Manager (ws/age-backup), which ws-backup-lite always encrypts to
 # Order on a new machine: the kit's install.sh → ws-restore-lite --restore → logins.
 set -euo pipefail
 MODE="--test" FILE="" IDENT=""
@@ -16,7 +18,7 @@ while (( $# )); do
   case "$1" in
     --test|--restore) MODE="$1" ;;
     --identity) IDENT="${2:?missing identity file}"; shift ;;
-    -h|--help) sed -n '3,13p' "$0"; exit 0 ;;
+    -h|--help) sed -n '3,15p' "$0"; exit 0 ;;
     *) FILE="$1" ;;
   esac
   shift
@@ -45,20 +47,33 @@ if [[ -f "$FILE.sha256" ]]; then
   else fail "the SHA-256 checksum does not match: damaged file"; exit 1; fi
 else warn "no .sha256 file"; fi
 
+# An encrypted backup without --identity: the cloud key from Credential Manager, in a 0600 temp file deleted on exit.
+ID_TMP=""
+cleanup_id() { [[ -z "$ID_TMP" ]] || rm -f "$ID_TMP"; }
+trap cleanup_id EXIT
+if [[ "$FILE" == *.age && -z "$IDENT" ]] && command -v ws-secret >/dev/null; then
+  ID_TMP="$(mktemp)"; chmod 600 "$ID_TMP"
+  for k in age-backup age-respaldo; do ws-secret get "$k" > "$ID_TMP" 2>/dev/null && [[ -s "$ID_TMP" ]] && break; done
+  if [[ -s "$ID_TMP" ]]; then IDENT="$ID_TMP"; ok "encrypted: using the cloud key from the Windows Credential Manager"
+  else rm -f "$ID_TMP"; ID_TMP=""; fi
+fi
+
 # read_backup — decrypts (if needed) and decompresses to stdout.
 read_backup() {
-  local a="$FILE"
+  # The compression is read from the name without .age: set before the pipeline (its stages are subshells, so a
+  # name changed inside the first stage never reached the second, and encrypted backups did not extract).
+  local a="$FILE" inner="${FILE%.age}"
   if [[ "$a" == *.age ]]; then
     [[ -n "$IDENT" ]] || { echo "✖ encrypted backup: use --identity <age file>" >&2; return 1; }
-    age -d -i "$IDENT" "$a"; a="${a%.age}"
-  else cat "$a"; fi | case "$a" in *.zst) zstd -dc -q ;; *.gz) gzip -dc ;; *) cat ;; esac
+    age -d -i "$IDENT" "$a"
+  else cat "$a"; fi | case "$inner" in *.zst) zstd -dc -q ;; *.gz) gzip -dc ;; *) cat ;; esac
 }
 
 #######################################
 # --test: everything in a temp folder
 #######################################
 if [[ "$MODE" == "--test" ]]; then
-  T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+  T="$(mktemp -d)"; trap 'rm -rf "$T"; cleanup_id' EXIT
   if read_backup | tar -C "$T" -xf - 2>"$T.err"; then ok "extracts completely"; else fail "could not extract: $(head -1 "$T.err")"; exit 1; fi
   rm -f "$T.err"
 

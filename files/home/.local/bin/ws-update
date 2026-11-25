@@ -1,14 +1,44 @@
 #!/usr/bin/env bash
 #
-# ws-update — updates the workstation: Claude Code, tmux plugins and system packages.
-# The Azure MCP is pinned to a version: this only reports a new one, so you can review it first.
+# ws-update — updates the workstation: Claude Code, tmux plugins and system packages, and verifies the pinned MCP
+# servers and tools. The MCP servers and agent tools are pinned (ws-pinned, files/mcp-servers.lock.json): this only
+# verifies them and reports newer versions, so you can review them first; a new pin is a reviewed change to the kit.
+#
+# Usage: ws-update
 set -u
+export PATH="$HOME/.local/bin:$PATH"
 echo "== Claude Code";     claude update
 echo "== tmux plugins";    ~/.tmux/plugins/tpm/bin/update_plugins all
 echo "== Packages (includes az, gh, tmux)"; sudo apt-get update -qq && sudo apt-get upgrade -y
-echo "== Azure MCP"
-cur="$(claude mcp get azure 2>/dev/null | grep -o '@azure/mcp@[0-9][0-9.]*' | cut -d@ -f3)"
-new="$(npm view @azure/mcp version 2>/dev/null)"
-if [ "$cur" = "$new" ]; then echo "up to date ($cur)"; else echo "new version $new (you have ${cur:-?}): review its changelog and re-register it with that version"; fi
+
+echo "== MCP servers and pinned tools"
+if command -v ws-pinned >/dev/null; then
+  # Installed tree against its committed lock and recorded hash; --online adds npm's registry signatures.
+  ws-pinned verify --online \
+    || echo "  ✖ A pinned package does not match its lock: reinstall from the kit (bash install.sh) and review why."
+  # Local executables (MemPalace, recall): same sha256 as when they were pinned on first registration.
+  while IFS=$'\t' read -r name cmd; do
+    [[ -n "$name" ]] || continue
+    case "$cmd" in
+      npx|*/npx)
+        # Old unpinned form (npx -y <package>@<version>, prerelease suffix included in the version shown).
+        ver="$(jq -r --arg n "$name" '.mcpServers[$n].args // [] | join(" ")' "$HOME/.claude.json" 2>/dev/null \
+               | grep -oE '@?[A-Za-z0-9/_.-]+@[0-9][0-9A-Za-z.+-]*' | head -1)"
+        echo "  ✖ $name runs through npx (${ver:-unpinned}): bash install.sh --mcp-refresh registers the pinned one" ;;
+      "$HOME/.local/share/ws-kit/npm/"*) ;;   # checked by ws-pinned verify
+      /*)
+        ws-pinned local-check "$name" "$cmd"; rc=$?
+        case "$rc" in
+          0) echo "  ✔ $name: same sha256 as when it was pinned" ;;
+          3) echo "  ! $name is not pinned yet: bash install.sh pins it" ;;
+          *) echo "  ✖ $name changed since it was pinned ($cmd): review it, then bash install.sh --mcp-accept $name" ;;
+        esac ;;
+    esac
+  done < <(jq -r '.mcpServers // {} | to_entries[] | select(.value.command != null) | "\(.key)\t\(.value.command)"' \
+             "$HOME/.claude.json" 2>/dev/null)
+  ws-pinned outdated
+else
+  echo "  ws-pinned is missing: reinstall the kit (bash install.sh)"
+fi
 echo "== Sandbox exclusions"; ws-sandbox-repos
 echo "== Status";          ws-check

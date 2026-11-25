@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""ws-anomaly — sessions that look like an agent probing for a way out (WS-AI-030).
+
+Counts, per Claude session, the actions the guard blocked («blocked» in ~/.claude/audit), the permissions that were
+denied («denied»: you, a rule or the auto-mode classifier said no) and the sandbox hits (network, credential reads,
+writes outside the project, from ~/.local/share/ws-telemetry/raw/sandbox-*.jsonl) in a recent window. A session at or
+above the threshold is reported with its project and its tmux pane, so the alert can offer «Stop this tab»
+(ws-stop-all --pane). It only reads; tmux-watch and ws-telegram call it every minute.
+
+Usage:
+  ws-anomaly [--minutes 10] [--threshold 5] [--tsv|--json]
+      --tsv: «session<TAB>count<TAB>kinds<TAB>project<TAB>pane» per anomalous session (nothing when all is calm)
+Environment: CLAUDE_AUDIT_DIR, WS_TELEMETRY_DIR (tests); WS_ANOMALY_MINUTES and WS_ANOMALY_THRESHOLD as defaults.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import json
+import os
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+
+HOME = Path.home()
+AUDIT = Path(os.environ.get("CLAUDE_AUDIT_DIR") or HOME / ".claude/audit")
+RAW = Path(os.environ.get("WS_TELEMETRY_DIR") or HOME / ".local/share/ws-telemetry") / "raw"
+
+
+def when(s) -> float:
+    """Epoch of an ISO timestamp (with or without the colon in the offset); 0 when it cannot be read."""
+    try:
+        t = dt.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        return (t if t.tzinfo else t.astimezone()).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def rows(f: Path):
+    try:
+        with open(f, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(o, dict):
+                    yield o
+    except OSError:
+        return
+
+
+def scan(minutes: int, threshold: int) -> list[dict]:
+    since = dt.datetime.now().timestamp() - minutes * 60
+    days = {dt.date.fromtimestamp(since), dt.date.today()}
+    hits: dict[str, Counter] = defaultdict(Counter)
+    pane: dict[str, str] = {}
+    project: dict[str, str] = {}
+    for d in sorted(days):
+        for o in rows(AUDIT / f"{d:%Y-%m-%d}.jsonl"):
+            s = o.get("session") or ""
+            if not s:
+                continue
+            if o.get("pane"):
+                pane[s] = o["pane"]
+            if o.get("cwd") or o.get("repo"):
+                project[s] = o.get("repo") or Path(o["cwd"]).name
+            if o.get("ev") in ("blocked", "denied") and when(o.get("ts")) >= since:
+                hits[s]["guard" if o["ev"] == "blocked" else "denied"] += 1
+    for month in sorted({f"{d:%Y-%m}" for d in days}):
+        for o in rows(RAW / f"sandbox-{month}.jsonl"):
+            s = o.get("session") or ""
+            if s and when(o.get("ts")) >= since:
+                hits[s]["sandbox-" + str(o.get("type") or "?")] += 1
+                project.setdefault(s, o.get("project") or "")
+    out = []
+    for s, c in hits.items():
+        n = sum(c.values())
+        if n >= threshold:
+            out.append({"session": s, "count": n, "kinds": ",".join(f"{k}:{v}" for k, v in c.most_common()),
+                        "project": project.get(s) or "?", "pane": pane.get(s, "")})
+    return sorted(out, key=lambda r: -r["count"])
+
+
+def main() -> int:
+    a = sys.argv[1:]
+
+    def opt(name: str, default: str) -> int:
+        try:
+            return int(a[a.index(name) + 1]) if name in a else int(default)
+        except (ValueError, IndexError):
+            sys.exit(f"✖ {name} needs a number")
+    if "-h" in a or "--help" in a:
+        print(__doc__); return 0
+    found = scan(opt("--minutes", os.environ.get("WS_ANOMALY_MINUTES", "10")),
+                 opt("--threshold", os.environ.get("WS_ANOMALY_THRESHOLD", "5")))
+    if "--json" in a:
+        print(json.dumps(found, ensure_ascii=False))
+    elif "--tsv" in a:
+        for r in found:
+            print("\t".join(str(r[k]) for k in ("session", "count", "kinds", "project", "pane")))
+    else:
+        if not found:
+            print("No session over the threshold.")
+        for r in found:
+            print(f"{r['project']:24} {r['count']:3} blocked/denied ({r['kinds']})  pane {r['pane'] or '?'}  session {r['session'][:8]}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

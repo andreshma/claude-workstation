@@ -3,18 +3,24 @@
 # ws-backup-lite — light backup of the Claude environment and the workstation (instead of the full
 # distro snapshot). The setup already lives in the kit (GitHub); this saves the DATA:
 #   · ~/.claude: conversations (subagents too), todos, plans, /rewind checkpoints, prompt
-#     history, memory, agents, audit log (no login, no caches)
+#     history, memory, agents, audit log and a copy of its anchors (no login, no caches)
 #   · tmux saves (tabs, panes and the conversation of each one) and ~/.config/tmux-claude
 #   · MemPalace (if present) and extra paths from ~/.config/ws-backup/extra.txt
 #   · inventory for reinstalling: apt, pipx, az, npm -g, cargo, versions, kube contexts
 #   · warning about repos in ~/code with uncommitted changes or unpushed commits
 # Never includes credentials (~/.claude/.credentials.json, ~/.azure, ~/.kube, ~/.aws, gh).
 # Destination: %UserProfile%\WSL-Backups\lite (local disk, not OneDrive). Rotation: WS_BACKUP_KEEP (14).
-# Optional encryption with age if ~/.config/ws-backup/age-recipients exists.
+# Encrypted with age by default (WS-SEC-013): to every key in ~/.config/ws-backup/age-recipients and to the cloud
+# key of ws-backup-cloud (cloud-recipient), whichever exist. With neither, or without age, it is made in clear with a
+# loud warning and logged as UNENCRYPTED (ws-audit reports it): run ws-backup-cloud setup once.
+# Expiry: after each backup it also prunes the Windows-side copies that ws-backup and tmux-backup keep
+# (%UserProfile%\.claude-wsl-backup and .tmux-resurrect-backup) older than WS_BACKUP_COPY_DAYS (30): conversation
+# copies whose original Claude Code already deleted, and tmux saves (the newest and last.txt always stay).
 #
-# Usage: ws-backup-lite [--now | --if-due]
+# Usage: ws-backup-lite [--now | --if-due | --prune-copies]
 #   --now    (default) back up now
 #   --if-due  only if the last backup is more than 20 h old (called by tmux-backup)
+#   --prune-copies  only the expiry pass of the Windows-side copies
 set -euo pipefail
 umask 077
 MODE="${1:---now}"
@@ -33,6 +39,47 @@ win_home() {
 }
 DEST="${WS_BACKUP_DEST:-$(win_home)/WSL-Backups/lite}"
 [[ "$DEST" == /* ]] || { echo "✖ Windows folder not found; set WS_BACKUP_DEST" >&2; exit 1; }
+
+#######################################
+# Expiry of the Windows-side copies (WS_BACKUP_COPY_DAYS, default 30; 0 turns it off).
+#   .claude-wsl-backup: files older than that whose original under ~/.claude no longer exists (ws-backup copies
+#     incrementally and never deletes, so a conversation Claude Code cleaned up stayed there for ever);
+#   .tmux-resurrect-backup: tmux_resurrect_*.txt older than that, except the newest; last.txt stays.
+# Globals: WS_BACKUP_WINHOME (the Windows profile seen from WSL; detected when unset). Outputs: count to the log.
+#######################################
+prune_copies() {
+  local days="${WS_BACKUP_COPY_DAYS:-30}" wh n=0 f rel newest
+  [[ "$days" =~ ^[0-9]+$ ]] && (( days > 0 )) || return 0
+  wh="${WS_BACKUP_WINHOME:-}"
+  # A run with its own destination (ws-test, a manual test) never prunes the real Windows profile: its HOME is not
+  # the one the copies came from, so every copy would look orphaned.
+  [[ -z "$wh" && -n "${WS_BACKUP_DEST:-}" ]] && return 0
+  if [[ -z "$wh" ]]; then
+    command -v wslvar >/dev/null && wh="$(wslvar USERPROFILE 2>/dev/null || true)"
+    [[ -n "$wh" ]] || wh="$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r' || true)"
+    [[ -n "$wh" ]] && wh="$(wslpath -u "$wh" 2>/dev/null || true)"
+  fi
+  [[ "$wh" == /* ]] || return 0
+  if [[ -d "$wh/.claude-wsl-backup" ]]; then
+    while IFS= read -r -d '' f; do
+      rel="${f#"$wh/.claude-wsl-backup/"}"
+      [[ -e "$HOME/.claude/$rel" ]] && continue          # the original still exists: the copy mirrors it
+      rm -f -- "$f" && n=$((n + 1))
+    done < <(find "$wh/.claude-wsl-backup" -mindepth 2 -type f -mtime +"$days" -print0 2>/dev/null)
+    find "$wh/.claude-wsl-backup" -mindepth 2 -type d -empty -delete 2>/dev/null || true
+  fi
+  if [[ -d "$wh/.tmux-resurrect-backup" ]]; then
+    newest="$(find "$wh/.tmux-resurrect-backup" -maxdepth 1 -name 'tmux_resurrect_*.txt' -printf '%T@ %p\n' 2>/dev/null \
+              | sort -rn | head -1 | cut -d' ' -f2-)"
+    while IFS= read -r -d '' f; do
+      [[ "$f" == "$newest" ]] && continue
+      rm -f -- "$f" && n=$((n + 1))
+    done < <(find "$wh/.tmux-resurrect-backup" -maxdepth 1 -name 'tmux_resurrect_*.txt' -mtime +"$days" -print0 \
+               2>/dev/null)
+  fi
+  (( n == 0 )) || echo "$(date -Is) expired $n Windows-side copies older than $days days" >> "$LOG"
+}
+if [[ "$MODE" == "--prune-copies" ]]; then prune_copies; exit 0; fi
 
 # One backup at a time (tmux can trigger it several times in a row).
 # WS_BACKUP_LOCK: its own lock (ws-test uses it so it does not collide with your real backup)
@@ -74,6 +121,14 @@ excl=(--exclude='.claude/.credentials.json' --exclude='.claude/statsig' --exclud
 # Inventory for reinstalling (every command is optional).
 #######################################
 inv() { local f="$1"; shift; timeout 60 "$@" > "$INV/$f" 2>/dev/null || rm -f "$INV/$f"; }
+# The audit log's anchors live outside ~/.claude, on the Windows side (WS-SEC-011): a copy travels with the backup
+# (and so off the machine with ws-backup-cloud), so a rewritten log can still be checked against them.
+anchors="${CLAUDE_AUDIT_ANCHORS:-}"
+if [[ -z "$anchors" ]]; then
+  w="${WS_BACKUP_WINHOME:-$(cat "$HOME/.claude/audit/.winhome" 2>/dev/null || true)}"
+  [[ -n "$w" ]] && anchors="$w/ws-telemetry/audit-anchors.txt"
+fi
+if [[ -n "$anchors" && -s "$anchors" ]]; then cp "$anchors" "$INV/audit-anchors.txt"; fi
 inv apt-manual.txt     apt-mark showmanual
 inv pipx.txt           pipx list --short
 inv npm-global.txt     npm ls -g --depth=0
@@ -104,15 +159,24 @@ done < <(find "$HOME/code" -maxdepth 3 -name .git -type d 2>/dev/null) > "$INV/r
 stamp="$(date +%Y%m%d-%H%M)"
 if command -v zstd >/dev/null; then ext="tar.zst"; comp=(zstd -q -T0 -10); else ext="tar.gz"; comp=(gzip -6); fi
 name="claude-lite-$stamp.$ext"
-age_r="$CONF/age-recipients"
-encrypt=0; [[ -s "$age_r" ]] && command -v age >/dev/null && { encrypt=1; name+=".age"; }
+# Recipients: your age-recipients plus the cloud key, so the cloud copy (ws-backup-cloud) and a local restore both
+# open it with the key kept in Credential Manager. age is given every key with -R.
+age_args=(); for r in "$CONF/age-recipients" "$CONF/cloud-recipient"; do [[ -s "$r" ]] && age_args+=(-R "$r"); done
+encrypt=0 clear_why=""
+if (( ${#age_args[@]} == 0 )); then clear_why="no recipient (ws-backup-cloud setup creates one)"
+elif ! command -v age >/dev/null; then clear_why="age is not installed (sudo apt-get install age)"
+else encrypt=1; name+=".age"; fi
+if (( ! encrypt )); then
+  printf '\033[1;31m⚠ UNENCRYPTED backup: %s. It holds your conversations in clear on the Windows disk.\033[0m\n' \
+    "$clear_why" >&2
+fi
 part="$DEST/.$name.partial"
 trap 'rm -rf "$TMP" "$part"' EXIT   # if something fails halfway, no incomplete file is left behind
 
 {
   nice -n 19 tar -C "$HOME" "${excl[@]}" --warning=no-file-changed --ignore-failed-read -cf - "${existing[@]}" -C "$TMP" inventory \
     || [[ $? -eq 1 ]]   # 1 = files that changed during the copy (active conversations): acceptable
-} | "${comp[@]}" | if (( encrypt )); then age -R "$age_r"; else cat; fi > "$part"
+} | "${comp[@]}" | if (( encrypt )); then age "${age_args[@]}"; else cat; fi > "$part"
 
 # Verification: it reads end to end and contains conversations (unless encrypted: size only).
 if (( ! encrypt )); then
@@ -127,8 +191,10 @@ mv "$part" "$DEST/$name"
 find "$DEST" -maxdepth 1 -name 'claude-lite-*.tar.*' ! -name '*.sha256' -printf '%T@ %p\n' | sort -rn | tail -n +"$((KEEP + 1))" \
   | cut -d' ' -f2- | while IFS= read -r v; do rm -f "$v" "$v.sha256"; done
 
+prune_copies || true
 size="$(du -h "$DEST/$name" | cut -f1)"
-msg="$(date -Is) ok $name ($size, $n conversations, repos with pending work: $pending)"
+state="encrypted"; (( encrypt )) || state="UNENCRYPTED: $clear_why"
+msg="$(date -Is) ok $name ($size, $n conversations, repos with pending work: $pending, $state)"
 echo "$msg" >> "$LOG"
 [[ "$MODE" == "--if-due" ]] || { echo "✔ $DEST/$name ($size) · $n conversations · repos with pending work: $pending"; (( pending )) && sed 's/^/  ⚠ /' "$INV/repos-pending.txt"; }
 exit 0

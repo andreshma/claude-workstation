@@ -1,0 +1,7 @@
+# allowed_signers — SSH keys allowed to sign the kit's release tags (git's gpg.ssh.allowedSignersFile format).
+# ws-kit-update installs a release only if its vX.Y.Z tag is signed by one of these keys (WS-SEC-015). This file is
+# the kit's: install.sh replaces it. A fork adds its own maintainers in allowed_signers.local next to it (same format).
+# One line per key:   <principal email> namespaces="git" <key type> <public key>
+# Generate a signing key and sign a release: docs/runbook.md, "Signing a release".
+# The maintainer's public key goes on the next line (no key yet: ws-kit-update refuses until one is added, or run
+# it with --allow-unsigned, which is logged).

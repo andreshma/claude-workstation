@@ -3,18 +3,25 @@
 # tmux-swarm — swarm: several Claude instances in parallel on the same goal: each subtask in its own worktree
 # and branch, in its own tab, with a progress dashboard and a final integration that YOU approve. Menu → c → Z.
 #
-#   tmux-swarm new [goal]       1) you type the goal  2) Claude (Opus, no tools) proposes 2–6 independent
+#   tmux-swarm new [--budget USD] [goal]
+#                               1) you type the goal  2) Claude (Opus, no tools) proposes 2–6 independent
 #                                  subtasks  3) you edit them in your editor  4) you confirm  5) it creates
 #                                  <repo>.wt/swarm-<id>-N with branch swarm/<id>/N and a tmux group «swarm-<id>»:
-#                                  tab 0 = dashboard, 1..N = Claude with its subtask (normal permission mode).
-#   tmux-swarm dashboard <id>   progress: commits, files, Claude state, last commit (refreshes itself)
+#                                  tab 0 = dashboard, 1..N = Claude with its subtask at the FULL protection level
+#                                  (WS-AI-015): sandbox with no escape hatches, reads limited to its worktree, and a
+#                                  swarm profile that denies git push and gh pr create/merge. If your Claude has no
+#                                  --setting-sources the swarm refuses to start; WS_SWARM_LEVEL=normal is the audited
+#                                  exception (normal level, push still denied).
+#   tmux-swarm dashboard <id>   progress: commits, files, Claude state, last commit, spend per branch (refreshes
+#                                  itself). With --budget, a swarm whose branches together reach it is stopped
+#                                  (ws-stop-all --session swarm-<id>).
 #   tmux-swarm integrate <id>   branch swarm/<id>/integration from the base + merge --no-ff of each branch,
 #                                  in order. On a conflict it stops and lets you resolve it. Never pushes.
 #   tmux-swarm clean <id>       (asks) removes worktrees and tabs; deletes only branches already integrated.
 #   tmux-swarm list             saved swarms
 # State: ~/.local/share/tmux-swarm/<id>.json. Cost and hours per branch: ws-telemetry estimate --by branch.
 set -uo pipefail
-D="$HOME/.local/share/tmux-swarm"; mkdir -p "$D" && chmod 700 "$D"
+D="$HOME/.local/share/tmux-swarm"; mkdir -p "$D/profiles" "$D/cache" && chmod 700 "$D" "$D/profiles"
 die() { echo "✖ $*" >&2; exit 1; }
 state() { jq -r "$1" "$D/$2.json"; }
 
@@ -23,8 +30,38 @@ legacy() { jq -e 'has("tareas")' "$D/$1.json" >/dev/null 2>&1; }
 session() { if legacy "$1"; then echo "enj-$1"; else echo "swarm-$1"; fi; }
 TASKS='(.tasks // .tareas)[] | [(.branch // .rama), (.path // .ruta)] | @tsv'
 
+# Swarm profile: what every agent adds to its level. No pushing and no pull requests: only you integrate.
+NO_PUSH='["Bash(git push*)", "Bash(git -C * push*)", "Bash(git -c * push*)", "Bash(gh pr create*)", "Bash(gh pr merge*)"]'
+has_sources() { local h; h="$(claude --help 2>/dev/null)" || true; grep -q -- '--setting-sources' <<<"$h"; }
+audit() { printf '{"cwd":"%s"}' "$PWD" | "$HOME/.claude/hooks/audit.sh" "$1" "$2" >/dev/null 2>&1 || true; }
+
+# agent_command <level> <worktree> <profile file> — the command each agent starts with; writes its profile (0600).
+agent_command() {
+  local level="$1" wt="$2" f="$3"
+  if [[ "$level" == full ]]; then
+    tmux-level --profile full "" "$wt" | jq --argjson d "$NO_PUSH" '.permissions.deny = (((.permissions.deny // []) + $d) | unique)' > "$f" \
+      || return 1
+    chmod 600 "$f"
+    printf 'claude --setting-sources project,local --settings %q' "$f"
+  else
+    # The normal level's exclusions (the user settings are strict, ADR-013) plus the swarm's no-push rules.
+    { tmux-level --profile normal 2>/dev/null || echo '{}'; } \
+      | jq --argjson d "$NO_PUSH" '.permissions.deny = (((.permissions.deny // []) + $d) | unique)' > "$f" && chmod 600 "$f"
+    printf 'claude --settings %q' "$f"
+  fi
+}
+
 new_swarm() {
-  local root base repo goal id n tasks f i wt branch s
+  local root base repo goal id n tasks f i wt branch s budget="" level="${WS_SWARM_LEVEL:-full}" cmd
+  if [[ "${1:-}" == --budget ]]; then
+    budget="${2:-}"; shift 2 || true
+    [[ "$budget" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "--budget needs an amount in USD (API equivalent), e.g. --budget 20"
+  fi
+  [[ "$level" == full || "$level" == normal ]] || die "WS_SWARM_LEVEL must be full or normal"
+  if [[ "$level" == full ]]; then
+    has_sources || die "Your Claude has no --setting-sources: swarm agents cannot start at the full level (sandbox with no escape hatches, reads limited to their worktree). Update Claude, or start it with WS_SWARM_LEVEL=normal (recorded in the audit log)."
+    command -v tmux-level >/dev/null || die "tmux-level is missing: it builds the full profile of each agent"
+  fi
   root="$(git rev-parse --show-toplevel 2>/dev/null)" || die "Run this inside a git repo"
   cd "$root" || exit 1
   [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "There are uncommitted changes: commit or stash first (the branches start from HEAD)"
@@ -53,6 +90,7 @@ new_swarm() {
   [[ "$s" =~ ^([yY]([eE][sS])?|[sS]([iIíÍ])?)$ ]] || { echo "Cancelled."; exit 0; }
   grep -qxF '.swarm-task.md' "$(git rev-parse --git-common-dir)/info/exclude" 2>/dev/null \
     || echo '.swarm-task.md' >> "$(git rev-parse --git-common-dir)/info/exclude"
+  [[ "$level" == normal ]] && audit swarm-normal "swarm $id at the normal level (WS_SWARM_LEVEL=normal)"
   tmux new-session -d -s "swarm-$id" -n dashboard -c "$root"   # the dashboard starts once the state is saved
   local js='[]'
   for i in "${!tasks[@]}"; do
@@ -63,35 +101,61 @@ new_swarm() {
       echo "Overall goal: $goal"; echo
       echo "YOUR subtask ($((i + 1)) of $n):"; printf '%b\n' "${tasks[$i]}"; echo
       echo "Rules: work only in this folder ($wt), branch $branch. Do not touch what belongs to other subtasks."
-      echo "Make atomic commits with Conventional Commits and without Co-authored-by. Do not push."
+      echo "Make atomic commits with Conventional Commits and without Co-authored-by. Do not push or open pull requests"
+      echo "(both are denied in this swarm): the user integrates the branches."
       echo "When you finish, reply with «DONE» and a 3-line summary."
     } > "$wt/.swarm-task.md"
+    cmd="$(agent_command "$level" "$wt" "$D/profiles/$id-$((i + 1)).json")" || die "Could not build the profile of agent $((i + 1))"
     # Spanish on purpose: accented letters are kept in tab names taken from subtask titles typed in Spanish.
     tmux new-window -d -t "swarm-$id:" -n "$((i + 1))-$(head -1 <<<"${tasks[$i]//\\n/$'\n'}" | tr -c 'A-Za-z0-9áéíóúñ_-' '-' | cut -c1-18)" -c "$wt" \
-      "bash -lc 'claude \"\$(cat .swarm-task.md)\"; exec bash -l'"
-    js="$(jq -c --arg r "$branch" --arg w "$wt" --arg t "${tasks[$i]}" '. + [{branch: $r, path: $w, task: $t}]' <<<"$js")"
+      "bash -lc '$cmd \"\$(cat .swarm-task.md)\"; exec bash -l'"
+    js="$(jq -c --arg r "$branch" --arg w "$wt" --arg t "${tasks[$i]}" --arg p "$D/profiles/$id-$((i + 1)).json" \
+      '. + [{branch: $r, path: $w, task: $t, profile: $p}]' <<<"$js")"
   done
-  jq -n --arg id "$id" --arg root "$root" --arg base "$base" --arg goal "$goal" --argjson t "$js" \
-    '{id: $id, root: $root, base: $base, goal: $goal, created: (now | todate), tasks: $t}' > "$D/$id.json"
+  jq -n --arg id "$id" --arg root "$root" --arg base "$base" --arg goal "$goal" --argjson t "$js" --arg l "$level" --arg b "$budget" \
+    '{id: $id, root: $root, base: $base, goal: $goal, created: (now | todate), level: $l,
+      budget: ($b | tonumber? // null), tasks: $t}' > "$D/$id.json"
   rm -f "$f"
   tmux respawn-window -k -t "swarm-$id:dashboard" "'$0' dashboard '$id'"
   tmux switch-client -t "swarm-$id" 2>/dev/null || echo "Open the group: tmux attach -t swarm-$id"
-  echo "Swarm $id ready. Dashboard: tab 0 of group swarm-$id · Integrate: tmux-swarm integrate $id"
+  echo "Swarm $id ready ($level level${budget:+, budget \$$budget}). Dashboard: tab 0 of group swarm-$id · Integrate: tmux-swarm integrate $id"
 }
 
+# spend_refresh <id> — per-branch spend (ws-telemetry estimate --by branch) cached in the background, once a minute.
+spend_refresh() {
+  local f="$D/cache/$1.spend.json"
+  (( $(date +%s) - $(stat -c %Y "$f" 2>/dev/null || echo 0) >= 60 )) || return 0
+  touch "$f"
+  ( timeout 120 ws-telemetry estimate --by branch --days 30 --json > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f" & )
+}
+# spend <id> [branch] — USD of that branch, or of every branch of the swarm
+spend() {
+  jq -r --arg b "${2:-}" --arg p "swarm/$1/" '[.[]? | select(.key | split(" · ") | .[1] // "" | if $b != "" then . == $b else startswith($p) end)
+    | .cost] | add // 0 | . * 100 | round / 100' "$D/cache/$1.spend.json" 2>/dev/null || echo 0
+}
+
+over_budget() { awk -v t="$1" -v b="$2" 'BEGIN { exit !(t >= b) }'; }
+
 dashboard() {
-  local id="$1" r c a m e w ses
+  local id="$1" r c a m e w ses budget total
   [[ -f "$D/$id.json" ]] || die "Swarm $id does not exist"
-  ses="$(session "$id")"
+  ses="$(session "$id")"; budget="$(state '.budget // empty' "$id")"
   while :; do
-    clear; printf '\e[1m🐝 Swarm %s\e[0m · %s\n\e[2mbase %s · %s\e[0m\n\n' "$id" "$(state '.goal // .meta' "$id" | cut -c1-90)" "$(state .base "$id")" "$(date +%H:%M:%S)"
-    printf '%-26s %7s %9s %-12s %s\n' BRANCH COMMITS FILES CLAUDE "LAST COMMIT"
+    spend_refresh "$id"; total="$(spend "$id")"
+    clear; printf '\e[1m🐝 Swarm %s\e[0m · %s\n\e[2mbase %s · level %s · spend $%s%s · %s\e[0m\n\n' "$id" "$(state '.goal // .meta' "$id" | cut -c1-90)" \
+      "$(state .base "$id")" "$(state '.level // "normal"' "$id")" "$total" "${budget:+ of \$$budget}" "$(date +%H:%M:%S)"
+    if [[ -n "$budget" && -z "$(state '.stopped // empty' "$id")" ]] && over_budget "$total" "$budget"; then
+      jq '.stopped = (now | todate)' "$D/$id.json" > "$D/$id.json.tmp" && mv "$D/$id.json.tmp" "$D/$id.json"
+      ws-stop-all --session "$ses" --yes --reason "swarm $id reached its budget (\$$total of \$$budget)" </dev/null >/dev/null 2>&1
+      printf '\e[31m⛔ The swarm reached its budget ($%s of $%s): its agents were stopped.\e[0m\n\n' "$total" "$budget"
+    fi
+    printf '%-26s %7s %9s %8s %-12s %s\n' BRANCH COMMITS FILES SPEND CLAUDE "LAST COMMIT"
     while IFS=$'\t' read -r r w; do
       c="$(git -C "$w" rev-list --count "$(state .base "$id")..HEAD" 2>/dev/null || echo '?')"
       a="$(git -C "$w" diff --name-only "$(state .base "$id")" 2>/dev/null | wc -l)"
       m="$(git -C "$w" log -1 --format=%s "$(state .base "$id")..HEAD" 2>/dev/null | cut -c1-50)"
       e="$(tmux list-windows -t "$ses" -F '#{pane_current_path}	#{@cs}' 2>/dev/null | awk -F'\t' -v p="$w" '$1 == p {print $2; exit}')"
-      printf '%-26s %7s %9s %-12s %s\n' "$r" "$c" "$a" "${e:--}" "${m:--}"
+      printf '%-26s %7s %9s %8s %-12s %s\n' "$r" "$c" "$a" "\$$(spend "$id" "$r")" "${e:--}" "${m:--}"
     done < <(jq -r "$TASKS" "$D/$id.json")
     printf '\n\e[2mRefreshes every 10 s · i = integrate · q = quit the dashboard\e[0m'
     read -rsn1 -t 10 k && case "$k" in q) exit 0 ;; i) clear; integrate "$id"; read -rsn1 -p 'Press a key to return to the dashboard' ;; esac
@@ -131,11 +195,13 @@ clean() {
     git branch -d "$r" >/dev/null 2>&1 && echo "  deleted $r (already integrated)" || echo "  kept    $r"
   done < <(jq -r "$TASKS" "$D/$id.json")
   git worktree prune; mv "$D/$id.json" "$D/$id.json.done"
+  rm -f "$D/profiles/$id-"[0-9]*.json "$D/cache/$id.spend.json"
   tmux kill-session -t "$ses" 2>/dev/null; echo "Swarm $id cleaned up."
 }
 
 case "${1:-}" in
   new) shift; new_swarm "$@" ;;
+  command) agent_command "${2:?level}" "${3:?worktree}" "${4:?profile file}"; echo ;;   # prints an agent's start command (tests)
   dashboard) dashboard "${2:?id}" ;;
   integrate) integrate "${2:?id}" ;;
   clean) clean "${2:?id}" ;;

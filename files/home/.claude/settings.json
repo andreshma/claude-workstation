@@ -60,7 +60,12 @@
       "Bash(obsidian vault=* vault*)",
       "Bash(obsidian vault=* vaults*)",
       "Bash(obsidian vaults*)",
-      "Read(~/.cache/ws-tomd/**)"
+      "Read(~/.cache/ws-tomd/**)",
+      "WebFetch(domain:learn.microsoft.com)",
+      "WebFetch(domain:registry.terraform.io)",
+      "WebFetch(domain:pypi.org)",
+      "WebFetch(domain:registry.npmjs.org)",
+      "WebFetch(domain:crates.io)"
     ],
     "deny": [
       "Bash(*--unregister*)",
@@ -144,7 +149,49 @@
       "Bash(git config *ws.gate*)",
       "Read(~/.ssh/**)",
       "Read(~/.azure/**)",
-      "Read(~/.gnupg/**)"
+      "Read(~/.gnupg/**)",
+      "Bash(claude mcp add*)",
+      "Bash(claude mcp add-json*)",
+      "Bash(claude mcp remove*)",
+      "Bash(claude plugin install*)",
+      "Bash(claude plugin enable*)",
+      "Bash(claude plugin marketplace add*)",
+      "Bash(gh auth token*)",
+      "Bash(kubectl config view*--raw*)",
+      "Bash(ws-learn*)",
+      "Edit(~/.claude/settings.json)",
+      "Edit(~/.claude/settings.local.json)",
+      "Edit(~/.claude/hooks/**)",
+      "Edit(~/.claude/plugins/**)",
+      "Edit(~/.claude/statusline.sh)",
+      "Edit(~/.claude.json)",
+      "Edit(~/.claude-personal/settings.json)",
+      "Edit(~/.claude-personal/settings.local.json)",
+      "Edit(~/.claude-personal/hooks/**)",
+      "Edit(~/.claude-personal/.claude.json)",
+      "Edit(~/.config/git/hooks/**)",
+      "Edit(~/.config/claude-levels/**)",
+      "Edit(~/.config/claude-solo/**)",
+      "Edit(~/.config/ws-guard/**)",
+      "Edit(~/.local/lib/ws-credential-paths.txt)",
+      "Edit(//etc/claude-code/**)",
+      "Read(~/.config/ws-agent/**)",
+      "Bash(ws-memory*)",
+      "Bash(ws-stop-all --clear*)",
+      "Bash(* ws-stop-all --clear*)",
+      "Bash(ws-telemetry budgets --override*)",
+      "Bash(* ws-telemetry budgets --override*)",
+      "Edit(~/.claude/audit/**)",
+      "Edit(~/.local/state/ws-stop-all)",
+      "Edit(~/.local/state/ws-budget-over)",
+      "Edit(~/.local/state/ws-budget-override)",
+      "Edit(~/.local/state/ws-gate/**)",
+      "Edit(/@WINHOME@/ws-telemetry/audit-anchors.txt)",
+      "Edit(~/.config/ws-kit/**)",
+      "Edit(~/.local/share/ws-kit/**)",
+      "Edit(~/.local/lib/ws-npm/**)",
+      "Edit(~/.config/agent-browser/**)",
+      "Edit(~/.config/ws-telegram/**)"
     ],
     "ask": [
       "Bash(aws * create-*)",
@@ -243,8 +290,31 @@
       "mcp__claude_ai_Microsoft_365__*vacation*",
       "mcp__mempalace__*delete*",
       "mcp__mempalace__*invalidate*",
-      "mcp__mempalace__*supersede*"
-    ]
+      "mcp__mempalace__*supersede*",
+      "mcp__mempalace__*add*",
+      "mcp__mempalace__*write*",
+      "mcp__mempalace__*update*",
+      "mcp__mempalace__*put*",
+      "mcp__mempalace__*mine*",
+      "mcp__mempalace__*patch*",
+      "mcp__mempalace__*submit*",
+      "mcp__mempalace__*create*",
+      "mcp__mempalace__*sync*",
+      "mcp__mempalace__*checkpoint*",
+      "mcp__mempalace__*append*",
+      "mcp__mempalace__*hook_settings*",
+      "Bash(mempalace.exe *)",
+      "Bash(mempalace *)",
+      "Bash(*.exe*)",
+      "Bash(ws-kit-update*--allow-unsigned*)",
+      "Bash(ws-telegram approve*)",
+      "Bash(ws-telegram run no-pin*)"
+    ],
+    "disableBypassPermissionsMode": "disable"
+  },
+  "enableAllProjectMcpServers": false,
+  "enabledPlugins": {
+    "claude-security@claude-plugins-official": true
   },
   "model": "claude-fable-5-2",
   "fallbackModel": [
@@ -317,6 +387,75 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "^(WebFetch|WebSearch|mcp__.*)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/untrusted-content.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(curl *)",
+            "command": "~/.claude/hooks/untrusted-content.sh curl",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "if": "Bash(wget *)",
+            "command": "~/.claude/hooks/untrusted-content.sh wget",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "if": "Bash(gh api *)",
+            "command": "~/.claude/hooks/untrusted-content.sh gh-api",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "if": "Bash(gh issue view *)",
+            "command": "~/.claude/hooks/untrusted-content.sh gh-issue-view",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "if": "Bash(gh pr view *)",
+            "command": "~/.claude/hooks/untrusted-content.sh gh-pr-view",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "if": "Bash(gh pr diff *)",
+            "command": "~/.claude/hooks/untrusted-content.sh gh-pr-diff",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "if": "Bash(gh run view *)",
+            "command": "~/.claude/hooks/untrusted-content.sh gh-run-view",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "if": "Bash(gh release view *)",
+            "command": "~/.claude/hooks/untrusted-content.sh gh-release-view",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "if": "Bash(gh search *)",
+            "command": "~/.claude/hooks/untrusted-content.sh gh-search",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
@@ -365,7 +504,8 @@
           },
           {
             "type": "command",
-            "command": "~/.claude/hooks/guard.sh"
+            "command": "~/.claude/hooks/guard.sh",
+            "onFailure": "block"
           }
         ]
       },
@@ -385,6 +525,25 @@
             "type": "command",
             "command": "~/.claude/hooks/ws-traces.sh",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ws-runtime-gate.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*mempalace.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/memory-gate.sh",
+            "timeout": 10
           }
         ]
       }
@@ -410,8 +569,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "@HOME@/.claude/hooks/win-hook.sh",
+            "command": "@HOME@/.claude/hooks/memory-filter.sh",
             "args": [
+              "@HOME@/.claude/hooks/win-hook.sh",
               "mempalace.exe",
               "hook",
               "run",
@@ -476,8 +636,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "@HOME@/.claude/hooks/win-hook.sh",
+            "command": "@HOME@/.claude/hooks/memory-filter.sh",
             "args": [
+              "@HOME@/.claude/hooks/win-hook.sh",
               "mempalace.exe",
               "hook",
               "run",
@@ -530,8 +691,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "@HOME@/.claude/hooks/win-hook.sh",
+            "command": "@HOME@/.claude/hooks/memory-filter.sh",
             "args": [
+              "@HOME@/.claude/hooks/win-hook.sh",
               "mempalace.exe",
               "hook",
               "run",
@@ -624,6 +786,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "~/.claude/hooks/prompt-screen.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "~/.claude/hooks/tmux-state.sh prompt"
           }
         ]
@@ -648,8 +819,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "@HOME@/.claude/hooks/win-hook.sh",
+            "command": "@HOME@/.claude/hooks/memory-filter.sh",
             "args": [
+              "@HOME@/.claude/hooks/win-hook.sh",
               "/@WINHOME@/source/repos/recall/.venv/Scripts/python.exe",
               "-I",
               "C:\\Users\\@WIN_USER@\\source\\repos\\recall\\recall_hook.py"
@@ -683,6 +855,24 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/ws-runtime-gate.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/memory-gate.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PermissionDenied": [
@@ -709,8 +899,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "@HOME@/.claude/hooks/win-hook.sh",
+            "command": "@HOME@/.claude/hooks/memory-filter.sh",
             "args": [
+              "@HOME@/.claude/hooks/win-hook.sh",
               "mempalace.exe",
               "hook",
               "run",
@@ -737,6 +928,17 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/tmux-state.sh compact"
+          }
+        ]
+      }
+    ],
+    "ConfigChange": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/config-change.sh",
+            "timeout": 5
           }
         ]
       }
@@ -811,39 +1013,10 @@
         "/@WINHOME@/AppData/Roaming/Mozilla/Firefox/Profiles",
         "/@WINHOME@/AppData/Local/Microsoft/Credentials",
         "/@WINHOME@/AppData/Roaming/Microsoft/Credentials",
-        "/@WINHOME@/AppData/Roaming/Microsoft/Protect"
+        "/@WINHOME@/AppData/Roaming/Microsoft/Protect",
+        "~/.config/ws-agent"
       ]
-    },
-    "excludedCommands": [
-      "aws *",
-      "az *",
-      "azd *",
-      "gh *",
-      "git clone *",
-      "git fetch *",
-      "git ls-remote *",
-      "git pull *",
-      "git push *",
-      "helm *",
-      "k6 *",
-      "kubectl *",
-      "kubelogin *",
-      "mysql *",
-      "obsidian *",
-      "psql *",
-      "pwsh.exe *",
-      "sqlcmd *",
-      "terraform *",
-      "docker ps *",
-      "docker images *",
-      "docker logs *",
-      "docker inspect *",
-      "docker version",
-      "docker info",
-      "docker compose ps *",
-      "docker compose logs *",
-      "docker scout *"
-    ]
+    }
   },
   "modelSettings": {
     "claude-opus-5-5": {
