@@ -208,6 +208,13 @@ mempalace.exe mine ~/notes
 mempalace kg add x y z
 git config ws.gate.allowNoGitleaks true
 git -c ws.gate.allowNoGitleaks=true commit -m x
+git config --global ws.gate.allowNoOsv true
+echo x >> ~/.local/lib/ws-tools.lock
+sed -i s/a/b/ ~/.config/tmux-claude/plugins.lock
+rm -rf ~/.tmux/plugins/tmux-resurrect
+echo x > ~/.local/lib/ws-mirror.sh
+WS_TOOLS_ALLOW_UNVERIFIED=1 ws-tools install gate
+export WS_PLUGINS_ALLOW_UNPINNED=1
 EOF
 # Not blocked: reads of the configuration, mentions in quoted text, heredoc bodies, ordinary work.
 while IFS= read -r c; do [[ -n "$c" ]] && expect 0 "$c"; done <<'EOF'

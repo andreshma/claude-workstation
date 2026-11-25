@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 #
-# ws-update — updates the workstation: Claude Code, tmux plugins and system packages, and verifies the pinned MCP
-# servers and tools. The MCP servers and agent tools are pinned (ws-pinned, files/mcp-servers.lock.json): this only
+# ws-update — updates the workstation: Claude Code, system packages and the tmux plugins' pins (ws-plugins), and
+# verifies the pinned MCP servers and tools. Those are pinned (ws-pinned, files/mcp-servers.lock.json): this only
 # verifies them and reports newer versions, so you can review them first; a new pin is a reviewed change to the kit.
 #
 # Usage: ws-update
 set -u
 export PATH="$HOME/.local/bin:$PATH"
 echo "== Claude Code";     claude update
-echo "== tmux plugins";    ~/.tmux/plugins/tpm/bin/update_plugins all
+# Plugins are pinned by commit (plugins.lock, WS-SEC-016): this re-applies the pins; moving one is a kit change.
+echo "== tmux plugins"
+if command -v ws-plugins >/dev/null; then ws-plugins apply || echo "  ✖ A tmux plugin is not at its pinned commit."
+else ~/.tmux/plugins/tpm/bin/update_plugins all; fi
 echo "== Packages (includes az, gh, tmux)"; sudo apt-get update -qq && sudo apt-get upgrade -y
 
 echo "== MCP servers and pinned tools"

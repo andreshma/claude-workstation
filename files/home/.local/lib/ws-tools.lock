@@ -1,0 +1,20 @@
+# ws-tools.lock — pins of the binaries and Python tools ws-tools installs from upstream releases (WS-SEC-016).
+# A binary is installed only when its sha256 equals the one pinned here (reviewed in the kit, not read from the same
+# release as the binary); where upstream signs its release, the signature is verified too (sig column):
+#   cosign:<checksums file>   keyless cosign signature <file>.keyless.sig and certificate <file>.pem, issued to a
+#                             GitHub Actions workflow of the same repository; the checksum file must list the pin
+#   none                      upstream publishes no signature: the sha256 pin is the only check
+# pypi rows pin an exact version (pipx install <pkg>==<version>); PyPI serves it over TLS with its own hashes.
+# A refused download can be installed anyway only with WS_TOOLS_ALLOW_UNVERIFIED=1, which is logged and audited.
+# To move a pin: change version and sha256 together (the release's checksum file or the asset digest GitHub shows),
+# review the release notes, run bash tests/supply-tools.sh. Versions older than 7 days only (as Dependabot).
+#
+# name         version   source                      asset                                 sha256                                                            sig
+osv-scanner    v2.7.1    github:google/osv-scanner         osv-scanner_linux_amd64               fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8  none
+tflint         v0.66.0   github:terraform-linters/tflint   tflint_linux_amd64.zip                22be11cadc25cd02401e94c0ccc91aa63467debb8485c2a755d98f4c0a9d1e2e  cosign:checksums.txt
+k9s            v0.51.0   github:derailed/k9s               k9s_linux_amd64.deb                   56b539a509eb2d6357cf4f575ed38c089f0e4880c95f79a70196b54f14954908  none
+hadolint       v2.15.1   github:hadolint/hadolint          hadolint-linux-x86_64                 c7187db94eeeeca956519a6af171adc31453941a1e777961f6e680f697c8c507  none
+starship       v1.27.0   github:starship/starship          starship-x86_64-unknown-linux-musl.tar.gz  10c8eb4cb3b761d9bf59ea828444c2dab36c900b7d69a69e08814b286969df89  none
+agg            v1.9.0    github:asciinema/agg              agg-x86_64-unknown-linux-musl         ddcbf6ca044c8ac3a434dcb9ee89fb9e3be87209982b7c2adb55f782e8f0f390  none
+cosign         v3.1.4    github:sigstore/cosign            cosign-linux-amd64                    424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa  none
+checkov        3.4.5     pypi:checkov                      -                                     -                                                                 none

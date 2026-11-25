@@ -76,7 +76,8 @@ cfg_hard+=("$H/.claude.json" "$H/.config/git/hooks" "$H/.config/claude-levels" "
   "$H/.local/lib/ws-credential-paths.txt" "$H/.local/lib/ws-profile.sh" /etc/claude-code
   "$H/.config/ws-kit" "$H/.local/share/ws-kit" "$H/.local/lib/ws-npm" "$H/.config/agent-browser" "$H/.config/ws-telegram"
   "$H/.claude/audit" "$H/.local/state/ws-stop-all" "$H/.local/state/ws-budget-over" "$H/.local/state/ws-budget-override"
-  "$H/.local/state/ws-gate")
+  "$H/.local/state/ws-gate" "$H/.local/lib/ws-tools.lock" "$H/.local/lib/ws-mirror.sh" "$H/.config/tmux-claude/plugins.lock"
+  "$H/.tmux/plugins" "$H/.local/state/ws-tools" "$H/.local/state/ws-plugins" "$H/.local/state/ws-backup-mirror.state")
 cred=()
 for f in /etc/claude-code/ws-credential-paths.txt "$H/.local/lib/ws-credential-paths.txt"; do
   [[ -r "$f" ]] || continue
@@ -197,6 +198,8 @@ case "$tool" in
       block "changing core.hooksPath or ws.gate.* disables the git gate: do it yourself if it is really needed"
     grep -Eq '(^|[;&|[:space:](])(export[[:space:]]+)?WS_MEMORY_(APPROVED|GATE)=' <<<"$sc" &&
       block "WS_MEMORY_APPROVED and WS_MEMORY_GATE are set by you or ws-memory, never from Claude"
+    grep -Eq '(^|[;&|[:space:](])(export[[:space:]]+)?WS_(TOOLS_ALLOW_UNVERIFIED|PLUGINS_ALLOW_UNPINNED)=' <<<"$sc" &&
+      block "WS_TOOLS_ALLOW_UNVERIFIED and WS_PLUGINS_ALLOW_UNPINNED install unverified code: you decide that, not Claude"
     grep -Eq '(^|[;&|[:space:](])(export[[:space:]]+|unset[[:space:]]+([^;&|]*[[:space:]])?|-u[[:space:]]*)?(WS_MEMORY|WS_PROFILE|WS_PROFILE_PANE)([=[:space:]]|$)' <<<"$sc" &&
       block "WS_PROFILE and WS_MEMORY come with the tab's profile (ws-profile): they are not changed from Claude"
     grep -Eq "${GIT}commit" <<<"$sc" && grep -qi 'co-authored-by' <<<"$cmd" &&
