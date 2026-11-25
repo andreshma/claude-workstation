@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- The SAST job (bandit) failed on the SQL view of `ws-telemetry sql`; the two queries are built only from the
+  kit's own data path and quoted column names and values, and are marked as reviewed.
+
 ## [3.0.0] - 2026-11-24
 
 This is a breaking release. Commands, options, variables, folders and stored values change name; see
