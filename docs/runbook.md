@@ -29,6 +29,7 @@ are written as you type them. The names used before 3.0 are listed in
 - [15. tmux shortcuts, views and swarm](#15-tmux-shortcuts-views-and-swarm)
 - [16. Upgrading](#16-upgrading)
 - [17. Recovery](#17-recovery)
+- [18. Security operations](#18-security-operations)
 
 ## 1. Where things are
 
@@ -49,6 +50,16 @@ are written as you type them. The names used before 3.0 are listed in
 | Budgets and prices | `~/.config/ws-telemetry/budgets.conf`, `~/.config/ws-telemetry/prices.json` |
 | Backups on the Windows side | `%UserProfile%\.tmux-resurrect-backup`, `%UserProfile%\.claude-wsl-backup`, `%UserProfile%\WSL-Backups\lite`, `%UserProfile%\WSL-Backups` |
 | Secrets | Windows Credential Manager, entries named `ws/<name>` (`ws-secret`) |
+| Audit log anchors (outside the agent's sandbox) | `%UserProfile%\ws-telemetry\audit-anchors.txt` |
+| Guard lists you edit | `~/.config/ws-guard/production.conf` (production subscriptions and contexts), `~/.config/ws-guard/allow-config-writes` (the config-write window) |
+| What the normal level adds | `~/.config/claude-levels/normal-adds.json` (kit file); generated profiles `normal.json`, `solo.json`, `full*.json`, `bare.json` next to it |
+| Agent identities | `~/.config/ws-agent/<name>/{azure,gh,kube/config}` (`tmux-level … --agent <name>`) |
+| Emergency stop and spend markers | `~/.local/state/ws-stop-all`, `~/.local/state/ws-budget-over`, `~/.local/state/ws-budget-override` |
+| Pinned npm packages | Locks in `~/.local/lib/ws-npm/<name>/`; installed trees in `~/.local/share/ws-kit/npm/<name>/`; local MCP executables pinned in `~/.local/share/ws-kit/mcp-trust.tsv` |
+| Release signing keys the kit trusts | `~/.config/ws-kit/allowed_signers` (kit) and `allowed_signers.local` (yours); update log `~/.local/state/ws-kit-update.log` |
+| Gate opt-outs | `~/.local/state/ws-gate/opt-outs.log` |
+| Managed policy (optional, root) | `/etc/claude-code/managed-settings.d/50-ws-kit.json`, `/etc/claude-code/hooks/guard.sh`, `/etc/claude-code/ws-credential-paths.txt` |
+| Compliance report (`ws-audit --compliance`) | `~/.local/share/ws-telemetry/compliance.json` |
 | Backups of files changed by `install.sh` | `~/.local/share/ws-kit/backup.<date>/<path under $HOME>` (newest 10 kept); copies left next to the files by versions before 3.0: `~/.local/share/ws-kit/backup.legacy/` after `bash install.sh --prune-backups` |
 
 ## 2. Is it healthy?
@@ -60,6 +71,7 @@ ws-test                      # isolated behavior tests of what is installed
 ws-otel status               # local OpenTelemetry collector
 ws-telegram status           # Telegram configuration, service and recent events
 ws-lang                      # language in use and what it affects
+ws-audit                     # read-only audit by pillar; also: --verify-log, --compliance
 ```
 
 | Check | Healthy when |
@@ -68,6 +80,8 @@ ws-lang                      # language in use and what it affects
 | `ws-health` | 15 % free on `/` and 50 GB free on `C:`; a recent tmux save and backup; the kit in sync |
 | `ws-verify` | No `FAIL` line; warnings are to be reviewed |
 | `ws-test` | The summary line reports no failed tests |
+| `ws-audit --verify-log` | Exit 0: no audit line was edited, deleted or reordered |
+| `ws-audit --compliance` | Exit 0: no control marked `implemented` fails its check |
 
 ### Is the copy to Windows up to date?
 
@@ -180,8 +194,41 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
 ## 7. Sandbox, solo mode and patches
 
 - **"Read-only file system" or an operation blocked inside Claude:** that is the sandbox. Run it yourself with
-  `!command`, or put the tab in **solo mode** (Menu → "Claude in this tab" → "Protection" → "Solo mode: auto without
-  sandbox (asks you for critical actions)") and return it to normal when you finish.
+  `!command` or in a floating shell (`Ctrl+b g`). Solo mode no longer helps here: it runs inside the sandbox too
+  ([ADR 0016](adr/0016-solo-mode-inside-the-sandbox.md)). For work the sandbox cannot do, `tmux-solo this
+  --unsandboxed` is the audited exception (🔓 in the tab name, a `solo-unsandboxed` audit event); prefer the normal
+  level.
+- **Solo mode ended by itself:** it expires after 4 hours (`@csolo_hours`, `WS_SOLO_HOURS`, `--hours N`, 1 to 24) and
+  `tmux-watch` returns the tab to normal. Start it again with Menu → "Claude in this tab" → "Protection" → "Solo mode:
+  auto inside the sandbox for 4 h (asks you for critical actions)".
+- **`az`, `gh` or `git push` fail in a Claude you started by hand:** the user settings are strict and exclude no
+  command from the sandbox; the kit's launchers start the normal level, which adds the exclusions from
+  `~/.config/claude-levels/normal-adds.json` ([ADR 0019](adr/0019-strict-base-and-level-profiles.md)). Start it with
+  `claude-resume`, or restart the tab (`tmux-claude-restart`). After installing this version, restart every Claude:
+  tabs started before it lose `az`, `gh` and `git push` until they restart.
+- **"BLOCKED by policy (guard.sh)" when Claude edits settings, hooks or the kit's lists:** the agent never writes its
+  own configuration ([ADR 0017](adr/0017-defence-in-depth-for-agent-configuration.md)). Edit it yourself in a plain
+  shell. For `CLAUDE.md`, commands, agents and skills you can open a 30-minute window in which Claude may write them,
+  each write audited as `config-write-allowed`:
+
+  ```bash
+  date -d '+30 min' +%s > ~/.config/ws-guard/allow-config-writes
+  rm ~/.config/ws-guard/allow-config-writes     # close it early
+  ```
+
+- **A production subscription or context has no "prod" in its name:** list it in
+  `~/.config/ws-guard/production.conf`, one per line (`subscription <id or name>`, `context <kube context>`; names may
+  contain spaces). The guard then blocks mutating `az`, `kubectl`, `helm` and Azure MCP tools against it.
+- **A tab should act as an agent identity, not as you:** create `~/.config/ws-agent/<name>/`, log in there with a
+  reduced-scope identity (`AZURE_CONFIG_DIR=~/.config/ws-agent/<name>/azure az login`, the same with `GH_CONFIG_DIR` for
+  `gh auth login` and `KUBECONFIG` for the kube config), then `tmux-level normal --agent <name>`. The tab remembers it
+  (`@cagent`); `--agent none` drops it. The guard refuses to switch those credentials from inside Claude
+  ([ADR 0020](adr/0020-agent-scoped-identities.md)).
+- **A prompt was refused as "seems to contain a secret":** remove the secret. To send it anyway, start the prompt with
+  `#allow-secret`; the audit log records that you did, never the prompt.
+- **Memory writes ask every time:** `memory-gate.sh` asks for every MemPalace write, also after "don't ask again" and
+  in solo mode, and blocks text between `<private>` and `</private>`. Review what memory holds with
+  `ws-memory review --older-than 90` and `ws-memory log`, in a terminal (both refuse to write inside Claude).
 - **A patch stopped while backing up or writing to your home:** it was run inside Claude. Run it in a normal shell;
   patches are idempotent (what is already applied shows as `same`).
 - **A patch was cut off with no message:** run it again; if it happens again, paste the full output.
@@ -194,6 +241,11 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
   lines.
 - **The gate blocks a commit:** fix what is marked with ✖; justified per-repository exception:
   `git config ws.gate.skip <rule>`.
+- **"gitleaks is missing, so secrets cannot be checked" blocks every commit:** the secret scan is mandatory.
+  Install it with `ws-tools install base`. For a repository that must commit on a machine without it:
+  `git config ws.gate.allowNoGitleaks true` (each such commit is logged in `~/.local/state/ws-gate/opt-outs.log`).
+  `ws-gate bypasses` lists the repositories where the gate does not run in full; `ws-audit` fails on a local
+  `core.hooksPath` or `ws.gate.allowNoGitleaks` and warns on `ws.gate.skip`.
 - **`export.sh` refuses because of possible secrets:** move the secret to Key Vault; if it is a detection pattern, add
   it to `secrets-allow.txt` with review.
 - **The tag ended up on an earlier commit:** if it is not on GitHub yet, `git tag -f -a vX.Y.Z -m "…"`; if it was
@@ -204,6 +256,65 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
   not come back): `ws-verify --live` checks the real server (its `PATH`, the save, the tabs in it, leftover finder
   sessions, scripts the bar, keys and hooks call, stale sockets) and prints the fix under each failure.
 - **Dead sockets pile up in `/tmp/tmux-<uid>/`:** `ws-verify --clean-sockets` deletes the ones no server answers on.
+- **The compliance check fails:** `ws-audit --compliance` reads `docs/compliance/controls.yaml` from the kit checkout
+  (`$WS_KIT`, default `~/code/claude-workstation`, or `--kit DIR` / `--catalogue FILE`) and runs only allow-listed
+  read-only checks; checks it cannot run on this machine are `not-run`, not failures. Exit 1 means a control marked
+  `implemented` failed its check: fix the regression, or change the control's status in a reviewed pull request.
+  `--json` prints the result; the last run is in `~/.local/share/ws-telemetry/compliance.json`.
+
+### Signing a release
+
+`ws-kit-update` installs only a `vX.Y.Z` tag signed by a key in the **installed** `~/.config/ws-kit/allowed_signers`
+(plus `allowed_signers.local`), never the branch tip ([ADR 0018](adr/0018-supply-chain-pinning-and-signed-releases.md)).
+Until the kit ships a maintainer key, it refuses every release with exit 11.
+
+1. Create the signing key once, on the maintainer's machine (keep the private key out of the kit and of any backup
+   the agent can read):
+
+   ```bash
+   ssh-keygen -t ed25519 -C "<email>" -f ~/.ssh/kit_signing
+   git -C ~/code/claude-workstation config gpg.format ssh
+   git -C ~/code/claude-workstation config user.signingkey ~/.ssh/kit_signing.pub
+   ```
+
+2. Add one line to `files/home/.config/ws-kit/allowed_signers`, `<email> namespaces="git" <contents of
+   kit_signing.pub>`, and commit it through a reviewed pull request.
+3. Release from `main`: `git tag -s vX.Y.Z -m vX.Y.Z`, then `git push origin vX.Y.Z`. The `release` workflow
+   (`.github/workflows/release.yml`, job "Signed tag") runs `git verify-tag` against the committed `allowed_signers`
+   and attaches the CycloneDX SBOM; an unsigned tag fails there and no release is published.
+4. Check locally: `git -c gpg.ssh.allowedSignersFile=files/home/.config/ws-kit/allowed_signers verify-tag vX.Y.Z`.
+
+| Situation | Steps |
+|---|---|
+| A fork without the maintainer's key | Put the fork's own keys in `~/.config/ws-kit/allowed_signers.local`, or run `ws-kit-update --allow-unsigned` (logged in `~/.local/state/ws-kit-update.log` and sent to Telegram) |
+| `ws-kit-update --check` exits 11 | A newer release exists whose signature fails: do not apply it. Check the tag on GitHub and who pushed it; treat an unexpected one as a compromised update ([incident response](governance/AI-INCIDENT-RESPONSE.md)) |
+| The signing key is lost or exposed | See [Rotating secrets](#rotating-secrets) |
+
+### Pinned npm packages
+
+The npm MCP servers and agent tools (`azure-mcp`, `chrome-devtools-mcp`, `agent-browser`) are pinned by exact version
+and sha512: a committed `package.json` and `package-lock.json` in `files/home/.local/lib/ws-npm/<name>/`, and the
+version and integrity in `files/mcp-servers.lock.json`. `ws-pinned install <name>` runs `npm ci --ignore-scripts` into
+`~/.local/share/ws-kit/npm/<name>/`; nothing runs through `npx -y`.
+
+To move a pin (a reviewed change to the kit; Dependabot opens these weekly, after a 7-day cool-down):
+
+1. Edit the version in `files/home/.local/lib/ws-npm/<name>/package.json`.
+2. In that folder: `npm install --package-lock-only --ignore-scripts`.
+3. Update `version` and `integrity` in `files/mcp-servers.lock.json` (`npm view <package>@<version> dist.integrity`).
+4. Run `bash tests/supply-chain.sh`; it fails until the lock, the package files and `files/mcp-servers.json` agree.
+5. After merging and installing: `ws-pinned install <name>`, then `ws-pinned verify --online` (also runs
+   `npm audit signatures`).
+
+| Command | Use |
+|---|---|
+| `ws-pinned list` | Pinned packages and versions |
+| `ws-pinned verify [--online] [name…]` | The installed tree still matches its lock and its recorded hash; `ws-audit` fails on a mismatch |
+| `ws-pinned outdated` | Newest stable and newest release next to each pin |
+| `ws-pinned local-check <name> <path>` | A local MCP executable (MemPalace, recall) still has the sha256 pinned on first use |
+
+A local MCP executable whose sha256 changed is skipped by `install.sh` with a warning. Review the change, then
+`bash install.sh --mcp-accept <name>` re-pins it.
 
 ## 9. WSL and Windows
 
@@ -215,6 +326,26 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
   exist; open a new tab. If it persists, check that the block is complete.
 - **Low disk space:** `ws-health` requires 15 % free on `/` and 50 GB on `C:`. Clean caches
   (`npm cache clean --force`, old `node_modules`) before backups.
+
+### WSL interop
+
+Windows executables run outside the Linux sandbox, so every `.exe` an agent names asks you first (`Bash(*.exe*)` in
+`permissions.ask`; `pwsh.exe`, `powershell.exe`, `cmd.exe` and `wsl.exe` are listed by name too) and the guard blocks
+PowerShell that downloads and runs code or uses `-EncodedCommand`. The kit's own hooks run Windows executables
+(`pwsh.exe`, `mempalace.exe`, recall's `python.exe`) outside Claude's permission system, so they are not affected.
+`bash tests/interop-adversarial.sh` checks the cases; `--live` also probes interop from inside bubblewrap (report
+only).
+
+Optional, stronger: take the Windows folders off Linux's `PATH` so a bare `explorer.exe` or `clip.exe` is not found.
+
+```ini
+# /etc/wsl.conf (edit with sudo), then in PowerShell: wsl --shutdown
+[interop]
+appendWindowsPath=false
+```
+
+The cost: `code`, `explorer.exe`, `clip.exe`, `pwsh.exe` and every other Windows tool must then be called by full path
+(`/mnt/c/...`) or from your own `PATH` additions; the kit's hooks already use full paths. Interop itself stays on.
 
 ## 10. Floating windows, AI in the terminal and tests
 
@@ -267,9 +398,15 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
 | Hours and cost of a ticket (branch `ABC-123-…`) | `ws-telemetry estimate ABC-123`; also `--by project` and `--csv` |
 | Last week's report | `ws-telemetry week` (saved to `%UserProfile%\ws-telemetry\week-YYYY-Www.md`) |
 | Monthly budget per project | `~/.config/ws-telemetry/budgets.conf` with `project=usd` lines (`*=usd` for the total), then `ws-telemetry budgets` |
+| Hold work once a budget is spent | Add the line `hard=1` to `budgets.conf`: `ws-runtime-gate.sh` then holds prompts and tools in a project at 100 % (every project when the total is over) |
+| Let one project go on over a hard budget | `ws-telemetry budgets --override <project> [hours]` in a terminal (24 h by default; audited; denied to Claude) |
+| Approval fatigue | `ws-telemetry prompts [--days 7]`: approvals per hour, time to answer, answers under 2 s and permanent allow rules; `--alerts` for what Telegram would send |
 | Excel or Power BI | `ws-telemetry export` writes `%UserProfile%\ws-telemetry\data\*.csv` |
 | Free-form SQL | `ws-telemetry sql`, for example `SELECT tool, count(*) FROM traces GROUP BY 1` |
 
+- Work is "held" over a hard budget: the flag `~/.local/state/ws-budget-over` is rewritten by `ws-telemetry build`
+  about once a minute. If the dashboard stops updating, a flag older than 2 hours is ignored and work continues (the
+  gate fails open because it cannot know the spend). A turn already running is held at its next tool call.
 - No new traces: `jq '.hooks.PostToolUse' ~/.claude/settings.json | grep ws-traces` and check that
   `~/.claude/hooks/ws-traces.sh` is executable.
 - Turn off: remove the `ws-traces.sh` entries from `settings.json` (a copy from before patch 51 is among the
@@ -304,9 +441,19 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
   blocks `api.telegram.org`, the status shows `error_api`.
 - **A button says "The screen changed; I sent nothing":** the dialog is no longer the same (you answered on the PC or
   Claude moved on); nothing was sent. Buttons expire after 10 min.
-- **`!` commands from Telegram:** each command arrives in a code message (tap it to copy it). "▶ Run" runs it in that
-  tab as `!` and replies with the redacted output. Dangerous ones arrive without a button: run them on the PC.
-  Forwarding or typing text to the bot executes nothing.
+- **`!` commands from Telegram:** each command arrives in a code message (tap it to copy it). "▶ Run" is offered only
+  for read-only commands on the allow list in `ws-telegram` (`git status`, `git log`, `ls`, `kubectl get`, `az account
+  show`…; no shell syntax, no `.exe`, no `--output`) that also pass the block lists; it asks for your PIN and runs the
+  command in that tab as `!`, replying with the redacted output. Anything else arrives without a button: run it on
+  the PC. Nothing is offered in `bare` or solo-mode tabs. Forwarding or typing text to the bot executes nothing.
+- **Approving from the phone asks for the PIN:** approving a risky dialog (an MCP tool, an ask rule, a command that
+  runs outside the sandbox, or one the block lists match; marked 🔐) needs your PIN; a plain approval is one tap.
+  `ws-telegram approve pin` asks for it on every approval, `ws-telegram approve risky` goes back to the default.
+  "Don't ask again" and other persistent allows are never offered as buttons. Without a PIN set
+  (`ws-telegram text pin`), risky approvals from the phone are refused.
+- **Alerts with "⛔ Stop this tab":** an anomaly alert (repeated guard blocks, denials or sandbox hits in one session,
+  5 in 10 minutes by default: `anomaly_n`, `anomaly_min`, `anomaly=off` in the settings) offers a button that runs
+  `ws-stop-all --pane` for that tab. While the emergency stop is on, buttons and ▶ Run send nothing.
 - **Replying with text:** `ws-telegram text on` (asks for the PIN the first time). In Telegram, use Reply on Claude's
   question (the ones that show ↩), starting with the PIN: `4821 use an opaque cursor`. Change the PIN:
   `ws-telegram text pin`. If it was turned off because of wrong PINs: `ws-telegram text on` on the PC.
@@ -319,8 +466,18 @@ rsync -anc --out-format='%n' ~/.claude/projects/ "$B/projects/" | grep -c 'jsonl
 
 ## 14. Kit CI
 
-- **What runs:** on every push to `main` and on every pull request: lint (shellcheck, Python, JSON, tmux), then SAST
-  and secrets (bandit, gitleaks), then `tests/run.sh`. See it in GitHub → Actions.
+- **What runs:** on every push to `main` and on every pull request: lint (shellcheck, Python, JSON, tmux), SAST and
+  secrets (bandit, gitleaks), workflow security (zizmor), the SBOM, `tests/run.sh`, every other `tests/*.sh` suite
+  (job "Security suites") and a clean install. A signed `vX.Y.Z` tag runs `release.yml`; once a month
+  `compliance-monthly.yml` re-runs the compliance and AI-BOM checks and the framework-currency check. Details in
+  [TESTING.md](TESTING.md#continuous-integration); see the runs in GitHub → Actions.
+- **zizmor fails:** every action must be pinned by commit SHA with its version as a comment, jobs need
+  `persist-credentials: false` and the least `permissions`; fix the finding rather than silencing it.
+- **`tests/compliance.sh` fails:** the catalogue (`docs/compliance/controls.yaml`) and the coverage tables of
+  `docs/compliance/assessment.md` disagree, an `evidence` file is missing, or an `implemented` control's check fails.
+  Fix the cause in the same pull request.
+- **`tests/ai-bom.sh` fails:** a model, agent, MCP server or hook changed and `docs/governance/AI-BOM.md` was not
+  regenerated: `bash tests/ai-bom.sh --write`, review the diff, commit.
 - **gitleaks fails on a test pattern:** if the file contains only detection patterns or fake data, add it to
   `.gitleaks.toml` (`[allowlist] paths`) with a comment; if it is a real secret, rotate it and remove it.
 - **bandit fails:** fix the finding; if it is a false positive, `# nosec <rule>` on that line and the reason in a
@@ -364,12 +521,19 @@ ws-verify                    # verify before pushing
 An upgrade from 2.x to 3.0 has extra steps: see [Upgrading from 2.x to 3.0](#upgrading-from-2x-to-30-english-names).
 
 1. Run `ws-update` for Claude Code, the tmux plugins and the system packages.
-2. Run `ws-kit-update` for the workstation itself. It pulls with `--ff-only`, runs `install.sh` (every changed file is
-   copied to `~/.local/share/ws-kit/backup.<date>/` first) and then `ws-test`. If the tests fail it goes back to the
-   previous commit and reinstalls. It does nothing when the kit folder has uncommitted changes or unpushed commits.
+2. Run `ws-kit-update` for the workstation itself. It fetches the release tags, takes the newest `vX.Y.Z` ahead of
+   your checkout, refuses it unless `git verify-tag` passes against your installed `allowed_signers`
+   ([Signing a release](#signing-a-release)), moves to it with `git merge --ff-only`, runs `install.sh` (every changed
+   file is copied to `~/.local/share/ws-kit/backup.<date>/` first) and then `ws-test`. If the tests fail it goes back
+   to the previous commit and reinstalls. It does nothing when the kit folder has uncommitted changes or commits the
+   release does not contain.
 3. Reload tmux (`Ctrl+b r`) and restart Claude in the idle tabs (`tmux-claude-restart --all`) so they pick up the new
-   settings, hooks and telemetry.
-4. If you maintain the kit: `bash export.sh`, review the diff, `ws-verify`, commit.
+   settings, hooks and telemetry. Repeat for the tabs it reports as busy, or use `--include-busy`.
+4. If the release changed `guard.sh` and you installed the managed policy, run `bash install.sh --managed` again
+   (`install.sh` warns when the root copy is older).
+5. If you maintain the kit: `bash export.sh`, review the diff, `ws-verify`, commit.
+
+The steps to take once after installing a release are listed under "Upgrade notes" in [CHANGELOG.md](../CHANGELOG.md).
 
 If something stopped working after the update, every file the installer replaced is in
 `~/.local/share/ws-kit/backup.<date>/` under its path in your home (the installer prints the folder). The rollback of
@@ -455,8 +619,8 @@ packs, `~/.config/tmux-claude/lang`) stay in place and are harmless.
 | Layer | What it stores | Frequency | Where | Recover with |
 |---|---|---|---|---|
 | tmux (continuum + resurrect) | Tabs, panes, folders | Every minute and when tabs change | `~/.local/share/tmux/resurrect` (30 days) | `tmux-recover` |
-| `ws-backup` | Conversations and audit log | Every 15 min, incremental, never deletes | `%UserProfile%\.claude-wsl-backup` | Copy back |
-| `ws-backup-lite` | All of Claude (conversations, subagents, todos, plans, `/rewind`, history, memory), tmux and inventory | Daily, automatic (14 copies) | `%UserProfile%\WSL-Backups\lite` | `ws-restore-lite --restore` |
+| `ws-backup` | Conversations and audit log | Every 15 min, incremental; copies whose original is gone expire after 30 days (`WS_BACKUP_COPY_DAYS`, pruned by `ws-backup-lite`) | `%UserProfile%\.claude-wsl-backup` | Copy back |
+| `ws-backup-lite` | All of Claude (conversations, subagents, todos, plans, `/rewind`, history, memory, audit log and a copy of its anchors), tmux and inventory | Daily, automatic (14 copies); encrypted with `age` to the cloud key and any `age-recipients` | `%UserProfile%\WSL-Backups\lite` | `ws-restore-lite --restore` |
 | Kit (GitHub) | All the configuration | On push | `andreshma/claude-workstation` | `install.sh` |
 | `devsnapshot` (optional) | The whole distro | By hand | `%UserProfile%\WSL-Backups` | `wsl --import` |
 
@@ -473,8 +637,10 @@ packs, `~/.config/tmux-claude/lang`) stay in place and are harmless.
 
 1. Install a clean Ubuntu 24.04.
 2. Clone the kit and run `bash install.sh`.
-3. Copy the latest `claude-lite-*.tar.zst` (and its `.sha256`) to `%UserProfile%\WSL-Backups\lite`.
-4. Run `ws-restore-lite` (test) and then `ws-restore-lite --restore`.
+3. Copy the latest `claude-lite-*.tar.zst.age` (or `.tar.zst` for an old, unencrypted one) and its `.sha256` to
+   `%UserProfile%\WSL-Backups\lite`.
+4. Run `ws-restore-lite` (test) and then `ws-restore-lite --restore`. An encrypted backup needs its key first: see
+   [Restoring encrypted backups](#restoring-encrypted-backups).
 5. Install packages and tools with the commands it prints.
 6. Log in (Claude, az, gh, aws).
 7. Run `dev` and press `Ctrl+b Ctrl+r`.
@@ -496,3 +662,121 @@ Run `wsl --unregister Ubuntu` **only** once the snapshot is verified, and then
 - **Every month** the recovery test (local and cloud) arrives through Telegram. By hand: `ws-backup-cloud test`.
 - **Restore on a new laptop:** `ws-secret set age-backup` (paste the key from your password manager),
   `ws-backup-cloud fetch`, then `ws-restore-lite` (test) and `ws-restore-lite --restore`.
+
+### Restoring encrypted backups
+
+Light backups are encrypted with `age` by default (`claude-lite-<date>.tar.zst.age`): to the cloud key of
+`ws-backup-cloud` (`~/.config/ws-backup/cloud-recipient`) and to every key in `~/.config/ws-backup/age-recipients`.
+With neither key, or without `age`, the backup is made in clear with a warning, logged as `UNENCRYPTED` in
+`~/.local/state/ws-backup-lite.log`, and `ws-audit` fails until you run `ws-backup-cloud setup`.
+
+| Situation | Steps |
+|---|---|
+| Same machine, key still in Credential Manager | `ws-restore-lite` (test), then `ws-restore-lite --restore`: without `--identity` it reads the cloud key from Credential Manager (`ws/age-backup`) into a 0600 temporary file deleted on exit |
+| New machine | `bash install.sh`, then `ws-secret set age-backup` and paste the private key from your password manager; then `ws-restore-lite` and `ws-restore-lite --restore` |
+| A backup encrypted to one of your own `age-recipients` | `ws-restore-lite --identity <your age identity file> [FILE]` |
+| A backup made with a key you have since rotated | Put the old private key in a 0600 file and pass it with `--identity` ([Rotating secrets](#rotating-secrets)) |
+| A copy from OneDrive | `ws-backup-cloud fetch [file] [destination]` decrypts it; then `ws-restore-lite [FILE]` |
+
+`ws-restore-lite --test` refuses a backup that carries credentials, and `--restore` keeps every existing file that
+differs as `<file>.~N~`.
+
+## 18. Security operations
+
+What to do when an agent misbehaves, when the audit log must be trusted, and when a secret is rotated or the
+workstation is handed back. The playbooks per incident are in
+[docs/governance/AI-INCIDENT-RESPONSE.md](governance/AI-INCIDENT-RESPONSE.md); the review calendar is in
+[docs/governance/REVIEW-CADENCE.md](governance/REVIEW-CADENCE.md).
+
+### Emergency stop
+
+`ws-stop-all` stops every agent at once, in this order, so containment does not wait for the panes:
+
+1. writes the marker `~/.local/state/ws-stop-all`: from then on the `ws-runtime-gate.sh` hook blocks every prompt and
+   every tool call in every Claude (also a tab that does not close, a headless `claude -p` or a swarm agent), and
+   `ws-telegram` refuses remote runs and button answers;
+2. turns Telegram off (`ws-telegram off`);
+3. records an audit event (`stop-all`);
+4. sends Escape and `/exit` to the Claude in every tmux pane, then `Ctrl+C` twice after 10 seconds; panes still running
+   after 20 seconds are listed by name, and so are headless Claude processes outside tmux.
+
+```bash
+ws-stop-all                      # everything; asks first in a terminal (Menu → Claude → Emergency stop, key X)
+ws-stop-all --yes --kill         # without asking, and also ends headless Claude processes outside tmux
+ws-stop-all --pane %12 --yes     # only the Claude of one pane (no marker; Telegram stays on)
+ws-stop-all --session swarm-<id> # only the Claudes of one tmux session, for example a swarm
+ws-stop-all --status             # is the marker on? · --list: panes that have a Claude now
+```
+
+From the phone, an anomaly alert offers "⛔ Stop this tab", which runs `ws-stop-all --pane` for that tab.
+
+Nothing resumes on its own. Once you know what happened (keep the evidence first: next section):
+
+```bash
+ws-stop-all --clear     # removes the marker: prompts and tools run again (denied to Claude; run it in a terminal)
+ws-telegram on          # Telegram stays off until you turn it on
+tmux-claude-restart --all
+```
+
+### Verifying the audit log
+
+`audit.sh` chains every line of `~/.claude/audit/YYYY-MM-DD.jsonl` to the previous one with sha256 (the first line
+of a day points to the last line of the day before), and on every session end appends the day's head hash to
+`%UserProfile%\ws-telemetry\audit-anchors.txt`, outside the agent's sandbox, so rewriting a whole chain shows too. The
+log keeps 395 days.
+
+```bash
+ws-audit --verify-log              # checks ~/.claude/audit against the anchors; exit 1 on any break
+ws-audit --verify-log <folder>     # checks a copy (for example one taken during an incident)
+```
+
+- **Exit 0:** no line was edited, deleted or reordered. Lines written before the chain started (an installation
+  older than this version) are accepted only before the first chained line. Run it once after upgrading: the anchors
+  file appears after the first session end.
+- **Exit 1:** the output names each break (file and line). It reports and never repairs. Copy `~/.claude/audit/` and
+  the anchors file to a 0700 folder outside the kit before anything else, then follow the incident playbooks.
+- `ws-audit` itself fails its Security pillar when the chain is broken.
+- Limits: the Telegram event logs are not chained, and an agent running without the sandbox (`bare`,
+  `--unsandboxed` solo) could still reach the anchors file; the guard and the `Edit` deny rules block the direct
+  writes.
+
+### Rotating secrets
+
+Secrets live in the Windows Credential Manager as `ws/<name>` (`ws-secret`). The rotation periods below come from
+[REVIEW-CADENCE.md](governance/REVIEW-CADENCE.md#yearly) and are owner to confirm. Rotate at once, whatever the period,
+when a device or the phone is lost, or a secret may have reached a model, memory, a log or a backup.
+
+| Secret | Period (owner to confirm) | Rotate or revoke |
+|---|---|---|
+| Telegram bot token | Yearly | In @BotFather, `/revoke` the bot's token and copy the new one; then `ws-telegram setup` (stores it with `ws-secret set telegram-bot-token`) and `ws-telegram test` |
+| Telegram PIN | Yearly | `ws-telegram text pin` |
+| Cloud backup key (`age-backup`) | Only on suspicion | Keep the old key: `ws-secret get age-backup` into your password manager, labelled with the date (backups encrypted to it stay readable only with it); then `mv ~/.config/ws-backup/cloud-recipient ~/.config/ws-backup/cloud-recipient.old-<date>` and `ws-backup-cloud setup` (new key pair, shown once). Delete the old key only after every backup encrypted with it has expired |
+| Your own `age-recipients` keys | Only on suspicion | Replace the line in `~/.config/ws-backup/age-recipients`; keep the old identity file until its backups expire |
+| Claude logins (work and personal) | On suspicion, offboarding | Work: `env -u CLAUDE_CONFIG_DIR claude auth logout`, then `claude auth login`. Personal: `claude-account logout personal`, then `claude-account login personal`. Revoke sessions in the claude.ai account settings if a device was lost |
+| Terminal copilot API key (`anthropic-api-key`) | On suspicion | Create a new key in the Claude Console, `ws-secret set anthropic-api-key` (replaces), then delete the old key in the Console. `ws-secret delete anthropic-api-key` turns the suggestions off |
+| MCP credentials | With the identity they use | The Azure MCP server uses your `az` login: `az logout`, `az login` (or the agent identity's `AZURE_CONFIG_DIR`). Remote servers (Microsoft Learn, release communications) hold no credential. Remove a server you no longer trust: `claude mcp remove <name>` in a plain shell |
+| Agent identities (`~/.config/ws-agent/<name>`) | With the service principal or token behind them | Log out inside that folder (`AZURE_CONFIG_DIR=… az logout`, `GH_CONFIG_DIR=… gh auth logout`), rotate the identity's secret where it was issued, log in again |
+| Release signing key | On suspicion, or when the maintainer changes | `ssh-keygen -t ed25519 -f ~/.ssh/kit_signing` (new key), replace the line in `files/home/.config/ws-kit/allowed_signers` through a reviewed pull request, sign the next tag with the new key. Workstations trust the new key only after installing that release, so it must still be signed with a key they already trust; a key that leaked instead calls for the compromised-update playbook |
+
+After a rotation, note the date in the review log of [REVIEW-CADENCE.md](governance/REVIEW-CADENCE.md#review-log).
+`ws-audit` does not yet warn about old secrets (WS-GOV-010).
+
+**Offboarding: handing back the workstation or removing the kit.** In a plain shell, not inside Claude:
+
+1. Stop everything: `ws-stop-all --yes --kill`, then `tmux kill-server`.
+2. Telegram: `ws-telegram forget` (deletes token, chat and state), then in @BotFather `/deletebot` for that bot.
+3. MCP servers: `claude mcp list`, then `claude mcp remove <name>` for each server of `files/mcp-servers.json`
+   (`mempalace`, `recall`, `microsoft-learn`, `azure`, `ms-release-comms`, and `chrome-devtools` if you opted in).
+4. Logins: the Claude logins above; `az logout`; `gh auth logout`; `kubectl config delete-context <ctx>` for each
+   context; the agent identities under `~/.config/ws-agent/`.
+5. Secrets in Credential Manager: `ws-secret delete telegram-bot-token`, `ws-secret delete telegram-pin`,
+   `ws-secret delete anthropic-api-key`, and `ws-secret delete age-backup` once no backup you keep needs it.
+6. Managed policy, if installed: `sudo rm /etc/claude-code/managed-settings.d/50-ws-kit.json
+   /etc/claude-code/hooks/guard.sh /etc/claude-code/ws-credential-paths.txt`.
+7. Git: `git config --global --unset core.hooksPath` (if it points at `~/.config/git/hooks`).
+8. Local data: `~/.claude/audit/`, `~/.claude/projects/` (conversations), `~/.local/share/ws-telemetry/`,
+   `~/.local/share/ws-kit/`, `~/.local/state/ws-*`, `~/.cache/ws-memory/`, and what MemPalace holds (its own tools).
+9. Windows side and backups: `%UserProfile%\ws-telemetry\`, `%UserProfile%\.claude-wsl-backup`,
+   `%UserProfile%\.tmux-resurrect-backup`, `%UserProfile%\WSL-Backups\`, and the OneDrive folder
+   `Backups\workstation-wsl`.
+10. The installed files: every path in `manifest.txt` under `$HOME`, and the kit's lines in `~/.bashrc`.

@@ -6,11 +6,167 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+This release hardens the agent against the gaps of the AI and security assessment in `docs/compliance/`. Several
+changes are **breaking** for daily use; read the upgrade notes first.
+
+### Upgrade notes
+
+After installing, in this order:
+
+1. Reinstall: `bash install.sh --mcp-refresh` (re-registers the Azure MCP server from its pinned install instead of
+   `npx`; the first run also pins the sha256 of the local MemPalace and recall executables).
+2. Restart every Claude through the kit: `tmux-claude-restart --all`, then repeat it once the tabs it left alone
+   because they were busy are idle (or use `--include-busy`); solo tabs are skipped, switch them with `tmux-solo`.
+   A tab that has not restarted keeps the old settings in memory; once it reloads them it loses `az`, `gh` and
+   `git push` until it is restarted through the kit, because the excluded commands now come only from the normal
+   profile that the kit's launchers pass.
+3. In a plain shell (the guard blocks this from Claude):
+   `claude plugin install claude-security@claude-plugins-official`.
+4. Generate the SSH release-signing key and add its public key to `files/home/.config/ws-kit/allowed_signers`
+   ([Signing a release](docs/runbook.md#signing-a-release)); until then `ws-kit-update` refuses every release and
+   exits 11 (forks: `allowed_signers.local` or `--allow-unsigned`, which is logged).
+5. Install gitleaks on every machine (`ws-tools install base`): commits fail without it.
+6. `ws-backup-cloud setup`, if it was never run, so the light backups are encrypted.
+7. Set a Telegram PIN if there is none (`ws-telegram text pin`): risky approvals from the phone are refused without it.
+8. Run `ws-audit --verify-log` once; the anchor file appears after the first session ends.
+9. Two live checks that could not be made in tests: a MemPalace write from Claude shows a prompt with the provenance
+   filled in, and a prompt blocked by `prompt-screen.sh` shows its reason. Run `claude doctor` as well.
+10. Optional: `~/.config/ws-guard/production.conf` (production subscriptions and kube contexts), `hard=1` in
+    `~/.config/ws-telemetry/budgets.conf`, `bash install.sh --managed`, agent identities (`tmux-level … --agent NAME`
+    after logging in under `~/.config/ws-agent/NAME`), `ws-telegram approve pin`, `ws-tools install agent-browser`,
+    the Chrome DevTools MCP server (`ws-tools install chrome-devtools-mcp`, then
+    `bash install.sh --mcp-opt-in chrome-devtools`), and `[interop] appendWindowsPath=false` in `/etc/wsl.conf`.
+
+Breaking behaviour changes, each described below:
+
+- Solo mode runs inside the sandbox; the old mode is `tmux-solo this --unsandboxed` (audited).
+- More permission prompts: every MemPalace write asks, also after "don't ask again" and in solo mode, and every
+  command that names a `.exe` asks.
+- A `claude` typed by hand starts strict: no command leaves the sandbox.
+- Commits fail when gitleaks is not installed (the repository setting `ws.gate.allowNoGitleaks` opts out, logged).
+- `ws-kit-update` refuses releases whose tag is not signed by a key in `allowed_signers`.
+
 ### Added
 
+- Governance documents in `docs/governance/`: the AI use policy, the AI bill of materials (models, subagents, MCP
+  servers, hooks, external services), the AI incident response playbooks and the review cadence.
 - Security and AI governance assessment in `docs/compliance/`: the frameworks the kit is measured against, with
   their current editions (`frameworks.md`), a catalogue of 70 controls mapped to them with file and line evidence
   (`controls.yaml`), and the coverage and gap analysis with the hardening plan (`assessment.md`).
+- Continuous compliance evidence: `ws-audit --compliance [--json] [--kit DIR] [--catalogue FILE]` reads
+  `docs/compliance/controls.yaml` from the kit checkout (`$WS_KIT`, by default `~/code/claude-workstation`), runs only
+  allow-listed read-only checks, reports `not-run` for those it cannot run on this machine, prints the coverage per
+  framework and exits 1 when an `implemented` control fails; `tests/compliance.sh` checks the catalogue in CI
+  (schema, traceability to `frameworks.md`, evidence files, implemented checks, coverage tables of `assessment.md`);
+  `tests/ai-bom.sh` regenerates the generated tables of `docs/governance/AI-BOM.md` and fails on drift; a monthly
+  workflow (`compliance-monthly.yml`) also checks that the framework editions recorded in `frameworks.md` are current.
+- Hooks: `untrusted-content.sh` labels web, MCP and network-command output as untrusted data and flags injection
+  markers; `prompt-screen.sh` blocks a prompt that carries a secret (`#allow-secret` sends it anyway, audited);
+  `config-change.sh` logs every configuration change during a session; `memory-gate.sh` asks on every MemPalace write,
+  stamps its provenance and blocks `<private>` text; `memory-filter.sh` strips `<private>…</private>` from what the
+  MemPalace and recall hooks receive; `ws-runtime-gate.sh` holds prompts and tools during an emergency stop or a
+  hard spend limit ([ADR 0017](docs/adr/0017-defence-in-depth-for-agent-configuration.md)).
+- `ws-stop-all`: emergency stop (marker, Telegram off, audit event, closes every Claude; `--pane`, `--session`,
+  `--clear`, `--status`); Menu → Claude → Emergency stop.
+- `ws-anomaly`: sessions with repeated guard blocks, denials and sandbox hits; shown in the status bar with a Windows
+  alert, and sent to Telegram with a "Stop this tab" button.
+- `ws-memory`: approved memory saves (`save-facts`, used by `ws-learn`), `review --older-than 90` and `log`.
+- `ws-telemetry prompts [--alerts]`: approval fatigue (approvals per hour, time to answer, answers under 2 s,
+  persistent and broad allow rules); Telegram alerts above a rate.
+- Hard spend limit: `hard=1` in `budgets.conf` holds work in a project at 100 % of its budget until
+  `ws-telemetry budgets --override <project> [hours]` (audited).
+- `ws-audit --verify-log` checks the audit log's hash chain and its anchors.
+- `ws-pinned`: installs and verifies the pinned npm packages (`list`, `install`, `verify [--online]`, `outdated`,
+  `local-check`, `local-pin`); `files/mcp-servers.lock.json` records every MCP server's pin
+  ([ADR 0018](docs/adr/0018-supply-chain-pinning-and-signed-releases.md)).
+- `install.sh --mcp-opt-in NAME`, `--mcp-accept NAME` and `--mcp-refresh`.
+- `install.sh --managed [--dry-run]` installs the managed policy drop-in
+  `/etc/claude-code/managed-settings.d/50-ws-kit.json`, a root-owned `guard.sh` and the credential list, after
+  showing the `sudo` commands and asking ([ADR 0019](docs/adr/0019-strict-base-and-level-profiles.md)).
+- `tmux-level … --agent NAME`: a tab runs with the az, gh and kubectl logins under `~/.config/ws-agent/NAME`
+  (`WS_AGENT`, tab option `@cagent`), and the guard refuses to switch them
+  ([ADR 0020](docs/adr/0020-agent-scoped-identities.md)).
+- `agent-browser` (`ws-tools install agent-browser`), pinned, behind a wrapper with a localhost-only domain allow
+  list, an action policy (no eval, download or upload) and content boundaries; the `chrome-devtools` MCP server,
+  pinned and opt-in.
+- `~/.config/ws-guard/production.conf`: production subscriptions (ID or name) and kube contexts by list, also checked
+  for mutating Azure MCP tools.
+- The official `claude-security` plugin is enabled in `settings.json` (it still has to be installed by hand).
+- `ws-gate bypasses` lists repositories whose local git configuration replaces the hook chain, skips gate checks or
+  allows commits without gitleaks.
+- `tmux-swarm new --budget USD` stops a swarm whose branches together reach the budget.
+- CI: a `suites` job runs every `tests/*.sh` suite; a zizmor job checks the workflows; an SBOM job builds a CycloneDX
+  SBOM; `release.yml` refuses an unsigned tag and attaches the SBOM to the release. New suites cover the hooks,
+  the audit chain, anomalies, approval fatigue, the spend gate, the memory gate, solo mode, the supply chain, kit
+  updates, Telegram approvals, backup encryption, the gate's secret scan and Windows interop.
+- ADRs [0016](docs/adr/0016-solo-mode-inside-the-sandbox.md) to [0020](docs/adr/0020-agent-scoped-identities.md).
+
+### Changed
+
+- **Breaking: the user settings are strict.** `sandbox.excludedCommands` moved from `settings.json` to
+  `~/.config/claude-levels/normal-adds.json`; the normal level is `claude-resume --settings normal.json` on top of
+  every settings source, every kit launcher starts at normal, and a `claude` typed by hand runs with no exclusions
+  ([ADR 0019](docs/adr/0019-strict-base-and-level-profiles.md)).
+- **Breaking: solo mode runs inside the sandbox** (`autoAllowBashIfSandboxed`), expires after 4 hours (`@csolo_hours`,
+  `--hours N`) and opens a worktree by default in a git repository (`--here` keeps the folder);
+  `tmux-solo this --unsandboxed` is the audited exception, marked 🔓
+  ([ADR 0016](docs/adr/0016-solo-mode-inside-the-sandbox.md)).
+- **Breaking: more prompts.** Every MemPalace write tool and `mempalace` shell command asks, and so does any command
+  that names a `.exe`; `ws-kit-update --allow-unsigned`, `ws-telegram approve` and `ws-telegram run no-pin` ask too.
+- **Breaking: `ws-kit-update` installs only signed release tags.** It fetches `vX.Y.Z` tags, verifies them with
+  `git verify-tag` against the installed `~/.config/ws-kit/allowed_signers` and moves with `merge --ff-only`; the
+  branch tip is ignored. A refused release exits 11 and raises a Telegram alert.
+- **Breaking: the git gate requires gitleaks.** A missing gitleaks blocks the commit unless the repository opts out
+  with `ws.gate.allowNoGitleaks` (each such commit is logged in `~/.local/state/ws-gate/opt-outs.log`).
+- The audit log is a hash chain across lines and days, with the day's head hash written to an anchor file on the
+  Windows side when a session ends; it records the URL (without its query string), the search query and a redacted
+  summary of MCP input inside the chain. Retention goes from 90 to 395 days.
+- The guard fails closed even when the hook itself is missing or crashes (`onFailure: block`), and blocks agent
+  writes to persistent configuration: always for settings, hooks, `~/.claude.json`, plugins, profiles, the guard's
+  lists, git hooks, `/etc/claude-code`, the kit's keys and pins, the Telegram configuration and the audit log; for
+  `CLAUDE.md`, commands, agents and skills outside a 30-minute window the owner opens
+  (`~/.config/ws-guard/allow-config-writes`, each write audited).
+- The guard blocks naming a credential store in a command (one list shared with the sandbox,
+  `~/.local/lib/ws-credential-paths.txt`), `gh auth token`, `kubectl config view --raw`, running `ws-learn` or the
+  write commands of `ws-memory`, clearing the emergency stop, overriding a hard budget and MemPalace's own write
+  commands; `claude mcp add|add-json|remove` and `claude plugin install|enable|marketplace add` are denied.
+- Telegram: approving a risky dialog (an MCP tool, an ask rule or excluded command, a blocked command) needs the PIN
+  (`ws-telegram approve pin` asks it for every approval); "don't ask again" and other persistent allows are never
+  offered as buttons; ▶ Run is offered only for read-only commands of an allow list, with the block lists as a second
+  check; nothing is sent or run while the emergency stop is on.
+- The Azure MCP server runs from a pinned install (`@azure/mcp` 4.0.0-beta.7, `npm ci --ignore-scripts`) instead of
+  `npx -y`; `install.sh` replaces the old registration and refuses servers whose pin does not match.
+- `ws-update` verifies the pinned packages (`ws-pinned verify --online`) and keeps the prerelease suffix when it
+  compares versions.
+- Light backups are encrypted when a recipient exists (`age-recipients` or `ws-backup-cloud`'s key) and logged as
+  `UNENCRYPTED` with a loud warning otherwise; Windows-side copies whose original is gone expire after 30 days
+  (`WS_BACKUP_COPY_DAYS`); the backup carries a copy of the audit anchors.
+- Swarm agents start at the full level with `git push` and `gh pr create|merge` denied, and the swarm refuses to start
+  without `--setting-sources` (`WS_SWARM_LEVEL=normal` is the audited exception).
+- `ws-learn commands` checks each proposal, previews the full prompt and quotes the description; `ws-learn` and the
+  write commands of `ws-memory` refuse to run inside Claude.
+- `ws-audit` fails on gate bypasses, an unencrypted last light backup and a pinned package or local MCP executable
+  that does not verify; it checks that the user settings exclude no command and that the solo profile keeps the
+  sandbox, and warns about repositories whose `.claude` settings widen every level.
+- `permissions.disableBypassPermissionsMode` is `disable` in the user settings, the `bare` profile and the managed
+  drop-in; `enableAllProjectMcpServers` is `false`; WebFetch is allowed without a prompt only for five
+  documentation and registry hosts.
+- CI and CodeQL pin GitHub's actions by commit SHA, CodeQL no longer persists checkout credentials, and Dependabot
+  also updates the pinned npm packages, with a 7-day cooldown.
+
+### Fixed
+
+- `ws-restore-lite` could not extract an encrypted (`.age`) backup; it now also reads the cloud key from the Credential
+  Manager when `--identity` is not given.
+- `export.sh` deleted `files/mcp-servers.lock.json` and `files/etc/` and replaced the kit's MCP definitions with the
+  machine's; it now keeps them and merges the user's servers into the kit's.
+- `ws-learn` wrote a model-written description verbatim into a command's frontmatter, so a description could add
+  frontmatter keys such as `allowed-tools`.
+
+### Security
+
+- Security model, residual risks and the agentic (ASI01–ASI10) cross-reference updated in
+  [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) and [SECURITY.md](SECURITY.md).
 
 ## [3.0.1] - 2026-11-25
 

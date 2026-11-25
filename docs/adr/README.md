@@ -18,10 +18,15 @@ comments and the changelog refer to a record as `ADR-0NN` (for example `ADR-013`
 | [0009](0009-model-routing-with-confirmation.md) | Model routing per task, with confirmation | Accepted |
 | [0010](0010-telegram-remote-control.md) | Notifications and replies over Telegram | Accepted, amended by [0013](0013-minimum-protection-floor.md) |
 | [0011](0011-personal-configuration.md) | Personal configuration versioned outside the kit | Accepted |
-| [0012](0012-per-tab-protection.md) | Three per-tab protection levels for Claude | Accepted, partly superseded by [0013](0013-minimum-protection-floor.md) |
-| [0013](0013-minimum-protection-floor.md) | A minimum protection floor that no mode turns off | Accepted, implemented in phases |
+| [0012](0012-per-tab-protection.md) | Three per-tab protection levels for Claude | Accepted, partly superseded by [0013](0013-minimum-protection-floor.md) and, for solo mode, by [0016](0016-solo-mode-inside-the-sandbox.md) |
+| [0013](0013-minimum-protection-floor.md) | A minimum protection floor that no mode turns off | Accepted, implemented in phases; strict base and managed policy in [0019](0019-strict-base-and-level-profiles.md) |
 | [0014](0014-local-opentelemetry-collector.md) | Local OpenTelemetry collector and full on-machine logging | Accepted |
 | [0015](0015-english-names-and-language-selector.md) | English names and a language selector | Accepted |
+| [0016](0016-solo-mode-inside-the-sandbox.md) | Solo mode inside the sandbox, with an expiry | Accepted |
+| [0017](0017-defence-in-depth-for-agent-configuration.md) | Defence in depth for agent configuration and untrusted content | Accepted |
+| [0018](0018-supply-chain-pinning-and-signed-releases.md) | Supply-chain pinning and signed kit releases | Accepted |
+| [0019](0019-strict-base-and-level-profiles.md) | Strict base settings with level profiles and an optional managed drop-in | Accepted |
+| [0020](0020-agent-scoped-identities.md) | Agent-scoped identities per tab | Accepted (commit trailer open) |
 
 Records 0001 to 0007 are not in this repository. Its history mentions 0001 to 0006 only as part of a design
 document that was never part of it, and nothing mentions 0007; the code, the changelog and the other documents do not

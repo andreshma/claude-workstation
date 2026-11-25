@@ -125,10 +125,14 @@ Solid arrows are local calls and Claude Code's own traffic; dotted arrows are op
   `tmux-status` turns it into the label with its elapsed time. `tmux-watch` runs on every status refresh: it counts
   the tabs that wait for you (⚠), the stalled ones (⏳) and the estimated spend per hour (◉), sends Windows
   reminders, and keeps the local OpenTelemetry collector running.
-- **Guardrails.** Every tool call passes the PreToolUse hooks (`audit.sh`, `guard.sh`), the permission rules and the
-  sandbox; every commit and push passes `ws-gate`.
-- **Protection levels.** `tmux-level` restarts Claude in the tab with the chosen level (`full`, `normal`, `bare`,
-  or solo mode) and resumes the conversation. A floor of `deny` rules plus `guard.sh` stays on in every level.
+- **Guardrails.** Every tool call passes the PreToolUse hooks (`audit.sh`, `guard.sh`, the runtime gate for the
+  emergency stop and the hard spend limit, the memory gate for MemPalace writes), the permission rules and the
+  sandbox; web, MCP and network output comes back labelled as untrusted and screened for injection markers; prompts
+  are screened for secrets; every commit and push passes `ws-gate`. The flow is drawn in
+  [docs/architecture.md](docs/architecture.md#a-tool-call-through-the-gates).
+- **Protection levels.** The user settings are a strict base; `tmux-level` restarts Claude in the tab with a
+  generated profile (`full`, `normal`, `bare`, or solo mode, which runs inside the sandbox and expires) and resumes
+  the conversation. A floor of `deny` rules plus `guard.sh` stays on in every level.
 - **Telemetry.** Transcripts, hook traces, resource samples and the local OpenTelemetry collector feed
   `ws-telemetry build`, which renders the dashboard and the data the reports read. Nothing is sent off the machine:
   the exporter endpoints in `~/.claude/settings.json` point to `127.0.0.1:14318`.
@@ -144,16 +148,22 @@ Everything under `files/home/` is installed into `$HOME`, as listed in `manifest
 |---|---|---|
 | tmux configuration | Tabs, status bar with agent state, menus, themes, tab templates, shell helpers (`tw`, `twt`, `two`, `tp`), account selection for new shells (`accounts.sh`) | `.tmux.conf`, `.config/tmux-claude/` |
 | tmux commands | Repository picker, finder (`tmux-find`: tabs, active, favorites, recent), dashboard, state painter (`tmux-status`), watcher (`tmux-watch`), protection levels (`tmux-level`, `tmux-solo`), restart (`tmux-claude-restart`), subagents, focus mode, recording, screensaver (`tmux-saver`, `tmux-art`), summaries | `.local/bin/tmux-*` |
-| Workstation commands | Health (`ws-check`, `ws-health`, `ws-verify`, `ws-audit`), backups, tools, the commit gate (`ws-gate`), telemetry and reports (`ws-telemetry`, `ws-report`, `ws-otel`, `ws-hooks`), `ws-cache`, Telegram, secrets and redaction, handoff and learning, the behavior tests (`ws-test`) | `.local/bin/ws-*` |
+| Workstation commands | Health (`ws-check`, `ws-health`, `ws-verify`, `ws-audit` with `--verify-log` and `--compliance`), backups, tools, the commit gate (`ws-gate`), telemetry and reports (`ws-telemetry`, `ws-report`, `ws-otel`, `ws-hooks`), `ws-cache`, Telegram, secrets and redaction, handoff and learning, the emergency stop (`ws-stop-all`), anomaly detection (`ws-anomaly`), approved memory writes and their review (`ws-memory`), pinned npm packages (`ws-pinned`), the behavior tests (`ws-test`) | `.local/bin/ws-*`, `.local/lib/ws_compliance.py` |
 | Accounts | Two Claude accounts (`work`, `personal`), per tab and per project | `.local/bin/claude-account` |
-| Claude Code settings and hooks | Model, permissions, sandbox, OpenTelemetry export, status line and the hooks: state, audit, guard, routing, traces, notifications, lint on edit, document conversion | `.claude/settings.json`, `.claude/hooks/` |
+| Claude Code settings and hooks | Model, permissions, sandbox (the strict base), OpenTelemetry export, status line and the hooks: state, audit (hash-chained), guard (fails closed), routing, traces, notifications, lint on edit, document conversion, untrusted-content labelling, prompt secret screen, configuration-change audit, memory gate and `<private>` filter, runtime gate (emergency stop and hard budget) | `.claude/settings.json`, `.claude/hooks/` |
+| Level profiles | What the normal level adds to the strict base (the commands excluded from the sandbox); the solo profile | `.config/claude-levels/normal-adds.json`, `.config/claude-solo/settings.json` |
+| Guard lists | Credential paths shared by the sandbox and the guard | `.local/lib/ws-credential-paths.txt` |
 | Subagents | `architect`, `debugger`, `explorer`, `sql-quick` | `.claude/agents/` |
 | Working standards | Generic working standards; your organization's own go in your personal configuration | `.claude/CLAUDE.md`, `.claude/standards.md` |
 | Git hooks | A chain that runs `ws-gate` and then each repository's own hooks | `.config/git/hooks/` |
 | Prompt | Prompt with folder, branch, Kubernetes, Azure and AWS context; production contexts in red | `.config/starship.toml` |
 | Language packs | `ws-lang` selects `en` or `es`; the packs hold the words and expressions the hooks, routing, Telegram and reports recognize in prompts and answers | `.local/bin/ws-lang`, `.local/lib/ws-lang.sh`, `.local/lib/ws-lang/` |
-| MCP servers | User-level MCP servers; those whose executable is missing are skipped with a warning | `files/mcp-servers.json` |
-| Installer | Export, install with backups, and the migration of the names used before 3.0 | `export.sh`, `install.sh`, `migrate.sh`, `renames.tsv`, `lib.sh` |
+| MCP servers | User-level MCP servers, registered only when the lock vouches for them: npm servers by exact version and sha512, local executables by sha256 on first use, remote ones by URL; `chrome-devtools` is opt-in | `files/mcp-servers.json`, `files/mcp-servers.lock.json`, `.local/lib/ws-npm/` |
+| Browser tools (optional) | `agent-browser` behind a wrapper with a domain allow list, an action policy and content boundaries | `.local/bin/agent-browser`, `.config/agent-browser/` |
+| Release signers | SSH keys allowed to sign the kit's release tags (`ws-kit-update` installs only signed releases) | `.config/ws-kit/allowed_signers` |
+| Managed policy (optional) | A root-owned drop-in with the deny floor and the guard, installed only by `install.sh --managed` | `files/etc/claude-code/managed-settings.json` |
+| Installer | Export, install with backups, MCP registration against the lock, the optional managed policy, and the migration of the names used before 3.0 | `export.sh`, `install.sh`, `migrate.sh`, `renames.tsv`, `lib.sh` |
+| Compliance and governance | Control catalogue and assessment against the AI and security frameworks; AI use policy, AI bill of materials, AI incident response and review cadence | `docs/compliance/`, `docs/governance/` (repository only, not installed) |
 | Windows side | PowerShell profile (`dev`, `devo`…) and installer | `windows/` |
 
 Kept out of the repository on purpose: conversations, audit logs, telemetry, credentials and backups.
@@ -225,7 +235,14 @@ of the target machine.
 | `~/.config/tmux-claude/roots.txt` | Installed by the kit | Repository roots for the picker, one per line as `label\|depth\|path` |
 | `~/.config/ws-routing/rules.conf` | Installed by the kit | Routing rules; the first match wins |
 | `~/.config/ws-telemetry/prices.json` | Not present; the built-in price table applies | Model prices |
-| `~/.config/ws-telemetry/budgets.conf` | Not present | Monthly budgets |
+| `~/.config/ws-telemetry/budgets.conf` | Not present | Monthly budgets; a line `hard=1` holds work in a project at 100 % until `ws-telemetry budgets --override` |
+| `~/.config/claude-levels/normal-adds.json` | Installed by the kit | What the normal level adds to the strict base: the commands excluded from the sandbox |
+| `~/.config/ws-guard/production.conf` | Not present; the name pattern applies alone | Production subscriptions and kube contexts the guard protects, as `subscription <id or name>` and `context <name>` lines |
+| `~/.config/ws-guard/allow-config-writes` | Not present | An epoch until which Claude may write `CLAUDE.md`, commands, agents and skills (the owner's 30-minute window); written by you only |
+| `~/.config/ws-agent/<name>/` | Not present | The `az`, `gh` and `kubectl` logins of an agent identity (`tmux-level … --agent <name>`) |
+| `~/.config/ws-kit/allowed_signers.local` | Not present | Extra release-signing keys for a fork |
+| `~/.config/ws-backup/age-recipients` | Not present | Extra `age` keys the light backup is encrypted to, besides the cloud key |
+| `~/.config/agent-browser/allowed-domains.local.txt` | Not present | Domains agent-browser may open besides localhost |
 | `~/.config/ws-local/bar-extra.conf` | Not present; not part of the kit | Extra status bar segments |
 | `~/.config/claude-accounts/active` | `work` | Account for new tabs (written by `claude-account`) |
 | `~/.config/claude-accounts/projects.conf` | Not present | Accounts pinned per project (written by `claude-account`) |
@@ -268,32 +285,57 @@ ws-personal restore           # on a new PC, after install.sh
 
 ## Security model
 
-The full analysis, with residual risks, is in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+The full analysis, with residual risks, is in [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md); how the kit stands
+against the AI and security frameworks is in [docs/compliance/assessment.md](docs/compliance/assessment.md).
 
 - **Secrets** live only in the Windows Credential Manager (`ws-secret`). `export.sh` refuses to export anything that
-  looks like a secret, and gitleaks runs in the commit gate and in CI.
-- **Claude Code runs with least privilege**: a sandbox that denies reading credential folders; enumerated read-only
-  commands are allowed; cloud, database, infrastructure and container changes ask first; reading secrets and bypassing
-  the git gate are denied.
+  looks like a secret; gitleaks runs in the commit gate, where a missing gitleaks now blocks the commit, and in CI.
+  Prompts that seem to carry a secret are stopped before they are sent (`#allow-secret` overrides, audited).
+- **A strict base with levels that add** ([ADR 0019](docs/adr/0019-strict-base-and-level-profiles.md)): the user
+  settings run every command inside the sandbox, which denies reading credential folders; the normal level adds the
+  commands that need network and credentials; enumerated read-only commands are allowed; cloud, database,
+  infrastructure, container, Windows `.exe` and memory-write actions ask first; reading secrets and bypassing the git
+  gate are denied; `bypassPermissions` mode is disabled.
 - **A floor that no protection level turns off** ([ADR 0013](docs/adr/0013-minimum-protection-floor.md)): the `deny`
-  rules and `guard.sh`. The guard blocks forced pushes and pushes to `main`/`master`, `--no-verify`, changes to
-  `core.hooksPath` and `ws.gate.*`, `Co-authored-by` trailers, download-and-execute, `ws-secret get`, mutating `az`,
-  `kubectl` and `helm` commands against production, and writing secrets into files. It fails closed when it cannot
-  read the action. Hooks that do not restrict anything (state, traces, notifications) also stay on in every level.
-  Organization-managed settings and each repository's own `.claude/settings*.json` always apply. The original design
-  is in [ADR 0012](docs/adr/0012-per-tab-protection.md).
+  rules and `guard.sh`, which fails closed (`onFailure: block`, also when the hook itself is missing). The guard
+  blocks forced pushes and pushes to `main`/`master`, `--no-verify`, changes to `core.hooksPath` and `ws.gate.*`,
+  `Co-authored-by` trailers, download-and-execute, `ws-secret get`, `gh auth token`, mutating `az`,
+  `kubectl`, `helm` and Azure MCP calls against production (by name or listed in `production.conf`), writing secrets
+  into files, naming a credential store in a command, and the agent writing its own configuration: settings, hooks,
+  `~/.claude.json`, plugins, level profiles, git hooks, the kit's update keys and pinned packages, the audit log, and
+  `CLAUDE.md`, commands, agents and skills outside a 30-minute window the owner opens
+  ([ADR 0017](docs/adr/0017-defence-in-depth-for-agent-configuration.md)). Registering MCP servers and plugins from
+  Claude is denied. `install.sh --managed` can also install the floor as a root-owned managed policy. Each
+  repository's own `.claude/settings*.json` still applies; `ws-audit` warns when one widens every level.
+- **Untrusted content.** Web fetches, searches, MCP results and network commands come back labelled as untrusted data
+  and screened for injection markers (a heuristic; hits are audited). Memory writes ask every time, carry a
+  provenance stamped by the hook, and never contain text marked `<private>`.
+- **Solo mode inside the sandbox** ([ADR 0016](docs/adr/0016-solo-mode-inside-the-sandbox.md)): auto mode with the
+  sandbox on and a 4-hour expiry; the unsandboxed variant is an audited exception. Swarm agents run at the `full`
+  level with `git push` denied.
+- **Containment and evidence.** `ws-stop-all` blocks every prompt and tool call in every Claude, closes them and turns
+  Telegram off; `ws-anomaly` flags sessions with repeated blocks or denials; the audit log is a hash chain with
+  anchors on the Windows side (`ws-audit --verify-log`), kept 395 days. Agent identities (`--agent`) give a tab its
+  own cloud and git logins ([ADR 0020](docs/adr/0020-agent-scoped-identities.md)).
 - **Commit gate** (`ws-gate`): secrets, lint, Conventional Commits, dependencies and infrastructure-as-code checks on
   commit and push.
 - **Telemetry is local.** Hook traces hold no prompt text. The local OpenTelemetry collector does keep content on disk
   (the owner's choice, ADR 0014), with recognizable secrets masked and files readable only by the user. Text that
   leaves the machine through the kit's own channels (Telegram messages, panes pasted into Claude, handoff summaries)
-  is redacted first with `ws-redact`.
-- **Telegram control** answers only the owner's chat, with one-time codes that expire in 10 minutes. Free-text replies
-  are off by default and require a PIN. Commands proposed by Claude are never offered or run in tabs without a sandbox
-  (`bare` or solo mode) and are checked against two block lists.
-- **Supply chain**: CI uses only GitHub's own actions; gitleaks is downloaded at a pinned version and verified by
-  checksum; `ws-tools` installs from apt, pipx or GitHub releases verified against their checksum; Dependabot watches
-  the workflows.
+  is redacted first with `ws-redact`. Light backups are encrypted with `age` by default.
+- **Telegram control** answers only the owner's chat, with one-time codes that expire in 10 minutes. Approving a risky
+  dialog needs the PIN, and "don't ask again" is never offered. ▶ Run is offered only for read-only commands of an
+  allow list, with the PIN, and never in `bare` or solo-mode tabs. Free-text replies are off by default and require
+  the PIN.
+- **Supply chain** ([ADR 0018](docs/adr/0018-supply-chain-pinning-and-signed-releases.md)): MCP servers and agent
+  tools are pinned by version and integrity (`ws-pinned`, no `npx -y`); `ws-kit-update` installs only release tags
+  signed by a key in `allowed_signers`; CI uses only GitHub's own actions, pinned by commit SHA and checked by zizmor;
+  gitleaks and zizmor are downloaded at pinned versions and verified by checksum; a CycloneDX SBOM is built in CI and
+  attached to each release; `ws-tools` installs from apt, pipx or GitHub releases verified against their checksum;
+  Dependabot watches the workflows and the pinned npm packages.
+- **Governance**: an AI use policy, an AI bill of materials, AI incident-response playbooks and a review cadence in
+  [docs/governance/](docs/governance/README.md); `ws-audit --compliance` and the CI compliance checks keep the
+  control catalogue honest.
 
 Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
@@ -304,14 +346,17 @@ Details in [docs/TESTING.md](docs/TESTING.md).
 | Command | Scope |
 |---|---|
 | `bash tests/run.sh` | Installer and exporter in temporary homes (templates, secret blocking, backups, idempotence, migration of the names used before 3.0), JSON and shellcheck of the payload, and the guard tests |
-| `bash tests/guard.sh` | The PreToolUse guard: bypass variants, false positives and fail-closed behavior |
+| `bash tests/guard.sh` | The PreToolUse guard: bypass variants, protected configuration, credential paths, production list, agent identity, false positives and fail-closed behavior |
+| `bash tests/<area>.sh` | The other standalone suites (twenty with the two above): hooks, audit chain and anomalies, memory gate, spend and stop gate, solo sandbox, supply chain and signed updates, Telegram approvals, backup encryption, gate secret scan, Windows interop, and the compliance catalogue and AI-BOM checks |
 | `ws-test` | Behavior of the **installed** workstation, with an isolated home, isolated tmux sockets and a simulated Claude; costs no usage |
 | `ws-test --ai` | The same plus non-deterministic checks against the real Claude |
 | `ws-verify` | Read-only verification before pushing: scripts, tmux (also the running server: `--live`), Claude Code settings, the kit and the tests |
 
-CI runs lint (shellcheck, Python compile, JSON, tmux syntax), SAST and secret scanning (bandit, gitleaks),
-`tests/run.sh`, and a clean install followed by `ws-test` on every push to `main` and every pull request. CodeQL
-analyzes the Python scripts and the workflows.
+CI runs lint (shellcheck, Python compile, JSON, tmux syntax), SAST and secret scanning (bandit, gitleaks), workflow
+security (zizmor), the SBOM, `tests/run.sh`, every other `tests/*.sh` suite, and a clean install followed by
+`ws-test` on every push to `main` and every pull request. CodeQL analyzes the Python scripts and the workflows. A
+signed release tag runs `release.yml`; a monthly workflow re-checks the compliance catalogue, the AI-BOM and the
+framework editions.
 
 ## Status
 
@@ -331,8 +376,8 @@ Known limits:
   history is rebuilt from the transcripts Claude Code keeps.
 - OpenTelemetry traces are a beta feature of Claude Code and may change.
 
-Roadmap pointers: phase 2 of ADR 0013 is still pending and is listed in the
-[threat model](docs/THREAT_MODEL.md#pending-work).
+Roadmap pointers: the open controls and the plan are in [docs/compliance/assessment.md](docs/compliance/assessment.md);
+the residual risks and pending work are in the [threat model](docs/THREAT_MODEL.md#pending-work).
 
 ## Documentation
 
@@ -344,7 +389,9 @@ Roadmap pointers: phase 2 of ADR 0013 is still pending and is listed in the
 | [docs/TESTING.md](docs/TESTING.md) | Which test suites exist, what each covers and how CI runs them |
 | [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) | Which assets, trust boundaries, threats, controls, residual risks and pending work exist |
 | [docs/runbook.md](docs/runbook.md) | How to operate, upgrade and recover the workstation, step by step |
-| [docs/adr/](docs/adr/README.md) | Which architecture decisions were made and why; the latest is [0015](docs/adr/0015-english-names-and-language-selector.md), English names and the language selector |
+| [docs/adr/](docs/adr/README.md) | Which architecture decisions were made and why; the latest is [0020](docs/adr/0020-agent-scoped-identities.md), agent-scoped identities |
+| [docs/compliance/](docs/compliance/assessment.md) | How the kit stands against the AI and security frameworks: the framework list ([frameworks.md](docs/compliance/frameworks.md)), the control catalogue ([controls.yaml](docs/compliance/controls.yaml)) and the assessment with coverage and plan |
+| [docs/governance/](docs/governance/README.md) | Which rules govern AI use on the workstation: the AI use policy, the AI bill of materials, AI incident response and the review cadence |
 | [CHANGELOG.md](CHANGELOG.md) | What changed in each release (Keep a Changelog) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to set up, change, test and document a contribution |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Which behavior is expected and how to report a problem |

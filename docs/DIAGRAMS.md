@@ -7,7 +7,7 @@ it; when a diagram changes, change it in both files.
 |---|---|
 | System context | [architecture.md](architecture.md#context), [README](../README.md#how-it-works) |
 | Components | [architecture.md](architecture.md#components), [architecture.md](architecture.md#telemetry) |
-| Sequences | [architecture.md](architecture.md#flows) |
+| Sequences and flows | [architecture.md](architecture.md#flows) |
 | State and lifecycle | [architecture.md](architecture.md#state) |
 | Trust boundaries | [THREAT_MODEL.md](THREAT_MODEL.md#trust-boundaries) |
 
@@ -122,9 +122,9 @@ flowchart TB
   subgraph claudel["Claude Code layer"]
     settings["settings.json<br/>permissions, sandbox, env"]
     state["tmux-state.sh"]
-    guard["audit.sh, guard.sh"]
+    guard["audit.sh, guard.sh<br/>ws-runtime-gate.sh, memory-gate.sh"]
     traces["ws-traces.sh"]
-    other["ws-routing.sh, intent-route.sh<br/>lint-on-edit.sh, read-convert.sh<br/>win-notify.sh, win-hook.sh"]
+    other["ws-routing.sh, intent-route.sh<br/>lint-on-edit.sh, read-convert.sh<br/>untrusted-content.sh, prompt-screen.sh<br/>config-change.sh, memory-filter.sh<br/>win-notify.sh, win-hook.sh"]
     sl["statusline.sh"]
     agents["agents/*.md"]
   end
@@ -246,6 +246,35 @@ sequenceDiagram
   G-->>C: secrets, forbidden or large files, lint, Conventional Commits
   C->>G: git push
   G-->>R: only if the branch, dependency and IaC checks allow it
+```
+
+### A tool call through the gates
+
+The flowchart shows the gates a prompt and a tool call cross, in the order Claude Code applies them.
+
+```mermaid
+flowchart TB
+  prompt(["Prompt typed or pasted"]) --> ups{{"UserPromptSubmit<br/>prompt-screen.sh: secret? · ws-runtime-gate.sh: stop or budget?<br/>memory-gate.sh: note on &lt;private&gt; · audit.sh: prompt length"}}
+  ups -- "blocked or held" --> back(["Reason shown to you"])
+  ups -- "sent" --> model["Model proposes a tool call"]
+  model --> pre{{"PreToolUse hooks<br/>guard.sh (fails closed) · ws-runtime-gate.sh<br/>memory-gate.sh (MemPalace writes) · audit.sh"}}
+  pre -- "exit 2: blocked or held" --> denied["Tool not run; reason to Claude;<br/>audit: blocked / held"]
+  pre -- "ask (memory write)" --> human{{"You approve or reject<br/>(or Telegram, PIN for risky dialogs)"}}
+  pre -- "pass" --> rules{{"Permission rules<br/>deny, ask, allow"}}
+  rules -- "deny" --> denied
+  rules -- "ask" --> human
+  human -- "no" --> denied
+  human -- "yes" --> run
+  rules -- "allow" --> run{"Bash command?"}
+  run -- "sandboxed" --> sbx["Sandbox (bubblewrap)<br/>denyRead credentials, network allow list"]
+  run -- "excluded command (normal and solo only)" --> host["Your shell privileges<br/>az, gh, git push…"]
+  run -- "other tool (Read, Edit, WebFetch, MCP…)" --> tool["Tool runs"]
+  sbx --> post
+  host --> post
+  tool --> post{{"PostToolUse hooks<br/>untrusted-content.sh: label + injection markers<br/>lint-on-edit.sh · ws-traces.sh"}}
+  post -- "marker found" --> audit[("~/.claude/audit<br/>hash-chained, injection-suspect")]
+  post --> result["Result and context back to the model"]
+  denied --> audit
 ```
 
 ### Local data becomes the dashboard and the reports

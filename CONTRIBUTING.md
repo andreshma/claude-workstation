@@ -52,6 +52,7 @@ Branch from `main`; changes reach `main` only through reviewed pull requests wit
    ```bash
    shellcheck -S warning <changed scripts>
    python3 -m py_compile <changed python scripts> && bandit -q -ll <changed python scripts>
+   for t in tests/*.sh; do bash "$t" >/dev/null || echo "FAILED: $t"; done   # every standalone suite
    ws-test            # isolated behavior tests: HOME, tmux and Claude are sandboxed
    ```
 
@@ -104,6 +105,8 @@ Public scripts start with a header comment (what it does, usage, side effects).
 | A test suite, a static check or a CI job | [docs/TESTING.md](docs/TESTING.md) |
 | A language pack key or a new language | [docs/USAGE.md](docs/USAGE.md#15-language) and [docs/architecture.md](docs/architecture.md#language-packs) |
 | A failure mode, an operational step, upgrading or recovery | [docs/runbook.md](docs/runbook.md) |
+| A security control: what it does, its evidence (`file:line`) or its check | [docs/compliance/controls.yaml](docs/compliance/controls.yaml) and, when a status changes, the coverage tables of [docs/compliance/assessment.md](docs/compliance/assessment.md); `tests/compliance.sh` fails when they disagree |
+| A model, subagent, MCP server, hook or external AI service | [docs/governance/AI-BOM.md](docs/governance/AI-BOM.md): regenerate its tables with `bash tests/ai-bom.sh --write`; CI fails when they are stale |
 | Anything a user notices | [CHANGELOG.md](CHANGELOG.md), under `[Unreleased]` |
 
 Non-trivial decisions get an ADR in [docs/adr/](docs/adr/README.md): copy `template.md` and fill in Status, Context and

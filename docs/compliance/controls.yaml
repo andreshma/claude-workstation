@@ -1,10 +1,15 @@
 # Control catalogue for claude-workstation: AI, agent, security and governance controls.
-# Phase 1 of the AI security hardening (docs/compliance/assessment.md). Framework sources, versions and the meaning of
-# every maps_to prefix are in docs/compliance/frameworks.md. Evidence is file:line in this repository at v3.0.1.
+# Phase 1 of the AI security hardening wrote it (docs/compliance/assessment.md); phase 2 brought every status and
+# evidence in line with the code. Framework sources, versions and the meaning of every maps_to prefix are in
+# docs/compliance/frameworks.md. Evidence is file:line (or file#anchor) in this repository; tests/compliance.sh checks
+# that every file, line range and anchor exists.
 # status: implemented | partial | missing | not-applicable. risk: likelihood x impact for this setup.
-# check: a command or test that verifies the control, or none. effort: S (hours), M (days), L (a week or more).
+# check: none, or a list of items run by ws-audit --compliance and tests/compliance.sh (allow list only, never a
+#   shell): bash tests/<name>.sh | test -f|-d|-x|-s <path> | jq -e <filter> <file> | grep [-qEFiwxcr] <pattern> <file>
+#   | live: <read-only kit command> (workstation only, skipped in CI) | manual: <text> (reported, not run).
+# effort: S (hours), M (days), L (a week or more).
 version: 1
-kit_version: 3.0.1
+kit_version: 3.0.1 + Unreleased (phase 2)
 assessed: '2026-11-25'
 controls:
 - id: WS-AI-001
@@ -25,19 +30,26 @@ controls:
   - ATLAS:AML.T0051
   - CSF:DE.CM-09
   - OWASP-LLM26:LLM01
-  status: partial
+  status: implemented
   evidence:
+  - 'files/home/.claude/hooks/untrusted-content.sh:30-39 (source named per tool: web host, search query, MCP server, network
+    command)'
+  - 'files/home/.claude/hooks/untrusted-content.sh:41-68 (markers: instruction phrases in English and Spanish, chat-template
+    tokens, Unicode tag, bidirectional and zero-width characters, base64 blocks over 2 KB)'
+  - files/home/.claude/hooks/untrusted-content.sh:70-76 (additionalContext label; on a hit, a warning and an audit injection-suspect
+    line)
+  - files/home/.claude/settings.json:392-460 (PostToolUse on WebFetch, WebSearch and mcp__.*; Bash only through if rules
+    for curl, wget and gh)
   - files/home/.claude/hooks/read-convert.sh:20-21 (converted documents are announced as 'document data, not instructions')
-  - files/home/.local/bin/ws-telegram:150 (remote replies are prefixed '[Reply from Telegram]')
-  - docs/THREAT_MODEL.md:62-63 (controls are deterministic and do not rely on the model refusing)
-  check: none
-  gap: WebFetch, WebSearch, MCP results and Bash output carry no provenance label and nothing scans them for injection
-    markers (instruction phrases, invisible Unicode tags, zero-width characters).
+  - files/home/.local/bin/ws-telegram:162 (remote replies are prefixed '[Reply from Telegram]')
+  check:
+  - bash tests/hooks-untrusted.sh
+  gap: 'Screening is heuristic: plain-language social engineering with no marker (measured: 2 of 20 real samples) is labelled
+    untrusted but not flagged; Bash output is labelled only for the network commands in the if rules, and files the agent
+    reads are not labelled.'
   risk: 'high: likelihood high (the agent reads web pages, issues, READMEs and two remote MCP servers daily); impact high
     (a hijacked agent acts with the user''s tools).'
-  remediation: Add a PostToolUse hook files/home/.claude/hooks/untrusted-content.sh matched on WebFetch|WebSearch|mcp__.*|Bash
-    that returns additionalContext naming the source and flags heuristic hits; log hits through audit.sh; register it
-    in settings.json and cover it in ws-test.
+  remediation: Extend the phrase list from incidents; consider labelling Read results of files outside the working directory.
   effort: M
 - id: WS-AI-002
   title: Protection floor present at every protection level
@@ -60,21 +72,28 @@ controls:
   - MS-RAI:Reliability and Safety
   - SSDF:PW.9
   - OWASP-LLM26:LLM03
-  status: partial
+  status: implemented
   evidence:
-  - files/home/.local/bin/tmux-level:59-78 (full keeps permissions and hooks; bare keeps only deny and hooks)
-  - files/home/.config/claude-solo/settings.json:1-5 (solo disables only the sandbox)
-  - docs/adr/0013-minimum-protection-floor.md:108-125
-  - 'ws-test section ''Protection per tab: full, normal, bare'''
-  check: 'ws-test (section ''Protection per tab: full, normal, bare''); jq -e ''.permissions.deny | index("Bash(ws-secret
-    get*)")'' files/home/.claude/settings.json'
-  gap: The floor lives in user settings and generated profiles, not in a managed policy, and a repository's own .claude/settings*.json
-    can still add allow rules and excluded commands at every level.
+  - files/home/.local/bin/tmux-level:78-103 (full keeps permissions and hooks; bare keeps deny, disableBypassPermissionsMode
+    and hooks; solo is generated from the solo profile plus the normal additions)
+  - files/home/.claude/settings.json:313 (bypassPermissions mode disabled at every level)
+  - 'files/home/.claude/settings.json:500-510 (guard hook with onFailure block: a missing or crashing guard blocks)'
+  - 'files/etc/claude-code/managed-settings.json (managed drop-in: deny floor, guard as root, bypass disabled)'
+  - install.sh:222-251 (install.sh --managed installs it to /etc/claude-code/managed-settings.d/50-ws-kit.json)
+  - files/home/.local/bin/ws-audit:289-301 (warns about repository .claude settings that add allow rules or excluded commands
+    at every level)
+  - docs/adr/0013-minimum-protection-floor.md
+  check:
+  - bash tests/hooks-settings.sh
+  - bash tests/guard.sh
+  - 'live: ws-test'
+  gap: The managed drop-in is opt-in (install.sh --managed, sudo) and has not been verified as root on a live machine;
+    without it the floor lives in user settings, which the guard protects from the agent but the owner can edit. A repository's
+    .claude settings that widen every level are reported by ws-audit, not blocked.
   risk: 'medium: likelihood low (requires a malicious repository settings file or an edited user file); impact high (the
     floor is what remains in bare and solo).'
-  remediation: Ship an optional managed-settings template (files/etc/claude-code/managed-settings.json, installed by install.sh
-    --managed with sudo) carrying the deny floor and the guard hook, and make ws-audit warn when a repository .claude/settings*.json
-    adds allow rules or excludedCommands.
+  remediation: Install the managed drop-in on every workstation and verify it with claude doctor; consider allowManagedHooksOnly
+    and a managed permissions floor once verified.
   effort: M
 - id: WS-AI-003
   title: Strict base configuration with levels that add permissions
@@ -92,19 +111,26 @@ controls:
   - NSA-DAISS:Ensure a robust deployment environment architecture
   - SSDF:PW.9
   - OWASP-LLM26:LLM03
-  status: missing
+  status: implemented
   evidence:
-  - docs/adr/0013-minimum-protection-floor.md:66-81 (decided)
-  - docs/adr/0013-minimum-protection-floor.md:122-125 (pending)
-  - files/home/.claude/settings.json:817-846 (normal carries 28 excluded commands, including gh, az, git push and terraform)
-  check: none
-  gap: 'Normal is the user settings as written: az, gh, aws, terraform, kubectl, remote git and obsidian run outside the
-    sandbox with the user''s credentials, limited only by permission rules and the guard.'
+  - 'files/home/.claude/settings.json:951-1020 (the user settings carry the sandbox with no excludedCommands: a hand-typed
+    claude runs strict)'
+  - files/home/.config/claude-levels/normal-adds.json:1-34 (the commands the normal level excludes from the sandbox)
+  - files/home/.local/bin/tmux-level:11-23,132-146 (normal = claude-resume --settings normal.json, generated from normal-adds.json)
+  - files/home/.local/bin/claude-resume:7-12 (with no --settings or --setting-sources it starts at the normal level)
+  - files/home/.local/bin/ws-audit:279-282 (warns when the user settings exclude commands)
+  - docs/adr/0013-minimum-protection-floor.md
+  check:
+  - jq -e '.sandbox.excludedCommands == null' files/home/.claude/settings.json
+  - jq -e '.sandbox.excludedCommands | length > 0' files/home/.config/claude-levels/normal-adds.json
+  - bash tests/solo-sandbox.sh
+  - 'live: ws-test'
+  gap: How --settings merges sandbox.excludedCommands with the other settings sources has not been verified at runtime
+    (if it does not merge, the normal level is stricter, not looser). Excluded commands still use the user's own credentials
+    (WS-AI-026).
   risk: 'medium: likelihood medium (normal is the default level and the injection channel is open); impact high (excluded
     commands reach cloud and source control with full credentials).'
-  remediation: Move excludedCommands out of files/home/.claude/settings.json into a generated normal profile (tmux-level
-    --profile normal) started with --setting-sources project,local like full and bare; add a ws-test case asserting the
-    user file has no excludedCommands.
+  remediation: Verify the merge with claude doctor and a live normal tab after each Claude Code major release.
   effort: L
 - id: WS-AI-004
   title: Guardrails for autonomous (solo) mode
@@ -125,18 +151,24 @@ controls:
   - OWASP-LLM26:LLM03
   status: partial
   evidence:
-  - files/home/.local/bin/tmux-solo:3-8,17 (auto mode with a sandbox-off profile; ask, deny and guard remain)
-  - files/home/.local/bin/ws-audit:278-280 (checks the solo profile only disables the sandbox)
-  - files/home/.local/bin/ws-telegram:285-287,405 (no remote run in solo tabs)
-  - ws-test section 'Solo mode'
-  check: ws-test (section 'Solo mode'); ws-audit (pillar Sandbox, 'solo mode profile')
-  gap: Solo mode has no network egress control, no filesystem confinement outside the worktree option, no session time
-    limit and no spend cap; it relies on the auto-mode classifier for everything not in ask or deny.
+  - files/home/.local/bin/tmux-solo:3-20 (auto mode inside the sandbox; --unsandboxed is the audited exception; expiry;
+    worktree by default)
+  - files/home/.config/claude-solo/settings.json:1-6 (sandbox enabled, autoAllowBashIfSandboxed)
+  - files/home/.local/bin/tmux-solo:35-56 (expiry hours, generated unsandboxed profile, audit events solo-on and solo-unsandboxed)
+  - files/home/.local/bin/tmux-watch:15,69-75 (returns an expired solo tab to normal)
+  - files/home/.local/bin/ws-audit:303-309 (fails when the solo profile turns the sandbox off)
+  - files/home/.local/bin/ws-telegram:363-367 (nothing is offered or run from Telegram in a solo or bare tab)
+  - docs/adr/0016-solo-mode-inside-the-sandbox.md
+  check:
+  - bash tests/solo-sandbox.sh
+  - 'live: ws-test'
+  gap: The solo profile is generated with the normal level's exclusions, so az, gh, git push and the other excluded commands
+    run outside the sandbox, decided by the auto-mode classifier; WebFetch and MCP egress are not confined; --unsandboxed
+    remains available as an audited exception.
   risk: 'high: likelihood medium (solo is used to let the agent work unattended on untrusted content); impact high (no
     sandbox: credential paths outside the deny list, any host reachable).'
-  remediation: Change files/home/.config/claude-solo/settings.json to keep sandbox.enabled true with autoAllowBashIfSandboxed
-    so commands run without prompts but inside bubblewrap and the network allowlist; default tmux-solo new to the worktree
-    variant; add an expiry (@csolo_until) that tmux-watch reverts; test in ws-test.
+  remediation: Generate the solo profile without the network-capable exclusions (or with an ask list for them), and confine
+    MCP egress (WS-AI-011).
   effort: M
 - id: WS-AI-005
   title: Human approval for consequential actions
@@ -158,11 +190,12 @@ controls:
   - OWASP-LLM26:LLM03
   status: implemented
   evidence:
-  - 'files/home/.claude/settings.json:149-247 (ask list: aws, azd, terraform, kubectl, helm, docker, databases, pwsh,
-    cmd.exe, wsl.exe, Azure, Microsoft 365 and MemPalace delete tools)'
-  - ws-test 'the MCP tools that send, delete or touch secrets, and PowerShell, always ask for confirmation'
-  check: 'ws-test (section ''Status bar: personal segments and ws-cache''); jq -e ''.permissions.ask | index("Bash(terraform
-    apply*)") and index("mcp__azure__*delete*")'' files/home/.claude/settings.json'
+  - 'files/home/.claude/settings.json:196-312 (ask list: aws, azd, terraform, kubectl, helm, docker, databases, PowerShell,
+    cmd.exe, wsl.exe, every .exe, Azure, Microsoft 365 and MemPalace writes)'
+  - '''ws-test: the MCP tools that send, delete or touch secrets, and PowerShell, always ask for confirmation'''
+  check:
+  - jq -e '.permissions.ask | index("Bash(terraform apply*)") and index("mcp__azure__*delete*")' files/home/.claude/settings.json
+  - 'live: ws-test'
   gap: Rules are prefix and glob patterns; an equivalent command written differently can miss them (documented residual).
   risk: 'low: the residual is documented in docs/THREAT_MODEL.md and partly covered by the guard.'
   remediation: Keep; extend with WS-AI-006 so the number of prompts stays reviewable.
@@ -182,16 +215,18 @@ controls:
   - WAF-AI:operations
   status: partial
   evidence:
+  - 'files/home/.local/bin/ws-telemetry:1476-1508 (prompts_summary: approvals per hour, time to answer, answers under
+    2 s, persistent and broad allow rules)'
+  - files/home/.local/bin/ws-telemetry:1509-1523 (prompts_alerts)
+  - files/home/.local/bin/ws-telegram:789-794 (hourly approval-fatigue alert to the phone)
   - files/home/.local/bin/ws-otel:11 (every permission decision and who made it is stored)
-  - ws-test 'the dashboard adds up latency, errors per code, permissions and active time'
-  check: ws-test (section 'Local OpenTelemetry collector (ws-otel)')
-  gap: Accept and reject counts are shown on the dashboard, but there is no threshold, no alert and no report of 'always
-    allow' grants or of approvals given within a second of the prompt.
+  check:
+  - bash tests/audit-prompts.sh
+  gap: The dashboard template does not render the prompts block yet, and the metrics need the OpenTelemetry collector
+    on.
   risk: 'medium: likelihood medium (more than 90 ask rules plus Claude''s default prompts, several tabs and a phone channel);
     impact medium (a rubber-stamped approval defeats WS-AI-005).'
-  remediation: Add a 'prompts' section to ws-telemetry build (approvals per hour, median time to approve, share approved
-    under 2 s, new permanent allow rules found in ~/.claude/settings.local.json files) and an alert in ws-telegram's minute
-    loop above a configurable rate.
+  remediation: Render the prompts block in the dashboard and show the weekly figure in ws-telemetry week.
   effort: M
 - id: WS-AI-007
   title: Remote approval channel authentication
@@ -207,21 +242,22 @@ controls:
   - WAF-SEC:SE:05
   - NSA-DAISS:Secure exposed APIs
   - ISO42001:A.9
-  status: partial
+  status: implemented
   evidence:
-  - files/home/.local/bin/ws-telegram:742-748 (chat id check, closed button format)
-  - files/home/.local/bin/ws-telegram:33,750-756 (one-time code, 10 min expiry)
-  - files/home/.local/bin/ws-telegram:794-799 (screen re-read before sending a key)
-  - files/home/.local/bin/ws-telegram:91-101,127-134 (PIN, three failures)
+  - files/home/.local/bin/ws-telegram:326-330 (persistent-allow options recognised)
+  - 'files/home/.local/bin/ws-telegram:339-361 (dialog_risky: MCP tools, ask rules, excluded commands, block lists)'
+  - files/home/.local/bin/ws-telegram:563-569 (persistent allows never become buttons; risky approvals marked 🔐)
+  - files/home/.local/bin/ws-telegram:902-907 (a forged persistent press is refused; a risky approval asks for the PIN)
+  - 'files/home/.local/bin/ws-telegram:922-957 (ask_pin and approve_now: the screen is re-read after the PIN)'
+  - files/home/.local/bin/ws-telegram:84-167 (PIN, three failures)
   - docs/adr/0010-telegram-remote-control.md
-  check: 'ws-test (section ''Telegram: notifications and answering with buttons (simulated API)'')'
-  gap: Buttons that answer a permission dialog (including 'yes, and do not ask again') send the key without the PIN; only
-    ▶ Run and free text require it.
+  check:
+  - bash tests/telegram-approvals.sh
+  - 'live: ws-test'
+  gap: By default only risky dialogs ask for the PIN; 'ws-telegram approve pin' makes every approval ask for it.
   risk: 'medium: likelihood low (needs the unlocked phone or the bot token); impact high (approves an ask-rule action
     such as terraform apply from outside the machine).'
-  remediation: In ws-telegram handle_button, require the PIN reply flow (to-run state) when the dialog text matches an
-    ask rule or the chosen option is a persistent allow; never offer persistent-allow options remotely; add both cases
-    to ws-test test_telegram.
+  remediation: None required; switch to approve pin if the phone is shared or often unattended.
   effort: S
 - id: WS-AI-008
   title: Enumerated allow rules without wildcards
@@ -237,11 +273,13 @@ controls:
   - OWASP-LLM26:LLM03
   status: implemented
   evidence:
-  - files/home/.claude/settings.json:26-64
-  - files/home/.local/bin/ws-audit:210-211 (fails on dangerous allow wildcards)
-  - 'ws-test ''settings: no az wildcards in allow and with the deny floor'''
-  check: 'ws-test (section ''Protection per tab: full, normal, bare''); ws-audit (pillar Claude Code, ''allow has no dangerous
-    wildcards'')'
+  - files/home/.claude/settings.json:26-69 (allow list, enumerated; WebFetch only for five documentation domains)
+  - files/home/.local/bin/ws-audit:218-219 (fails on dangerous allow wildcards)
+  - '''ws-test: settings: no az wildcards in allow and with the deny floor'''
+  check:
+  - jq -e '[.permissions.allow[] | select(test("^(Bash(\\(\\*\\))?|Bash\\((curl|wget|ssh|scp|rm|sudo|docker|kubectl|az|aws|terraform)[
+    :]?\\*?\\))$"))] | length == 0' files/home/.claude/settings.json
+  - 'live: ws-test'
   gap: Obsidian read commands are allowed with a trailing wildcard, which also matches extra arguments; acceptable for
     read-only subcommands.
   risk: 'low: allow rules are read-only and reviewed by ws-audit.'
@@ -273,20 +311,23 @@ controls:
   - OWASP-LLM26:LLM04
   status: partial
   evidence:
-  - files/mcp-servers.json:30-37 (azure pinned to @azure/mcp@4.0.0-beta.7 through npx -y)
-  - files/mcp-servers.json:2-24 (mempalace and recall run local Windows executables; HF_HUB_OFFLINE=1)
-  - files/mcp-servers.json:26-29,41-44 (two remote HTTP servers)
-  - files/home/.local/bin/ws-update:9-12 (reports a new azure version)
-  - install.sh:163-173 (registers servers whose executable exists)
-  check: jq -e '.azure.args | any(test("@azure/mcp@[0-9]"))' files/mcp-servers.json
-  gap: The Azure server is a beta resolved by npx without an integrity hash or lockfile for its dependencies, the local
-    executables have no checksum, and ws-update's version parser drops the prerelease suffix (ws-update:10), so it compares
-    4.0.0 with npm's latest.
+  - files/mcp-servers.lock.json (exact versions and the npm sha512 of each npm server; local servers pinned on first use;
+    remote servers by URL; opt-in flag)
+  - files/home/.local/lib/ws-npm/azure-mcp/package-lock.json (full dependency tree)
+  - 'files/home/.local/bin/ws-pinned:45-83 (verify: lock, version, npm integrity, tree hash; install: npm ci --ignore-scripts)'
+  - 'install.sh:157-220 (mcp_verify: a server missing from the lock or with a mismatch is skipped)'
+  - files/home/.local/bin/ws-update:14-41 (npm audit signatures; local sha256; flags an npx registration; prerelease suffix
+    kept)
+  - files/home/.local/bin/ws-audit:465-480 (fails when a pinned package or a local MCP executable no longer matches its
+    pin)
+  check:
+  - bash tests/supply-chain.sh
+  - 'live: ws-pinned verify'
+  gap: azure stays on the prerelease 4.0.0-beta.7 (the reason is in the lock); mempalace and recall are pinned by trust
+    on first use on each machine, so a binary that was already malicious at first registration is accepted.
   risk: 'high: likelihood medium (npm and MCP packages are an active attack target); impact high (MCP servers run outside
     the sandbox with the user''s Azure credentials).'
-  remediation: Install @azure/mcp into a kit-managed prefix with a committed package-lock.json (npm ci --ignore-scripts)
-    and point mcp-servers.json at that binary; prefer a stable release; record a sha256 for each local MCP executable
-    in a files/mcp-servers.lock checked by install.sh and ws-audit; fix the parser in ws-update.
+  remediation: Move azure to the first stable 4.x; publish the expected sha256 of the local servers from their own repositories.
   effort: M
 - id: WS-AI-010
   title: MCP server registration control
@@ -305,17 +346,25 @@ controls:
   - ISO42001:A.10
   - CAF:govern.enforce-policies
   - OWASP-LLM26:LLM04
-  status: missing
+  status: partial
   evidence:
-  - files/home/.local/bin/ws-sandbox-repos:7 (.mcp.json excluded from git as a sandbox placeholder only)
-  check: none
-  gap: No deny rule covers 'claude mcp add' or edits to ~/.claude.json, no managed allowedMcpServers list is shipped,
-    and nothing checks enableAllProjectMcpServers or enabledMcpjsonServers.
+  - files/home/.claude/settings.json:153-158 (deny claude mcp add, add-json, remove; claude plugin install, enable, marketplace
+    add)
+  - files/home/.claude/hooks/guard.sh:200-203 (the same commands blocked by the guard, also through claude-resume and
+    wrappers)
+  - 'files/home/.claude/settings.json:315 (enableAllProjectMcpServers false: project .mcp.json servers need approval)'
+  - files/home/.claude/settings.json:162-167 (Edit deny on the settings, hooks, plugins, status line and ~/.claude.json)
+  - install.sh:157-220 (only servers in the lock are registered)
+  check:
+  - bash tests/guard.sh
+  - bash tests/hooks-settings.sh
+  - jq -e '.enableAllProjectMcpServers == false' files/home/.claude/settings.json
+  gap: No allowedMcpServers allow list is shipped (it would also block the claude.ai connectors and plugin servers), and
+    ws-audit does not yet fail when claude mcp list shows a server that is not in files/mcp-servers.json.
   risk: 'medium: likelihood low (requires the agent to be steered into adding a server, or a malicious repo .mcp.json
     being approved); impact high (a new server runs code outside the sandbox).'
-  remediation: Add deny rules Bash(claude mcp add*), Bash(claude mcp add-json*), Bash(claude mcp remove*) to settings.json;
-    extend guard.sh to block Write/Edit and shell redirections to ~/.claude.json; have ws-audit fail when enableAllProjectMcpServers
-    is true or a server outside files/mcp-servers.json is registered.
+  remediation: Add the registration check to ws-audit; ship allowedMcpServers in the managed drop-in once connector URLs
+    are known.
   effort: S
 - id: WS-AI-011
   title: MCP tool scoping and egress
@@ -334,16 +383,21 @@ controls:
   - OWASP-LLM26:LLM03
   status: partial
   evidence:
-  - files/home/.claude/settings.json:186-246
-  - docs/THREAT_MODEL.md:89-90 (MCP tools run outside the sandbox)
-  check: jq -e '.permissions.ask | index("mcp__azure__keyvault") and index("mcp__claude_ai_Microsoft_365__*send*")' files/home/.claude/settings.json
-  gap: MCP servers run outside the sandbox with unrestricted network and filesystem access; read tools of remote servers
-    return untrusted text with no labelling (see WS-AI-001).
+  - files/home/.claude/settings.json:252-290 (always-ask rules for mutating and data-reading Azure and Microsoft 365 tools)
+  - files/home/.claude/hooks/untrusted-content.sh:33 (MCP output labelled untrusted, WS-AI-001)
+  - files/mcp-servers.json:43-55 (chrome-devtools opt-in, isolated profile, no usage statistics, redacted headers)
+  - 'files/home/.local/bin/agent-browser:5-10,33-35 (agent-browser wrapper: localhost allow list, action policy, refuses
+    flags that replace them)'
+  - docs/THREAT_MODEL.md#sandbox
+  check:
+  - jq -e '.permissions.ask | index("mcp__azure__keyvault") and index("mcp__claude_ai_Microsoft_365__*send*")' files/home/.claude/settings.json
+  - bash tests/supply-chain.sh
+  gap: MCP servers still run outside the sandbox with unrestricted network and filesystem access; the agent-browser wrapper
+    is a set of defaults, not a boundary (the binary can be called directly); the ws-mcp-jail confinement is not built.
   risk: 'medium: likelihood low (requires a compromised or malicious server); impact high (server process has the user''s
     privileges).'
-  remediation: Document per server in the AI-BOM (WS-GOV-002) which hosts and paths it needs; where the server supports
-    it, start stdio servers through a bwrap wrapper (files/home/.local/bin/ws-mcp-jail) with a read-only home and a proxy
-    allowlist; test the wrapper in ws-test.
+  remediation: Build files/home/.local/bin/ws-mcp-jail (bwrap, read-only home, no credential folders, per-server proxy
+    allow list from the AI-BOM) and start the stdio servers through it.
   effort: L
 - id: WS-AI-012
   title: Memory write gate for MemPalace
@@ -368,20 +422,25 @@ controls:
   - OWASP-LLM26:LLM09
   status: partial
   evidence:
-  - files/home/.local/bin/ws-learn:86-105 (facts are proposed read-only and saved only after the user picks them)
-  - files/home/.claude/settings.json:244-246 (only MemPalace delete, invalidate and supersede ask)
-  - files/home/.claude/settings.json:409-425,530-545,707-724 (MemPalace hooks on SessionEnd, Stop and PreCompact receive
-    the transcript)
-  check: jq -e '.permissions.ask | index("mcp__mempalace__*delete*")' files/home/.claude/settings.json
-  gap: MemPalace write tools (mempalace_kg_add, mempalace_add_drawer, mempalace_diary_write and others) are not in the
-    always-ask list, so after one 'do not ask again' answer, or under solo's auto mode, the agent writes memory without
-    asking; the lifecycle hooks also hand every transcript to MemPalace, and what it stores from them is decided outside
-    this repository.
+  - files/home/.claude/hooks/memory-gate.sh:20,36-44 (memory write tools recognised; content marked <private> is blocked)
+  - files/home/.claude/hooks/memory-gate.sh:54-63 (asks on every write, also in auto mode and after 'don't ask again';
+    only keys approved in ws-memory pass)
+  - files/home/.claude/settings.json:294-307 (ask rules for every MemPalace write tool and the mempalace CLI)
+  - files/home/.claude/settings.json:541-548,872 (memory gate on PreToolUse for MemPalace tools and on UserPromptSubmit)
+  - files/home/.claude/hooks/memory-filter.sh:3-12 (private spans removed from what the MemPalace and recall hooks receive)
+  - files/home/.claude/hooks/guard.sh:298-307 (ws-memory save-facts/review and MemPalace's own write commands blocked
+    from Claude)
+  - files/home/.local/bin/ws-memory:2-21 (approved saves through a one-tool profile; refuses inside Claude)
+  check:
+  - bash tests/memory-gate.sh
+  - bash tests/guard.sh
+  gap: MemPalace's own lifecycle hooks still store transcript content without a per-item approval (the kit removes only
+    the private spans), a paraphrase of private text is not recognised, and whether Claude Code honours updatedInput together
+    with ask has not been verified at runtime.
   risk: 'high: likelihood medium (indirect injection only needs one successful write); impact high (the user''s global
     instructions tell every session to consult memory first, so a planted fact persists and spreads).'
-  remediation: Add ask rules mcp__mempalace__*add*, *write*, *update*, *put*, *mine*, *patch*, *create*, *sync* to settings.json;
-    give ws-learn a --settings profile that allows only mempalace_kg_add so its approved flow still works headless; document
-    in the AI-BOM what the hooks send and keep (WS-GOV-002).
+  remediation: Ask MemPalace upstream to respect <private> in its miners and to store proposed facts until confirmed;
+    verify updatedInput with ask in a live session.
   effort: S
 - id: WS-AI-013
   title: Memory provenance, expiry and review
@@ -401,16 +460,18 @@ controls:
   - OWASP-LLM26:LLM05
   status: partial
   evidence:
-  - files/home/.local/bin/ws-learn:80-83,104 (local log of saved facts)
-  - files/home/.local/bin/ws-learn:101-102 (asks the model to set source='ws-learn')
-  check: none
-  gap: The source attribute is requested from the model rather than written deterministically, there is no session or
-    evidence id, no expiry and no periodic review of what memory holds.
+  - 'files/home/.claude/hooks/memory-gate.sh:46-52 (provenance stamped by the hook: source, session, project, time)'
+  - files/home/.claude/hooks/audit.sh:13-15 (memory writes keep the sha256 of the input, never the content)
+  - files/home/.local/bin/ws-memory:132-150 (approved saves checked in the tool results)
+  - 'files/home/.local/bin/ws-memory:162-215 (review --older-than 90: keep or invalidate)'
+  - files/home/.local/bin/ws-telemetry:1122-1131 (the weekly report schedules the memory review)
+  check:
+  - bash tests/memory-gate.sh
+  gap: MemPalace has no expiry of its own; the review covers only facts saved through ws-learn (other writes are listed
+    by hash with ws-memory log); provenance lives in a field the server does not protect.
   risk: 'medium: likelihood medium; impact medium (stale or planted facts degrade answers but need another weakness to
     cause actions).'
-  remediation: Make ws-learn call the MemPalace write with fixed source, session_id and evidence fields set by the script
-    (not by the model); add 'ws-learn review --older-than 90' that lists facts with their provenance for keep/invalidate;
-    schedule it from the weekly report.
+  remediation: Ask MemPalace upstream for server-side provenance, a query by added_at or source, and a TTL for agent writes.
   effort: M
 - id: WS-AI-014
   title: Integrity of persistent agent instructions and configuration
@@ -428,22 +489,31 @@ controls:
   - NSA-DAISS:Harden deployment environment configurations
   - SSDF:PS.1
   - OWASP-LLM26:LLM01
-  status: partial
+  status: implemented
   evidence:
-  - files/home/.claude/hooks/guard.sh:82-83,87-88 (blocks writes to .git/hooks and .git/config)
-  - docs/THREAT_MODEL.md:296 (agent editing settings or hooks when the sandbox allows it is an open residual)
-  - files/home/.local/bin/ws-learn:125-131 (generated slash commands are chosen by name and description; the prompt body
-    is written unseen)
-  check: bash tests/guard.sh
-  gap: 'Nothing in the kit blocks writes to ~/.claude/settings*.json, ~/.claude/hooks, ~/.claude/CLAUDE.md, ~/.claude/commands,
-    ~/.claude/agents or ~/.claude.json: only Claude Code''s own prompt for edits outside the working directory stands,
-    which bare leaves to the user and solo''s auto mode to its classifier; ws-learn persists model-written prompts without
-    showing them.'
+  - 'files/home/.claude/hooks/guard.sh:59-81 (protected locations: hard for settings, hooks, ~/.claude.json, plugins,
+    profiles, guard lists, git hooks, /etc/claude-code, kit keys, pinned packages, audit log, markers; soft for CLAUDE.md,
+    commands, agents, skills and the Windows-side .claude folder)'
+  - files/home/.claude/hooks/guard.sh:96-142 (path scan with links and '..' resolved, recursive targets, the owner's 30-minute
+    window)
+  - 'files/home/.claude/hooks/guard.sh:243-356 (shell write targets: redirection, tee, cp, mv, ln, install, rm, sed -i,
+    dd, tar, unzip, rsync, curl -o)'
+  - files/home/.claude/hooks/guard.sh:357-364 (file tools)
+  - files/home/.claude/settings.json:159-195 (Edit deny rules for the same paths)
+  - files/home/.claude/settings.json:935-946 and files/home/.claude/hooks/config-change.sh:1-14 (every configuration change
+    is audited)
+  - files/home/.local/bin/ws-learn:128-150,181,194 (generated commands checked, previewed, description quoted; refuses
+    inside Claude)
+  - docs/adr/0017-defence-in-depth-for-agent-configuration.md
+  check:
+  - bash tests/guard.sh
+  - bash tests/hooks-ws-learn.sh
+  - bash tests/hooks-settings.sh
+  gap: Indirect writes the guard does not parse (a script, python -c, an editor) are only recorded by the ConfigChange
+    audit; in bare and solo --unsandboxed nothing else stops them.
   risk: 'high: likelihood medium (one injected instruction suffices, and solo removes the sandbox write limit); impact
     high (persistent instructions or a disabled hook affect every later session).'
-  remediation: 'Extend guard.sh: block Write/Edit/MultiEdit and Bash redirections, cp, mv, tee, sed -i and ln targeting
-    those paths and ~/.config/git/hooks; add the cases to tests/guard.sh; make ws-learn show each prompt body in an fzf
-    preview and run it through guard-style secret and URL checks before writing.'
+  remediation: Keep the ConfigChange audit and review config-change events in the weekly report.
   effort: S
 - id: WS-AI-015
   title: Multi-agent swarm isolation
@@ -459,20 +529,21 @@ controls:
   - CSF:PR.AA-05
   - WAF-SEC:SE:04
   - ISO42001:A.9
-  status: partial
+  status: implemented
   evidence:
-  - files/home/.local/bin/tmux-swarm:52-53 (user confirms before creating agents)
-  - files/home/.local/bin/tmux-swarm:58-71 (one worktree and branch per agent; task file)
-  - files/home/.local/bin/tmux-swarm:101-121 (integration asks and never pushes)
-  check: 'ws-test (section ''tmux: CI/PR in the status bar, templates, recording, history and swarm'')'
-  gap: Agents start with plain 'claude' at the normal level, so reads are not confined to their worktree, they share the
-    user's credentials and memory, the no-push rule is only an instruction in the task text, there is no per-agent budget,
-    and ws-test covers creation and integration but not isolation.
+  - files/home/.local/bin/tmux-swarm:33-50 (each agent starts at the full level from tmux-level --profile full, with git
+    push and gh pr create/merge denied)
+  - files/home/.local/bin/tmux-swarm:55-63 (refuses to start without --setting-sources; WS_SWARM_LEVEL=normal is audited)
+  - files/home/.local/bin/tmux-swarm:6-20 (one worktree and branch per agent; integration that the user approves; never
+    pushes; --budget stops the swarm with ws-stop-all --session)
+  check:
+  - bash tests/solo-sandbox.sh
+  - 'live: ws-test'
+  gap: Swarm agents still share the MCP servers and memory (the memory gate asks); the per-swarm budget is enforced only
+    while the dashboard runs.
   risk: 'medium: likelihood medium (N agents multiply exposure to the same injected content); impact medium (each agent
     can reach everything a normal tab can).'
-  remediation: Start swarm agents with tmux-level --command full <worktree> so reads are limited to their worktree; add
-    a deny rule for git push in a swarm profile; record per-branch spend through the existing ws-telemetry estimate --by
-    branch and stop the swarm above a budget; extend the swarm test in ws-test to assert the level and the push denial.
+  remediation: Give swarm agents an agent identity (WS-AI-026) and a profile without the MemPalace write tools.
   effort: M
 - id: WS-AI-016
   title: Subagent least privilege
@@ -487,8 +558,10 @@ controls:
   evidence:
   - files/home/.claude/agents/architect.md:5 (disallowedTools Edit, Write, NotebookEdit)
   - files/home/.claude/agents/explorer.md:5 (same)
-  - files/home/.claude/agents/debugger.md:1-6 and sql-quick.md:1-6 (no tool restriction)
-  check: grep -q '^disallowedTools' files/home/.claude/agents/architect.md files/home/.claude/agents/explorer.md
+  - files/home/.claude/agents/debugger.md:1-5 (no tool restriction)
+  - files/home/.claude/agents/sql-quick.md:1-5 (no tool restriction)
+  check:
+  - grep -q '^disallowedTools' files/home/.claude/agents/architect.md files/home/.claude/agents/explorer.md
   gap: debugger and sql-quick inherit every tool of the parent session; sql-quick's 'wait for confirmation' rule is prompt-only.
   risk: 'low: subagents inherit the parent''s permission rules and sandbox, so the gap adds little beyond the parent.'
   remediation: Give sql-quick a tools allowlist (Read, Grep, Glob, Bash) and state in its frontmatter that database clients
@@ -508,17 +581,20 @@ controls:
   - OWASP-LLM26:LLM10
   status: partial
   evidence:
-  - files/home/.local/bin/ws-learn:56-61,94,122 (JSON extraction, required keys, command name regex)
-  - files/home/.local/bin/tmux-swarm:70 (tab names sanitised)
-  - files/home/.local/bin/ws-telegram:277-282,357,404 (proposed commands checked against block lists at offer and at run
-    time)
-  check: 'ws-test (section ''Telegram: notifications and answering with buttons (simulated API)''); bash tests/guard.sh'
-  gap: Command bodies from ws-learn and subtask text from tmux-swarm are written verbatim, and the Telegram run filter
-    is a block list rather than an allow list.
+  - files/home/.local/bin/ws-learn:68-74,115 (JSON extraction and required keys)
+  - 'files/home/.local/bin/ws-learn:128-150 (generated commands checked: name, one-line description, no frontmatter, nothing
+    the guard blocks)'
+  - files/home/.local/bin/ws-learn:76-95 (the full prompt is previewed before it is chosen)
+  - files/home/.local/bin/ws-learn:181 (the description is written as a JSON-quoted scalar)
+  - files/home/.local/bin/ws-telegram:296-324 (▶ Run allow list; the block lists are a second check)
+  check:
+  - bash tests/hooks-ws-learn.sh
+  - bash tests/telegram-approvals.sh
+  gap: Subtask text from tmux-swarm is still written verbatim into each agent's task file.
   risk: 'medium: likelihood low (the inputs come from the user''s own history or goal); impact medium (persisted text
     becomes future instructions).'
-  remediation: Covered by WS-AI-014 (ws-learn preview and checks) and WS-AI-018 (Telegram allow list); add a JSON schema
-    check to ws-learn before choose().
+  remediation: Show the split in the editor (already done) and refuse subtasks that carry shell, frontmatter or guard-blocked
+    text before the agents start.
   effort: S
 - id: WS-AI-018
   title: Read-only allow list for commands run from the phone
@@ -534,19 +610,19 @@ controls:
   - ISO42001:A.9
   - OWASP-LLM26:LLM10
   - OWASP-LLM26:LLM03
-  status: partial
+  status: implemented
   evidence:
-  - files/home/.local/bin/ws-telegram:277-282 (block lists)
-  - files/home/.local/bin/ws-telegram:404-405 (rechecked at run time; refused without sandbox)
-  - files/home/.local/bin/ws-telegram:762-775 (PIN by default)
-  - docs/adr/0013-minimum-protection-floor.md:85-86,122-123
-  check: 'ws-test (section ''Telegram: notifications and answering with buttons (simulated API)'')'
-  gap: The filter is a block list, so any command shape it does not foresee gets a Run button, and the command runs as
-    '!' input outside the sandbox.
+  - 'files/home/.local/bin/ws-telegram:296-324 (RUN_ALLOW: read-only command globs; shell syntax, --output and .exe refused)'
+  - files/home/.local/bin/ws-telegram:439,489 (checked when the button is offered and again before running)
+  - files/home/.local/bin/ws-telegram:874 (▶ Run asks for the PIN)
+  - files/home/.local/bin/ws-telegram:363-367 (never offered in solo or bare tabs)
+  check:
+  - bash tests/telegram-approvals.sh
+  gap: Read-only commands can still run code configured by a hostile repository (git honours the repository's core.fsmonitor
+    and pager settings) and run outside the sandbox; the PIN and a sandboxed tab remain the controls.
   risk: 'medium: likelihood low (needs phone, PIN and a model-proposed command); impact high (runs outside the sandbox).'
-  remediation: 'Replace is_dangerous with is_allowed in ws-telegram: a read-only allow list in files/home/.local/lib/ws-lang/run-allow.conf
-    (git status, ls, gh pr view, az account show…) matched on the parsed first word and subcommand; keep the block lists
-    as a second check; update ws-test cases.'
+  remediation: None required now; keep git commands out of RUN_ALLOW if hostile repositories are opened in Telegram-enabled
+    tabs.
   effort: S
 - id: WS-AI-019
   title: Spend and consumption limits
@@ -562,16 +638,19 @@ controls:
   - OWASP-LLM26:LLM06
   status: partial
   evidence:
-  - files/home/.local/bin/ws-telemetry:935-965 (monthly budgets per project)
-  - files/home/.local/bin/ws-telegram:637,706 (USD per hour and budget alerts at 80 and 100 percent)
-  - docs/THREAT_MODEL.md:319 (alerts inform; they do not stop a session)
-  check: ws-test (section 'Traces, estimation, weekly report and budgets')
-  gap: 'No hard stop: a runaway solo session or swarm keeps spending after 100 percent of the budget.'
+  - files/home/.local/bin/ws-telemetry:939-1003 (budgets.conf hard=1; ws-budget-over lists the projects at or over 100
+    %)
+  - files/home/.local/bin/ws-telemetry:1004-1030 (budgets --override, audited)
+  - files/home/.claude/hooks/ws-runtime-gate.sh:34-49 (holds prompts and tools in those projects; a stale flag fails open
+    after 2 h)
+  - files/home/.local/bin/tmux-swarm:6,16-17 (--budget stops a swarm with ws-stop-all --session)
+  check:
+  - bash tests/spend-gate.sh
+  gap: The hard limit is opt-in (hard=1); there is no per-session cap; the flag is refreshed about once a minute and a
+    stale flag fails open; the per-swarm budget works only while the dashboard runs.
   risk: 'medium: likelihood medium (autonomous and parallel modes exist); impact medium (financial, bounded by the account''s
     own limits).'
-  remediation: 'Add an opt-in hard limit (budgets.conf ''hard=1''): a UserPromptSubmit and PreToolUse hook (ws-budget-gate.sh)
-    reads a cached ''over budget'' flag written by ws-telemetry build and blocks with a clear reason until the user runs
-    ws-telemetry budgets --override; test both states in ws-test.'
+  remediation: Make hard=1 the default for new installs once the owner has used it for a month; add a per-session cap.
   effort: M
 - id: WS-AI-020
   title: Model selection with confirmation
@@ -587,8 +666,9 @@ controls:
   - docs/adr/0009-model-routing-with-confirmation.md
   - files/home/.claude/hooks/ws-routing.sh:3-13
   - files/home/.local/bin/cr:2-12
-  - ws-test section 'Model routing (cr + hook)'
-  check: ws-test (section 'Model routing (cr + hook)')
+  - '''ws-test section Model routing (cr + hook)'''
+  check:
+  - 'live: ws-test'
   gap: None for this objective; model inventory is WS-GOV-002.
   risk: 'low: routing never changes a model without an answer.'
   remediation: Keep.
@@ -614,10 +694,12 @@ controls:
   status: partial
   evidence:
   - files/home/.claude/hooks/lint-on-edit.sh:10-16
-  - files/home/.local/bin/ws-gate:64-67,93,107,123-131
-  - files/home/.claude/hooks/guard.sh:36-47 (no push to main)
+  - 'files/home/.local/bin/ws-gate:95-140 (pre-commit: secrets, size, lint, message)'
+  - files/home/.claude/hooks/guard.sh:169-177 (no push to main or master)
   - files/home/.claude/standards.md:39 (generated code is reviewed like any PR)
-  check: bash tests/guard.sh; ws-test
+  check:
+  - bash tests/guard.sh
+  - bash tests/gate-secret-scan.sh
   gap: 'Review on the remote is assumed, not checked: the kit does not verify branch protection or required reviews on
     the repositories agents push to.'
   risk: 'medium: likelihood medium (confabulated APIs and subtle bugs are common in generated code); impact medium (caught
@@ -648,18 +730,18 @@ controls:
   - OWASP-LLM26:LLM02
   status: partial
   evidence:
+  - 'files/home/.claude/hooks/prompt-screen.sh:3-12 (typed prompts are screened with ws-redact; #allow-secret overrides
+    and is audited)'
+  - files/home/.claude/hooks/prompt-screen.sh:38-53 (block with the redacted line; the prompt is suppressed)
+  - files/home/.claude/settings.json:784-792 (first UserPromptSubmit hook)
   - files/home/.local/bin/ws-redact:13-24
-  - docs/THREAT_MODEL.md:205-209 (where redaction applies)
-  - files/home/.claude/hooks/audit.sh:24 (prompt length only)
-  - ws-test 'ws-redact masks tokens, passwords, Bearer, Azure secrets and private keys'
-  check: 'ws-test (section ''Status bar: personal segments and ws-cache'')'
-  gap: Typed prompts and files the agent reads go to the API unscreened; detection is pattern-based and covers secrets,
-    not personal data.
+  check:
+  - bash tests/hooks-prompt-screen.sh
+  gap: Files the agent reads and text reused from tmux panes are not screened; detection is pattern-based and covers secrets,
+    not personal data; exit 2 and suppressOriginalPrompt on UserPromptSubmit have not been verified at runtime.
   risk: 'medium: likelihood medium (pasting a connection string or a customer record is a common slip); impact medium
     (data leaves to the provider by design).'
-  remediation: Add a UserPromptSubmit hook prompt-screen.sh that runs the prompt through ws-redact and blocks (decision
-    'block' with the reason) when redaction changes it, with an explicit '#allow-secret' bypass that is logged; reuse
-    it for tmux-pane before pasting.
+  remediation: Verify the block in a live session; screen Read results of files outside the working directory.
   effort: S
 - id: WS-AI-023
   title: Minimisation and retention of prompt and transcript content
@@ -685,8 +767,9 @@ controls:
   - files/home/.local/bin/ws-otel:54-57,224,235,241-253 (0700/0600, masking, 395-day retention)
   - files/home/.claude/settings.json:20 (transcripts kept 365 days)
   - docs/adr/0014-local-opentelemetry-collector.md
-  - docs/THREAT_MODEL.md:363-371 (accepted risk)
-  check: ws-test (section 'Local OpenTelemetry collector (ws-otel)')
+  - docs/THREAT_MODEL.md#accepted-risks
+  check:
+  - 'live: ws-test'
   gap: Content capture is on by default and kept 13 months in clear text, and transcripts 12 months; there is no encryption
     at rest beyond the disk.
   risk: 'medium: likelihood low (needs local compromise or a leaked backup); impact high (full conversations, possibly
@@ -712,9 +795,11 @@ controls:
   - OWASP-LLM26:LLM05
   status: partial
   evidence:
-  - files/home/.claude/settings.json:647-660 (recall hook on every prompt)
+  - files/home/.claude/settings.json:818-832 (recall hook on every prompt, wrapped by memory-filter.sh)
   - 'files/mcp-servers.json:7,21 (HF_HUB_OFFLINE=1: no model download at run time)'
-  check: jq -e '.recall.env.HF_HUB_OFFLINE == "1" and .mempalace.env.HF_HUB_OFFLINE == "1"' files/mcp-servers.json
+  - docs/governance/AI-BOM.md#hooks
+  check:
+  - jq -e '.recall.env.HF_HUB_OFFLINE == "1" and .mempalace.env.HF_HUB_OFFLINE == "1"' files/mcp-servers.json
   gap: The hook and corpora live outside this repository, so the kit cannot show how passages are labelled or what the
     corpora contain.
   risk: 'low: the corpus is the owner''s own book library; likelihood low.'
@@ -734,18 +819,23 @@ controls:
   - WAF-SEC:SE:12
   - ISO42001:A.6
   - MS-RAI:Accountability
-  status: partial
+  status: implemented
   evidence:
-  - files/home/.local/bin/tmux-level:121-135 (stops Claude in one pane)
-  - files/home/.local/bin/ws-telegram:963-964 (ws-telegram off and on)
-  - files/home/.local/bin/tmux-swarm:123-135 (clean, asks)
-  check: none
-  gap: Stopping is per pane or per tool; there is no single emergency stop that interrupts every Claude pane, stops the
-    Telegram service and disables remote run.
+  - files/home/.local/bin/ws-stop-all:1-24 (marker, Telegram off, audit event, Escape and /exit in every Claude pane,
+    --pane, --session, --clear)
+  - files/home/.claude/hooks/ws-runtime-gate.sh:5-6,23-32 (every prompt and tool is held while the marker exists)
+  - files/home/.local/bin/ws-telegram:38,486,858 (Telegram runs and answers nothing while the marker exists)
+  - files/home/.claude/settings.json:179-187 (deny clearing the stop and editing the marker from Claude)
+  - files/home/.config/tmux-claude/menu-claude.tmux (Menu → Claude → Emergency stop)
+  - docs/governance/AI-INCIDENT-RESPONSE.md#common-steps
+  check:
+  - bash tests/audit-anomaly.sh
+  - bash tests/spend-gate.sh
+  - 'live: ws-stop-all --status'
+  gap: Panes that do not exit within the wait are reported by name and left to the owner; a bare or unsandboxed agent
+    could delete the marker file (deny rules and the guard stop the usual forms).
   risk: 'medium: likelihood low (incidents are rare); impact medium (slow containment while several agents keep acting).'
-  remediation: 'Add ws-stop-all: sends Escape then /exit to every pane running Claude (reuse claude_running from tmux-solo),
-    runs ws-telegram off, writes a marker read by ws-telegram to refuse runs, and logs an audit event; menu entry and
-    ws-test case.'
+  remediation: Rehearse it once a year with the incident playbooks.
   effort: S
 - id: WS-AI-026
   title: Agent identity separation and least-privilege credentials
@@ -767,19 +857,22 @@ controls:
   - ISO42001:A.3
   status: partial
   evidence:
-  - files/home/.local/bin/claude-account:2-12 (separate work and personal Claude logins)
-  - files/home/.claude/hooks/guard.sh:61-72 (production subscription and context blocked by name)
-  - files/home/.claude/settings.json:21-24 (no commit attribution), files/home/.claude/hooks/guard.sh:53-54 (Co-authored-by
-    blocked by policy)
-  check: bash tests/guard.sh
-  gap: Excluded commands use the user's own az, gh, aws and kubectl sessions; agent actions are indistinguishable from
-    the user's in cloud and git logs.
+  - 'files/home/.local/bin/tmux-level:31-36,122-130 (--agent NAME: WS_AGENT, AZURE_CONFIG_DIR, GH_CONFIG_DIR and KUBECONFIG
+    under ~/.config/ws-agent/NAME; tab option @cagent)'
+  - files/home/.claude/hooks/guard.sh:235-241 (in an agent tab, switching az, gh or kubectl to other credentials or logging
+    in is blocked)
+  - files/home/.claude/settings.json:178,1017 (~/.config/ws-agent denied to Read and to sandboxed reads)
+  - files/home/.local/bin/claude-account:3-6 (separate work and personal Claude logins)
+  - docs/adr/0020-agent-scoped-identities.md
+  check:
+  - bash tests/guard.sh
+  - 'live: ws-test'
+  gap: The reduced-scope identities themselves are created by the owner; excluded commands in tabs without --agent still
+    use the user's own sessions; the Agent-Session commit trailer is not built, so commits by agents look like the user's.
   risk: 'medium: likelihood medium; impact high (any credential the user holds is reachable from normal-level tabs through
     excluded commands).'
-  remediation: 'Offer agent-scoped config directories per tab (AZURE_CONFIG_DIR, GH_CONFIG_DIR, KUBECONFIG set by tmux-level
-    to ~/.config/ws-agent/<name>/) logged in with reduced-scope identities; add an optional commit trailer ''Agent-Session:
-    <id>'' written by a prepare-commit-msg hook (allowed by the policy, which forbids only Co-authored-by); document in
-    an ADR.'
+  remediation: Create one reduced-scope identity per recurring agent task; add the optional Agent-Session trailer through
+    a prepare-commit-msg step in ws-gate.
   effort: L
 - id: WS-AI-027
   title: Adversarial tests of the agent controls
@@ -800,16 +893,21 @@ controls:
   - OWASP-LLM26:LLM01
   status: partial
   evidence:
-  - 'files/home/.local/bin/ws-audit:288-314 (--ai: write outside, read ~/.ssh and Claude credentials, reach a non-allowed
+  - tests/interop-adversarial.sh (Windows executables ask, credential folders denied, a README injection that asks for
+    a push to main is blocked by the guard and the gate, Telegram refuses .exe; --live probes interop from bubblewrap)
+  - 'files/home/.local/bin/ws-audit:317-349 (--ai: write outside, read ~/.ssh and Claude credentials, reach a non-allowed
     domain)'
   - tests/guard.sh (evasions, false positives, fail-closed)
-  check: bash tests/guard.sh; ws-audit --ai
-  gap: No test plants an injected instruction and checks the outcome, and none tries Windows interop (cmd.exe, powershell.exe,
-    curl.exe) or reading /mnt/c outside the denied folders from the sandbox.
+  - tests/hooks-untrusted.sh (planted injection markers in tool output)
+  check:
+  - bash tests/interop-adversarial.sh
+  - bash tests/guard.sh
+  - bash tests/hooks-untrusted.sh
+  gap: No test runs the real Claude against a planted injection and checks the outcome (ws-audit --ai has no such case
+    yet), and the bubblewrap interop probe has not run on a live machine.
   risk: 'medium: likelihood medium (unknown bypasses stay unknown); impact high.'
-  remediation: 'Add ws-audit --ai cases: run ''/mnt/c/Windows/System32/cmd.exe /c echo'' and ''powershell.exe -c Get-Date''
-    from a sandboxed command, read a file under /mnt/c/Users/<u>/Documents in full level, and a fixture repo whose README
-    instructs a git push; each must be blocked or asked.'
+  remediation: Add ws-audit --ai cases with cmd.exe and powershell.exe from a sandboxed command and a fixture repository
+    whose README asks for a push; run tests/interop-adversarial.sh --live once.
   effort: M
 - id: WS-AI-028
   title: Failure containment between components
@@ -823,11 +921,14 @@ controls:
   - MS-RAI:Reliability and Safety
   status: implemented
   evidence:
-  - files/home/.claude/hooks/guard.sh:15-18 (fails closed)
-  - files/home/.claude/settings.json:454-473,494-507 (slow SessionStart hooks through ws-cache with caps)
-  - files/home/.local/bin/ws-kit-update:50-59 (rollback on failed install or tests)
-  - files/home/.local/bin/tmux-swarm:113-117 (integration stops on conflict)
-  check: 'bash tests/guard.sh; ws-test (section ''Status bar: personal segments and ws-cache'')'
+  - files/home/.claude/hooks/guard.sh:28-33,39 (fails closed)
+  - files/home/.claude/settings.json:500-510 (onFailure block on the guard)
+  - files/home/.claude/settings.json:597-680 (slow SessionStart hooks through ws-cache with caps)
+  - files/home/.local/bin/ws-kit-update:104-115 (rollback on failed install or tests)
+  - files/home/.local/bin/tmux-swarm:18-19 (integration stops on conflict)
+  check:
+  - bash tests/guard.sh
+  - 'live: ws-test'
   gap: None for this objective.
   risk: 'low: tested.'
   remediation: Keep.
@@ -841,10 +942,11 @@ controls:
   - NIST-AI-RMF:MEASURE-2.8
   status: partial
   evidence:
-  - files/home/.local/bin/ws-telegram:150 ('[Reply from Telegram]' prefix)
-  - files/home/.local/bin/tmux-swarm:61-68 (task file written by the user-approved split)
-  - 'files/home/.claude/settings.json:856 (teammateMode in-process: Claude Code''s own agent teams)'
-  check: 'ws-test (section ''Telegram: notifications and answering with buttons (simulated API)'')'
+  - files/home/.local/bin/ws-telegram:162 ('[Reply from Telegram]' prefix)
+  - files/home/.local/bin/tmux-swarm:73-88 (task text from a user-approved split)
+  - 'files/home/.claude/settings.json:1029 (teammateMode in-process: Claude Code''s own agent teams)'
+  check:
+  - 'live: ws-test'
   gap: The kit adds no channel between agents beyond the task file; agent-team messaging is Claude Code's and outside
     the kit's control.
   risk: 'low: no kit-owned inter-agent channel exists.'
@@ -866,19 +968,20 @@ controls:
   - WAF-SEC:SE:10
   - NSA-DAISS:Actively monitor model behavior
   - CAF:secure.detect-threats
-  status: partial
+  status: implemented
   evidence:
-  - files/home/.claude/hooks/ws-sandbox-notice.sh:2-13 (records network, credential-read and write blocks; tmux message)
-  - files/home/.claude/hooks/guard.sh:23-27 (blocks logged)
-  - 'ws-test ''sandbox notices: logs network, credential reads and writes'''
-  check: 'ws-test (section ''Status bar: personal segments and ws-cache'')'
-  gap: Events are recorded and shown, but nothing correlates them (for example five blocks in ten minutes in one session)
-    or alerts the phone.
+  - files/home/.local/bin/ws-anomaly:4-12,52-80 (guard blocks, denials and sandbox hits per session in a window; threshold)
+  - files/home/.local/bin/tmux-watch:8,77-90,126 (🚨 in the status bar and a Windows alert with the pane)
+  - files/home/.local/bin/ws-telegram:780-786 (phone alert with a 'Stop this tab' button)
+  - 'files/home/.local/bin/ws-telegram:645-662 (h: ws-stop-all --pane)'
+  - files/home/.claude/hooks/ws-sandbox-notice.sh:2-13 (sandbox hits recorded)
+  check:
+  - bash tests/audit-anomaly.sh
+  gap: Thresholds are counts in a window (5 in 10 minutes by default); slow probing below the threshold and unusual destinations
+    reached by excluded commands are not detected.
   risk: 'medium: likelihood medium; impact medium (an injected agent probing for a way out goes unnoticed if the user
     is away).'
-  remediation: In ws-telegram's minute loop, read audit 'blocked' and sandbox-*.jsonl events, alert above a threshold
-    per session and offer a 'stop this tab' button that calls ws-stop-all for that pane (WS-AI-025); test with fixture
-    logs in ws-test.
+  remediation: Add a daily summary of blocked destinations to the weekly report.
   effort: M
 - id: WS-SEC-001
   title: OS sandbox for agent commands
@@ -898,9 +1001,10 @@ controls:
   - OWASP-LLM26:LLM03
   status: implemented
   evidence:
-  - files/home/.claude/settings.json:749-753
-  - files/home/.local/bin/ws-audit:253-259 (enabled, no unsandboxed retry, failIfUnavailable, bwrap works)
-  check: jq -e '.sandbox.enabled and .sandbox.failIfUnavailable and (.sandbox.allowUnsandboxedCommands == false)' files/home/.claude/settings.json
+  - files/home/.claude/settings.json:951-954
+  - files/home/.local/bin/ws-audit:257-266 (enabled, no unsandboxed retry, failIfUnavailable, bwrap works)
+  check:
+  - jq -e '.sandbox.enabled and .sandbox.failIfUnavailable and (.sandbox.allowUnsandboxedCommands == false)' files/home/.claude/settings.json
   gap: None for sandboxed commands; levels without a sandbox are WS-AI-004 and WS-SEC-003.
   risk: 'low: verified by ws-audit.'
   remediation: Keep.
@@ -919,19 +1023,21 @@ controls:
   - NSA-DAISS:Enforce strict access controls
   - NSA-AIDATA:BP5
   - OWASP-LLM26:LLM02
-  status: partial
+  status: implemented
   evidence:
-  - files/home/.claude/settings.json:775-815 (sandbox denyRead)
-  - files/home/.claude/settings.json:93-130,145-147 (deny Read rules)
-  - files/home/.local/bin/ws-audit:262-266
-  - ws-test 'the sandbox does not let the Windows profile credentials be read'
-  check: 'ws-test (section ''Status bar: personal segments and ws-cache''); ws-audit --ai (escape: read ~/.ssh, read Claude
-    credentials)'
-  gap: In bare and solo mode only the Read deny rules apply, and a Bash command such as 'tar c ~/.ssh' or 'base64 ~/.azure/msal_token_cache.json'
-    is not covered by them or by the guard.
+  - files/home/.local/lib/ws-credential-paths.txt (one list, the same entries as sandbox.filesystem.denyRead)
+  - files/home/.claude/hooks/guard.sh:69-81 (the list, its /etc copy and a built-in minimum)
+  - files/home/.claude/hooks/guard.sh:243-356 ($HOME, ~, '..', links, globs, $(…), @file and --opt=value forms in commands)
+  - files/home/.claude/hooks/guard.sh:365-368 (Read, Grep and Glob through a link or '..')
+  - files/home/.claude/settings.json:976-1019 (sandbox denyRead on both sides of WSL)
+  - files/home/.claude/settings.json:98-152,178 (Read deny rules)
+  check:
+  - bash tests/guard.sh
+  - bash tests/hooks-settings.sh
+  gap: Commands the guard cannot parse (python -c, base64 of a variable, a script) can still read a store in bare and
+    in solo --unsandboxed, where no sandbox denyRead applies.
   risk: 'medium: likelihood medium in solo; impact high (cloud and git credentials).'
-  remediation: Add a guard.sh Bash rule that blocks any unquoted word resolving to a credential path from one list shared
-    with settings.json denyRead (files/home/.local/lib/ws-credential-paths.txt); add evasion cases to tests/guard.sh.
+  remediation: 'None beyond the sandbox: keep bare and --unsandboxed for short, attended work.'
   effort: S
 - id: WS-SEC-003
   title: Network egress control per protection level
@@ -948,17 +1054,19 @@ controls:
   - OWASP-LLM26:LLM02
   status: partial
   evidence:
-  - files/home/.claude/settings.json:754-772 (17-domain allowlist for sandboxed commands)
-  - files/home/.local/bin/ws-audit:267-270 (fails on overly broad domains)
-  - files/home/.local/bin/ws-audit:381-383 (telemetry endpoints local only)
-  check: jq -e '.sandbox.network.allowedDomains | all(test("^[*][.]?(com|net|org|io)$") | not)' files/home/.claude/settings.json
-  gap: Excluded commands, MCP servers, hooks, WebFetch and every command in bare and solo mode have unrestricted egress,
-    and *.githubusercontent.com and github.com in the allowlist are possible exfiltration endpoints.
+  - files/home/.claude/settings.json:955-975 (allowedDomains for sandboxed commands)
+  - files/home/.claude/settings.json:64-68 (WebFetch allowed without a prompt only for five documentation domains; others
+    ask)
+  - files/home/.local/bin/ws-audit:276-278 (fails on overly broad domains)
+  - files/home/.config/claude-solo/settings.json:1-6 (solo keeps the sandbox and its allow list)
+  check:
+  - jq -e '.sandbox.network.allowedDomains | all(test("^[*][.]?(com|net|org|io)$") | not)' files/home/.claude/settings.json
+  - bash tests/solo-sandbox.sh
+  gap: Excluded commands, MCP servers and hooks have unrestricted egress at every level, as do commands in bare and solo
+    --unsandboxed; github.com and *.githubusercontent.com in the allow list remain possible exfiltration endpoints.
   risk: 'high: likelihood medium (exfiltration is the usual goal of an injection); impact high (source and secrets leave
     the machine).'
-  remediation: Keep the sandbox on in solo (WS-AI-004); add WebFetch domain rules (permissions.allow WebFetch(domain:learn.microsoft.com)
-    etc., ask otherwise) to settings.json; document per-level egress in THREAT_MODEL.md; add ws-audit --ai cases that
-    POST to an allowed domain and to a non-allowed one.
+  remediation: Confine MCP servers (WS-AI-011); route excluded commands through a proxy with a per-tool allow list.
   effort: M
 - id: WS-SEC-004
   title: Git gate on commit and push
@@ -978,17 +1086,22 @@ controls:
   - OWASP-LLM26:LLM02
   status: partial
   evidence:
+  - files/home/.local/bin/ws-gate:95-108 (a missing gitleaks blocks the commit unless ws.gate.allowNoGitleaks, which is
+    logged)
+  - files/home/.local/bin/ws-gate:13-14,44-67 (ws-gate bypasses lists local core.hooksPath, ws.gate.skip and allowNoGitleaks)
+  - files/home/.local/bin/ws-audit:439-451 (global gate present; a local core.hooksPath or allowNoGitleaks fails, ws.gate.skip
+    warns)
   - files/home/.config/git/hooks/_chain:13-18
-  - files/home/.local/bin/ws-gate:64-67,76-77,93,107,123-131
-  - install.sh:145-153 (sets core.hooksPath if unset)
-  - files/home/.local/bin/ws-audit:328-329
-  check: ws-audit (pillar Security, 'global git gate'); git config --global core.hooksPath
-  gap: gitleaks and osv-scanner are skipped with a warning when missing, a repository-local core.hooksPath replaces the
-    chain, and ws.gate.skip disables checks per repository.
+  - install.sh:263-270 (sets core.hooksPath if unset)
+  - files/home/.claude/hooks/guard.sh:181-185 (Claude cannot bypass the gate)
+  check:
+  - bash tests/gate-secret-scan.sh
+  - 'live: ws-gate bypasses'
+  - 'live: git config --global --get core.hooksPath'
+  gap: osv-scanner, checkov and the other non-secret checks are still skipped with a warning when missing; a repository-local
+    core.hooksPath is reported by ws-audit (fail) and ws.gate.skip only warns; neither is blocked.
   risk: 'medium: likelihood low (the user controls these settings); impact high (a secret pushed to a public remote).'
-  remediation: Make the pre-commit secret scan fail when gitleaks is missing unless ws.gate.allowNoGitleaks is set (ADR
-    0013 'git gate with mandatory gitleaks'); make ws-audit list repositories with a local core.hooksPath or ws.gate.skip;
-    add both to ws-test.
+  remediation: Make osv-scanner mandatory on push the same way as gitleaks once ws-tools installs it everywhere.
   effort: S
 - id: WS-SEC-005
   title: Guard against dangerous command forms
@@ -1005,10 +1118,11 @@ controls:
   - OWASP-LLM26:LLM03
   status: implemented
   evidence:
-  - files/home/.claude/hooks/guard.sh:29-83
-  - tests/guard.sh (61 cases)
-  - tests/run.sh:228-229
-  check: bash tests/guard.sh
+  - files/home/.claude/hooks/guard.sh:164-242 (push, gate bypass, Co-authored-by, download and run, secrets, production,
+    PowerShell, git hooks, agent identity)
+  - tests/guard.sh (217 cases)
+  check:
+  - bash tests/guard.sh
   gap: 'Regular expressions over the command line: indirection (scripts, aliases, eval, bash -c with quoted payload) passes,
     as documented.'
   risk: 'medium: likelihood low-medium (needs a deliberate evasion); impact high. The residual is documented in docs/THREAT_MODEL.md:171-175.'
@@ -1024,16 +1138,19 @@ controls:
   - CSF:PR.AA-05
   - CIS-v8:6.8
   - WAF-SEC:SE:04
-  status: partial
+  status: implemented
   evidence:
-  - files/home/.claude/hooks/guard.sh:20,61-72
-  - tests/guard.sh (production named in the command)
-  check: bash tests/guard.sh
-  gap: Production is recognised by name (prod|prd|produccion); a production subscription or context without those letters
-    is not protected, and Azure MCP tools are not checked against it.
+  - 'files/home/.claude/hooks/guard.sh:50,143-160 (production.conf: subscriptions by ID or name, kube contexts; then the
+    name pattern)'
+  - files/home/.claude/hooks/guard.sh:204-222 (az --subscription, /subscriptions/<id>, ARM_ and AZURE_SUBSCRIPTION_ID,
+    the active subscription; kubectl and helm contexts)
+  - files/home/.claude/hooks/guard.sh:369-380 (mutating Azure MCP tools that name a production subscription)
+  check:
+  - bash tests/guard.sh
+  gap: Without ~/.config/ws-guard/production.conf only the name pattern applies; a production resource reached without
+    naming its subscription (a resource ID from another tool) is not recognised.
   risk: 'medium: likelihood low; impact high.'
-  remediation: Read an explicit list of production subscription IDs and kube contexts from ~/.config/ws-guard/production.conf
-    in guard.sh (name regex stays as fallback) and apply it to mcp__azure__* tool inputs; tests for both.
+  remediation: Create production.conf on every workstation that holds production access.
   effort: M
 - id: WS-SEC-007
   title: Secrets in the OS vault, never in files or argv
@@ -1052,10 +1169,12 @@ controls:
   status: implemented
   evidence:
   - files/home/.local/bin/ws-secret:1-30
-  - files/home/.claude/settings.json:136-137
-  - files/home/.claude/hooks/guard.sh:59-60
-  - files/home/.local/bin/ws-audit:282-283 (secret-looking environment variables)
-  check: bash tests/guard.sh; jq -e '.permissions.deny | index("Bash(ws-secret get*)")' files/home/.claude/settings.json
+  - files/home/.claude/settings.json:141-142
+  - files/home/.claude/hooks/guard.sh:194-199
+  - files/home/.local/bin/ws-audit:311 (secret-looking environment variables)
+  check:
+  - bash tests/guard.sh
+  - jq -e '.permissions.deny | index("Bash(ws-secret get*)")' files/home/.claude/settings.json
   gap: No rotation schedule for the Telegram token, PIN and age key (see WS-GOV-010).
   risk: 'low: storage and access are sound; rotation is tracked separately.'
   remediation: Keep.
@@ -1076,12 +1195,14 @@ controls:
   - OWASP-LLM26:LLM02
   status: implemented
   evidence:
-  - files/home/.claude/hooks/guard.sh:89-91
-  - files/home/.local/bin/ws-gate:64-67
-  - export.sh:35-38
-  - .github/workflows/ci.yml:83-90
-  - ws-test 'with something that looks like a secret it does not commit'
-  check: bash tests/guard.sh; bash tests/run.sh
+  - files/home/.claude/hooks/guard.sh:357-364 (writes with a secret are blocked)
+  - files/home/.local/bin/ws-gate:95-108
+  - export.sh
+  - .github/workflows/ci.yml:68-91 (gitleaks in CI)
+  - '''ws-test: with something that looks like a secret it does not commit'''
+  check:
+  - bash tests/guard.sh
+  - bash tests/gate-secret-scan.sh
   gap: Pattern-based; documented as a safety net.
   risk: 'low: layered and tested.'
   remediation: Keep.
@@ -1100,8 +1221,9 @@ controls:
   evidence:
   - files/home/.local/bin/ws-redact:13-24
   - files/home/.local/bin/ws-handoff:40
-  - docs/THREAT_MODEL.md:212-215
-  check: 'ws-test (section ''tmux: pane → Claude, palette, notify me, extract, labels, focus, logs'')'
+  - docs/THREAT_MODEL.md#secrets
+  check:
+  - 'live: ws-test'
   gap: Windows notifications from win-notify.sh are not redacted and tmux-record .cast files keep the raw screen.
   risk: 'low: both stay on the local machine.'
   remediation: Pipe notification text through ws-redact in files/home/.claude/hooks/win-notify.sh; make tmux-record delete
@@ -1125,17 +1247,20 @@ controls:
   - ISO42001:A.6
   - MS-RAI:Transparency
   - NSA-AGENTIC:accountability risks
-  status: partial
+  status: implemented
   evidence:
-  - files/home/.claude/hooks/audit.sh:14-26
-  - files/home/.claude/settings.json:364,405,450,635,693 (hooked on PreToolUse, SessionEnd, SessionStart, UserPromptSubmit,
-    PermissionDenied)
-  check: none
-  gap: The log keeps the command and file path but not the WebFetch URL, the WebSearch query or MCP tool arguments, so
-    the source of an injection cannot be traced.
+  - files/home/.claude/hooks/audit.sh:30-46 (command redacted, file path, WebFetch URL without query string, search query,
+    500 redacted characters of MCP input, input hash for MemPalace)
+  - files/home/.claude/hooks/untrusted-content.sh:74 (injection-suspect lines with source and URL)
+  - files/home/.claude/settings.json:490-510,784-800,878-885 (hooked on PreToolUse, UserPromptSubmit, PermissionDenied
+    and session events)
+  check:
+  - bash tests/audit-chain.sh
+  - bash tests/hooks-untrusted.sh
+  gap: The MCP input is truncated to 500 characters, and what a tool returned is not logged (it is in the transcript and,
+    with content capture on, in otel/).
   risk: 'medium: likelihood medium (needed in every injection investigation); impact medium.'
-  remediation: Add url (.tool_input.url), query (.tool_input.query) and a redacted, 500-character summary of MCP tool_input
-    to the jq object in audit.sh; add a ws-test case with fixture inputs.
+  remediation: None required.
   effort: S
 - id: WS-SEC-011
   title: Audit log integrity and retention
@@ -1151,17 +1276,24 @@ controls:
   - NSA-AIDATA:BP3
   - ISO42001:A.6
   - NSA-AGENTIC:accountability risks
-  status: missing
+  status: partial
   evidence:
-  - files/home/.claude/hooks/audit.sh:9-10 (directory 0700; files older than 90 days deleted)
-  - docs/THREAT_MODEL.md:303 (no integrity protection)
-  check: none
-  gap: Plain JSONL files the user (and an unsandboxed agent) can edit, with no hash chain, no signature and no off-box
-    copy; deletion after 90 days.
+  - files/home/.claude/hooks/audit.sh:8-12,51-62 (each entry carries prev, the sha256 of the line before it; first line
+    of a day links to the previous day; writers take a lock)
+  - files/home/.claude/hooks/audit.sh:63-75 (on session end the head hash goes to an anchor file on the Windows side)
+  - files/home/.claude/hooks/audit.sh:13,23 (395-day retention)
+  - 'files/home/.local/bin/ws-audit:350-423 (ws-audit --verify-log: chain and anchors, reports and never repairs)'
+  - files/home/.local/bin/ws-audit:435-438 (the Security pillar fails on a broken chain)
+  - files/home/.local/bin/ws-backup-lite:124-131 (a copy of the anchors travels with the light backup, and so off the
+    machine with ws-backup-cloud)
+  check:
+  - bash tests/audit-chain.sh
+  - 'live: ws-audit --verify-log'
+  gap: The Telegram event logs are not chained, and an agent in bare or solo --unsandboxed can still edit the anchor file
+    on the Windows side (deny rules and the guard stop the usual forms); the off-box copy is only as recent as the last
+    light backup.
   risk: 'medium: likelihood low (needs a deliberate cover-up); impact medium (repudiation during an incident).'
-  remediation: Make audit.sh write a prev_hash field (sha256 of the previous line) and, at session end, append the day's
-    head hash to a Windows-side file (%UserProfile%\ws-telemetry\audit-anchors.txt); add ws-audit --verify-log; keep 395
-    days to match telemetry; include the anchor file in ws-backup-cloud.
+  remediation: Chain the Telegram event log the same way; write the anchors to a store the agent cannot reach.
   effort: M
 - id: WS-SEC-012
   title: Local telemetry collector hardening
@@ -1178,8 +1310,9 @@ controls:
   - files/home/.local/bin/ws-otel:310 (binds 127.0.0.1)
   - files/home/.local/bin/ws-otel:224,235 (0700/0600)
   - files/home/.local/bin/ws-otel:278-282 (16 MiB body cap)
-  - ws-test 'the collector starts in the background and listens only on 127.0.0.1'
-  check: ws-test (section 'Local OpenTelemetry collector (ws-otel)')
+  - '''ws-test: the collector starts in the background and listens only on 127.0.0.1'''
+  check:
+  - 'live: ws-test'
   gap: A gzip body is decompressed without a size cap (ws-otel:288-289), and the collector has no authentication (documented).
   risk: 'low: local only; a decompression bomb stops telemetry, not agents.'
   remediation: Decompress with zlib.decompressobj and stop past MAX_BODY*8, returning 413; add a ws-test case with a small
@@ -1200,19 +1333,19 @@ controls:
   - NSA-DAISS:Prepare for high availability (HA) and disaster recovery (DR)
   status: partial
   evidence:
-  - files/home/.local/bin/ws-backup-cloud:3,14-16,22,90-94 (cloud copy always age-encrypted, keeps 7)
-  - files/home/.local/bin/ws-backup-lite:19,107-108,127-128 (umask 077; age only if recipients exist; keeps 14)
-  - files/home/.local/bin/ws-backup-lite:67-71 (credentials excluded)
-  - files/home/.local/bin/ws-backup:6 (conversation copy to %UserProfile%\.claude-wsl-backup)
-  - docs/THREAT_MODEL.md:275-278
-  check: ws-test (section 'Backup and restore')
-  gap: The local light backup is in clear unless age recipients are configured, and the conversation copy and the tmux
-    resurrect copies on the Windows side are in clear with no expiry.
+  - files/home/.local/bin/ws-backup-lite:13-15,164-179 (encrypted to the age recipients and the cloud key; otherwise a
+    warning and an UNENCRYPTED log line)
+  - files/home/.local/bin/ws-backup-lite:16-23,44-82 (expiry of the Windows-side copies after WS_BACKUP_COPY_DAYS, 30)
+  - files/home/.local/bin/ws-restore-lite:12-13,50-69 (restores encrypted backups, with the cloud key by default)
+  - files/home/.local/bin/ws-audit:456-463 (fails when the last light backup is unencrypted)
+  - files/home/.local/bin/ws-backup-cloud:3,14-16 (cloud copy always encrypted, keeps 7)
+  check:
+  - bash tests/backup-encryption.sh
+  gap: The Windows-side mirrors (%UserProfile%\.claude-wsl-backup and .tmux-resurrect-backup) are still plain copies;
+    expiry removes only copies whose original is gone; the light backup is made in clear (and reported) when no key exists.
   risk: 'medium: likelihood low (needs access to the Windows profile or its sync); impact high (all conversations and
     pane contents).'
-  remediation: Make ws-backup-lite reuse ws-backup-cloud's recipient by default (encrypt=1 when either file exists, warn
-    otherwise); add a retention pass (WS_BACKUP_COPY_DAYS, default 30) to ws-backup for .claude-wsl-backup and .tmux-resurrect-backup;
-    tests in ws-test test_backup.
+  remediation: Encrypt the conversation mirror or move it under the encrypted cloud copy.
   effort: M
 - id: WS-SEC-014
   title: Backup restore verification
@@ -1226,11 +1359,13 @@ controls:
   - NSA-DAISS:Prepare for high availability (HA) and disaster recovery (DR)
   status: implemented
   evidence:
-  - files/home/.local/bin/ws-backup-lite:124 (sha256)
-  - files/home/.local/bin/ws-restore-lite:88-89 (test restore checks no credentials)
+  - files/home/.local/bin/ws-backup-lite:188 (sha256 of each backup)
+  - files/home/.local/bin/ws-restore-lite:5-8 (test restore checks there are no credentials)
   - files/home/.local/bin/ws-backup-cloud:8-10 (decrypt test)
-  - files/home/.local/bin/ws-audit:347-352 (backup freshness)
-  check: ws-test (section 'Backup and restore'); ws-audit (pillar Resilience)
+  - files/home/.local/bin/ws-audit:490-504 (backup freshness)
+  check:
+  - bash tests/backup-encryption.sh
+  - 'live: ws-test'
   gap: None for this objective.
   risk: 'low: tested.'
   remediation: Keep.
@@ -1253,19 +1388,25 @@ controls:
   - NSA-DAISS:Update and patch regularly
   - ISO42001:A.6
   - OWASP-LLM26:LLM04
-  status: partial
+  status: implemented
   evidence:
-  - files/home/.local/bin/ws-kit-update:24-48 (fetch, fast-forward only, refuses with local changes)
-  - files/home/.local/bin/ws-kit-update:50-59 (tests and rollback)
-  - files/home/.local/bin/ws-telegram:665-669 (hourly check only; never applies)
-  - docs/THREAT_MODEL.md:354-355 (trusts the kit's remote)
-  check: none
-  gap: No signed tags or commits are verified; whoever can push to the remote changes hooks and settings on the next update.
+  - 'files/home/.local/bin/ws-kit-update:44-55 (verify_release: annotated tag, tag name matches, git verify-tag against
+    the installed allowed_signers and allowed_signers.local)'
+  - files/home/.local/bin/ws-kit-update:26,57-80 (tags fetched into refs/ws-kit/tags; the branch tip is ignored; exit
+    11 when refused)
+  - files/home/.local/bin/ws-kit-update:91-102 (merge --ff-only to the verified tag)
+  - files/home/.local/bin/ws-kit-update:95-98 (--allow-unsigned is logged and sent to Telegram)
+  - files/home/.config/ws-kit/allowed_signers (shipped public keys)
+  - files/home/.local/bin/ws-telegram:756-760 (hourly check; never applies)
+  - .github/workflows/release.yml:27-37 (CI verifies the tag signature)
+  - docs/adr/0018-supply-chain-pinning-and-signed-releases.md
+  check:
+  - bash tests/supply-kit-update.sh
+  gap: allowed_signers ships no key yet, so every update is refused (exit 11) until the maintainer adds the release key;
+    --allow-unsigned remains for forks.
   risk: 'high: likelihood low (requires compromise of the maintainer''s GitHub account or token); impact high (code that
     runs outside the sandbox on every installation of a public kit).'
-  remediation: Sign release tags (SSH or GPG); ship files/home/.config/ws-kit/allowed_signers; make ws-kit-update fetch
-    tags, pick the newest vX.Y.Z, run 'git -c gpg.ssh.allowedSignersFile=… verify-tag' and 'git merge --ff-only <tag>'
-    instead of pulling the branch; refuse unsigned tags unless --allow-unsigned; ws-test with a fixture repo.
+  remediation: Generate the release-signing key, add it to allowed_signers and sign the next tag (runbook, Signing a release).
   effort: M
 - id: WS-SEC-016
   title: Third-party tool and plugin pinning
@@ -1284,18 +1425,18 @@ controls:
   - OWASP-LLM26:LLM04
   status: partial
   evidence:
-  - files/home/.local/bin/ws-tools:5,13-14,112-124 (GitHub binaries checked against release checksums)
-  - .github/workflows/ci.yml:72-73,83-90 (pinned versions, gitleaks checksum)
-  - .github/dependabot.yml:3-12
-  - install.sh:155-161 and files/home/.tmux.conf:60-63 (plugins cloned unpinned)
-  - files/home/.local/bin/ws-update:6-7 (claude update, update_plugins all)
-  check: none
-  gap: tmux plugins and TPM are cloned at the branch tip, CI actions are pinned by tag rather than commit SHA, and ws-tools
-    trusts the checksum file published next to the binary (same origin).
+  - .github/workflows/ci.yml:25,76,101 (actions pinned by commit SHA with the version as a comment)
+  - .github/dependabot.yml (actions and the pinned npm packages, 7-day cooldown)
+  - files/home/.local/lib/ws-npm/agent-browser/package-lock.json (npm tools pinned with ws-pinned)
+  - files/home/.local/bin/ws-tools:115-121 (GitHub binaries checked against the release checksums)
+  - install.sh:272-278 (TPM and the tmux plugins cloned at the branch tip)
+  check:
+  - bash tests/supply-chain.sh
+  gap: tmux plugins and TPM are still cloned at the branch tip (no plugins.lock), and ws-tools trusts the checksum file
+    published next to each binary (same origin, no cosign verification).
   risk: 'medium: likelihood low; impact high (plugins run inside tmux with the user''s privileges).'
-  remediation: Pin each @plugin to a commit in files/home/.config/tmux-claude/plugins.lock and check it out after install_plugins;
-    pin actions/checkout and github/codeql-action by SHA (Dependabot keeps them current); verify cosign or GitHub attestations
-    in ws-tools where the project publishes them.
+  remediation: Add files/home/.config/tmux-claude/plugins.lock applied after install_plugins; verify cosign signatures
+    where upstream publishes them.
   effort: M
 - id: WS-SEC-017
   title: CI security pipeline
@@ -1314,14 +1455,17 @@ controls:
   - WAF-SEC:SE:11
   status: partial
   evidence:
-  - .github/workflows/ci.yml:11-12,19-130
-  - .github/workflows/codeql.yml:7-25
-  check: gh run list --workflow ci.yml --limit 1
-  gap: 'The CodeQL checkout does not set persist-credentials: false, the clean-install job is continue-on-error, and there
-    is no SBOM or release provenance.'
+  - .github/workflows/ci.yml:19-185 (lint, SAST and secrets, zizmor, SBOM, kit tests, every security suite, clean install)
+  - .github/workflows/codeql.yml:20-23 (persist-credentials false)
+  - '.github/workflows/ci.yml:12-13 (contents: read)'
+  - .github/workflows/compliance-monthly.yml (monthly compliance, AI-BOM and framework-currency checks)
+  check:
+  - bash tests/compliance.sh
+  - 'live: gh api repos/andreshma/claude-workstation/actions/workflows'
+  gap: The clean-install job that runs ws-test is still continue-on-error, so behaviour tests on a fresh install do not
+    block a merge.
   risk: 'low: the workflows hold read-only tokens except CodeQL''s security-events write.'
-  remediation: 'Add persist-credentials: false to codeql.yml checkout; make the install job required once stable; add
-    an SBOM step (syft or ''gh attestation'') on release tags; see WS-SEC-018.'
+  remediation: Make the install job required once it has run green for a month.
   effort: S
 - id: WS-SEC-018
   title: Software bill of materials for the kit
@@ -1334,16 +1478,18 @@ controls:
   - CIS-v8:16.4
   - WAF-SEC:SE:02
   - NIST-600-1:Value Chain and Component Integration
-  status: partial
+  status: implemented
   evidence:
-  - files/home/.local/bin/ws-tools (inventory of installed tools)
-  - 'files/home/.local/bin/ws-backup-lite:77-90 (reinstall inventory: apt, pipx, npm, versions)'
-  check: ws-tools
-  gap: The inventories describe one machine at backup time; the repository publishes no SBOM of what install.sh, ws-tools
-    and mcp-servers.json bring in.
+  - .github/scripts/sbom.py (CycloneDX 1.5 from the MCP lock, the npm locks, ws-tools, the tmux plugins, the pinned actions
+    and the CI tool versions)
+  - '.github/workflows/ci.yml:113-126 (job ''SBOM (CycloneDX)'': generate and validate)'
+  - .github/workflows/release.yml:39-61 (attached to each release)
+  - docs/governance/AI-BOM.md (the AI components)
+  check:
+  - bash tests/supply-chain.sh
+  gap: The tmux plugins appear without a version because they are not pinned (WS-SEC-016).
   risk: 'low: small dependency surface, mostly OS packages.'
-  remediation: Generate docs/compliance/sbom.cdx.json in CI from manifest.txt, ws-tools TOOLS, mcp-servers.json and .tmux.conf
-    plugins (a small script under tests/), attached to releases; merge into the AI-BOM for AI components.
+  remediation: None beyond WS-SEC-016.
   effort: S
 - id: WS-SEC-019
   title: Operating system patching
@@ -1359,9 +1505,10 @@ controls:
   - NSA-DAISS:Update and patch regularly
   status: partial
   evidence:
-  - files/home/.local/bin/ws-audit:335-336 (pending security updates)
-  - files/home/.local/bin/ws-update:8 (manual apt upgrade)
-  check: ws-audit (pillar Security, 'pending security updates (apt)')
+  - files/home/.local/bin/ws-audit:486-487 (pending security updates)
+  - files/home/.local/bin/ws-update (manual apt upgrade)
+  check:
+  - 'manual: ws-audit pillar Security, ''pending security updates (apt)'''
   gap: The kit neither enables nor checks unattended-upgrades, and the audit counts lines containing 'security' rather
     than reading the security pocket.
   risk: 'medium: likelihood medium (a workstation that is not rebooted for weeks); impact medium.'
@@ -1380,11 +1527,11 @@ controls:
   - WAF-SEC:SE:08
   status: partial
   evidence:
-  - files/home/.local/bin/ws-audit:320-327 (credentials, ~/.claude, telemetry, ~/.ssh)
-  - files/home/.claude/hooks/audit.sh:9
-  - files/home/.local/bin/tmux-level:87,94,101
-  - files/home/.local/bin/tmux-swarm:17
-  check: ws-audit (pillar Security, permissions checks)
+  - files/home/.local/bin/ws-audit:425-434 (credentials, ~/.claude, telemetry, ~/.ssh)
+  - files/home/.claude/hooks/audit.sh:20-22
+  - files/home/.local/bin/tmux-level:113-119,141-145 (profiles 0600)
+  check:
+  - 'manual: ws-audit pillar Security, permissions checks'
   gap: The home directory itself, the umask and ~/.claude/audit and ~/.local/share/tmux-swarm are not checked.
   risk: 'low: single-user distribution; other local accounts are uncommon.'
   remediation: Add ~ (0750 or stricter), ~/.claude/audit, ~/.local/share/tmux-swarm and ~/.config/claude-levels to the
@@ -1428,18 +1575,20 @@ controls:
   - OWASP-LLM26:LLM03
   status: partial
   evidence:
-  - files/home/.claude/settings.json:200-204 (pwsh, powershell.exe, cmd.exe, wsl.exe ask)
-  - files/home/.claude/settings.json:796-814 (Windows credential folders denied)
-  - files/home/.local/bin/tmux-level:48-52 (full denies Documents, Desktop, Downloads, OneDrive)
-  - files/home/.claude/hooks/guard.sh:75-80
-  check: ws-audit --ai
-  gap: Other Windows executables (reg.exe, curl.exe, certutil.exe, explorer.exe) are not in ask, whether interop works
-    from inside bubblewrap has not been tested, and in normal level the whole /mnt/c profile outside the denied folders
-    is readable.
+  - files/home/.claude/settings.json:247-251,308 (PowerShell, cmd.exe, wsl.exe and every .exe ask)
+  - files/home/.claude/settings.json:998-1016 (Windows credential folders denied to sandboxed reads)
+  - files/home/.local/bin/tmux-level:67-71 (full denies Documents, Desktop, Downloads, Pictures, Videos and OneDrive)
+  - 'files/home/.claude/hooks/guard.sh:224-231 (PowerShell: no encoded commands, no download and run)'
+  - tests/interop-adversarial.sh (13 Windows executables, credential folders)
+  check:
+  - bash tests/interop-adversarial.sh
+  - jq -e '.permissions.ask | index("Bash(*.exe*)")' files/home/.claude/settings.json
+  gap: Whether interop works from inside bubblewrap has not been probed on a live machine, and at the normal level the
+    Windows profile outside the denied folders is readable.
   risk: 'medium: likelihood medium (an agent that hits the sandbox is known to try alternatives); impact high (Windows
     processes run outside bubblewrap as the Windows user).'
-  remediation: Add an ask rule Bash(*.exe*) (keeping pwsh.exe in excludedCommands for the kit's own hooks), add the interop
-    cases to ws-audit --ai (WS-AI-027), and document in the runbook the optional /etc/wsl.conf [interop] appendWindowsPath=false.
+  remediation: Run tests/interop-adversarial.sh --live; document /etc/wsl.conf appendWindowsPath=false as the optional
+    hardening (runbook, WSL interop).
   effort: S
 - id: WS-SEC-023
   title: Host audit logging (auditd and journald)
@@ -1483,10 +1632,10 @@ controls:
   - ISO42001:A.10
   status: implemented
   evidence:
-  - files/home/.local/bin/claude-account:2-12
-  - docs/THREAT_MODEL.md:289
-  - ws-test 'personal shares conversations and NOT credentials'
-  check: ws-test (section 'Claude accounts')
+  - files/home/.local/bin/claude-account:3-16
+  - '''ws-test: personal shares conversations and NOT credentials'''
+  check:
+  - 'live: ws-test'
   gap: None for this objective.
   risk: 'low: tested.'
   remediation: Keep.
@@ -1503,11 +1652,13 @@ controls:
   - SSDF:PO.5
   status: implemented
   evidence:
-  - files/home/.local/bin/ws-audit:1-15,421-427
+  - files/home/.local/bin/ws-audit:1-21,569-585
   - files/home/.local/bin/ws-verify:2-10
   - files/home/.local/bin/ws-check:2-12
   - files/home/.local/bin/ws-health:2-4
-  check: ws-audit; ws-verify
+  - files/home/.local/lib/ws_compliance.py (ws-audit --compliance)
+  check:
+  - 'live: ws-verify'
   gap: Checks are not tied to control ids (see WS-GOV-005).
   risk: 'low: present and documented.'
   remediation: Keep; extend through ws-audit --compliance (Phase 4).
@@ -1526,7 +1677,8 @@ controls:
   - files/home/.claude/hooks/lint-on-edit.sh:10-12 (no repository linters)
   - files/home/.claude/hooks/read-convert.sh:14,24,27 (error file /tmp/ws-tomd.err.$$)
   - files/home/.claude/hooks/win-hook.sh:6-13
-  check: bash tests/run.sh (shellcheck of the payload)
+  check:
+  - bash tests/run.sh
   gap: read-convert.sh writes to a predictable /tmp path, which another local user could pre-create as a symlink.
   risk: 'low: single-user machine.'
   remediation: Use mktemp in read-convert.sh and remove it on exit; add a shellcheck-style test that hooks do not write
@@ -1543,8 +1695,7 @@ controls:
   - OWASP-LLM26:LLM10
   status: partial
   evidence:
-  - docs/THREAT_MODEL.md:297
-  - docs/adr/0013-minimum-protection-floor.md:122-125
+  - docs/THREAT_MODEL.md#tampering
   check: none
   gap: Escaping is done for the status bar only; menus still interpolate the tab path.
   risk: 'low: requires a crafted folder name opened by the user.'
@@ -1574,18 +1725,21 @@ controls:
   - MS-RAI:Privacy and Security
   - WAF-AI:responsible-ai
   - SSDF:PO.1
-  status: partial
+  status: implemented
   evidence:
+  - docs/governance/AI-USE-POLICY.md#data-what-may-go-to-models-and-memory
+  - docs/governance/AI-USE-POLICY.md#approved-models-and-providers
+  - docs/governance/AI-USE-POLICY.md#human-in-the-loop
+  - docs/governance/AI-USE-POLICY.md#protection-levels-when-to-use-each
+  - docs/governance/AI-USE-POLICY.md#generated-code-and-intellectual-property
   - files/home/.claude/standards.md:34-39 (security and AI rules)
-  - SECURITY.md:22-43 (security model)
-  - docs/THREAT_MODEL.md:389-395 (scope)
-  check: test -f docs/compliance/ai-use-policy.md
-  gap: The rules are a short engineering checklist; nothing states data classes allowed per provider, when bare or solo
-    may be used, or the IP and licensing position on generated code and customer code.
+  check:
+  - test -f docs/governance/AI-USE-POLICY.md
+  gap: The owner decisions it records (client code only in full or normal, quarterly policy review) are still to be confirmed
+    by the owner.
   risk: 'medium: likelihood medium (decisions are made ad hoc per session); impact medium (customer data or IP sent where
     a contract forbids it).'
-  remediation: 'Phase 3: write docs/compliance/ai-use-policy.md (scope, data classes per destination, modes per data class,
-    approvals, prohibited uses, review date).'
+  remediation: Confirm the marked decisions at the first quarterly review.
   effort: S
 - id: WS-GOV-002
   title: AI bill of materials (models, agents, MCP servers, tools, data)
@@ -1607,21 +1761,18 @@ controls:
   - OWASP-ASI:ASI04
   - OWASP-MCP3P:governance-workflows
   - WAF-SEC:SE:03
-  status: partial
+  status: implemented
   evidence:
-  - files/home/.claude/settings.json:249-253 (default and fallback models)
-  - files/home/.claude/agents/*.md (model per agent)
-  - files/mcp-servers.json
-  - files/home/.local/bin/ws-learn:48, files/home/.local/bin/tmux-swarm:43, files/home/.local/bin/ws-audit:304 (models
-    hard-coded in scripts)
-  - files/home/.local/bin/ws-backup-lite:77-90 (machine inventory)
-  check: test -f docs/compliance/ai-bom.yaml
-  gap: The facts are scattered across settings, agent files, scripts and the MCP file; no single inventory records versions,
-    privileges and data flows, including what the MemPalace and recall hooks receive.
+  - docs/governance/AI-BOM.md (models, agents, MCP servers, hooks, plugins and external services)
+  - .github/scripts/ai_bom.py (regenerates the generated tables from settings.json, the agents, mcp-servers.json, the
+    MCP lock and the ws-npm packages)
+  - tests/ai-bom.sh (fails when the committed document differs)
+  check:
+  - bash tests/ai-bom.sh
+  gap: Data, risk and upstream columns are written by hand and are checked only for presence (every generated row needs
+    one); MemPalace and recall internals and the recall corpus are outside this repository.
   risk: 'medium: likelihood high (the inventory is needed for every review and incident); impact medium.'
-  remediation: 'Phase 3: docs/compliance/ai-bom.yaml generated where possible (models from settings.json and agents, MCP
-    from mcp-servers.json, hooks from settings.json) by a tests/ script, with hand-written fields for data touched and
-    provider terms; CI fails when a model or server is added without an entry.'
+  remediation: Keep the hand columns current at the monthly review.
   effort: M
 - id: WS-GOV-003
   title: AI incident response procedure
@@ -1646,16 +1797,20 @@ controls:
   - ISO42001:10
   - OWASP-ASI:ASI10
   - OWASP-NHI:NHI2
-  status: missing
+  status: implemented
   evidence:
-  - SECURITY.md:14-20 (vulnerability reporting, not incident handling)
-  - docs/runbook.md (operational failures)
-  check: test -f docs/compliance/ai-incident-response.md
-  gap: No steps for containment (stop agents, revoke tokens, disable remote control), evidence capture (audit, otel, transcripts),
-    memory clean-up or recovery.
+  - docs/governance/AI-INCIDENT-RESPONSE.md#common-steps (stop with ws-stop-all, preserve evidence with ws-audit --verify-log,
+    check persistence)
+  - docs/governance/AI-INCIDENT-RESPONSE.md#prompt-injection-that-acted
+  - docs/governance/AI-INCIDENT-RESPONSE.md#memory-poisoning
+  - docs/governance/AI-INCIDENT-RESPONSE.md#compromised-kit-update
+  - files/home/.local/bin/ws-stop-all:1-24
+  check:
+  - test -f docs/governance/AI-INCIDENT-RESPONSE.md
+  - 'live: ws-stop-all --status'
+  gap: 'Not rehearsed yet (CIS 17.7): the first yearly rehearsal is pending.'
   risk: 'medium: likelihood low; impact high (slow, improvised response while credentials are exposed).'
-  remediation: 'Phase 3: docs/compliance/ai-incident-response.md with playbooks per scenario, using ws-stop-all (WS-AI-025),
-    ws-secret rotation, MemPalace invalidation and ws-audit --verify-log; rehearse once a year.'
+  remediation: Rehearse one playbook on a test repository and record it in the review log.
   effort: S
 - id: WS-GOV-004
   title: Threat model maintained against agentic threat taxonomies
@@ -1676,16 +1831,20 @@ controls:
   - ISO42001:6
   - ISO42001:A.5
   - MS-RAI:Reliability and Safety
-  status: partial
+  status: implemented
   evidence:
-  - docs/THREAT_MODEL.md:1-405
-  - docs/THREAT_MODEL.md:397-402 (event-driven review)
-  - docs/THREAT_MODEL.md:358-387 (accepted risks, pending work)
-  check: grep -q 'Last review' docs/THREAT_MODEL.md
-  gap: Review is event-driven only, MemPalace and recall are absent from the model, and threats are not mapped to ASI01-ASI10.
+  - docs/THREAT_MODEL.md#review (scheduled quarterly review and the Claude Code major-release trigger)
+  - docs/THREAT_MODEL.md#assets (MemPalace and recall as assets)
+  - docs/THREAT_MODEL.md#owasp-agentic-top-10-cross-reference (ASI01-ASI10)
+  - docs/governance/REVIEW-CADENCE.md#quarterly
+  - .github/workflows/compliance-monthly.yml (framework-currency check)
+  check:
+  - grep -q 'ASI10' docs/THREAT_MODEL.md
+  - grep -q 'Last review' docs/THREAT_MODEL.md
+  gap: The OWASP LLM and agentic editions are checked monthly in CI; the other frameworks are re-verified by hand at the
+    quarterly review.
   risk: 'low: the model is thorough for what it covers.'
-  remediation: Add a 'Framework cross-reference' section to THREAT_MODEL.md pointing to controls.yaml, add MemPalace and
-    recall as assets and trust boundaries, and set a calendar review every 6 months in the review table.
+  remediation: None beyond the cadence.
   effort: S
 - id: WS-GOV-005
   title: Continuous compliance evidence
@@ -1705,13 +1864,21 @@ controls:
   - ISO42001:10
   - SSDF:PO.4
   - SSDF-1.2-IPD:PO.6
-  status: missing
+  status: implemented
   evidence:
-  - docs/compliance/controls.yaml (this catalogue, field 'check')
-  check: none
-  gap: Checks exist (ws-audit, ws-test, tests/) but are not linked to control ids and nothing regenerates coverage.
+  - 'files/home/.local/lib/ws_compliance.py (ws-audit --compliance: validates the catalogue, runs every allow-listed check,
+    reports per control and per framework)'
+  - 'tests/compliance.sh (CI: schema, traceability, evidence files and line ranges, implemented checks, coverage tables
+    of assessment.md)'
+  - .github/workflows/ci.yml:142-165 (suites job runs it on every push and pull request)
+  - .github/workflows/compliance-monthly.yml (monthly run)
+  - docs/compliance/assessment.md#coverage-per-framework
+  check:
+  - bash tests/compliance.sh
+  gap: Checks tagged live (ws-test, ws-audit --verify-log, ws-pinned verify…) run only on the workstation; manual checks
+    are reported, not run; a status is never changed automatically.
   risk: 'medium: likelihood medium (silent regressions of settings.json are easy); impact medium.'
-  remediation: 'Phase 4: ws-audit --compliance and a CI job compliance (see assessment.md).'
+  remediation: Run ws-audit --compliance at each monthly review and keep compliance.json with the review log.
   effort: M
 - id: WS-GOV-006
   title: Decision records for security trade-offs
@@ -1728,10 +1895,15 @@ controls:
   - docs/adr/README.md
   - docs/adr/0012-per-tab-protection.md
   - docs/adr/0013-minimum-protection-floor.md
-  - docs/adr/0014-local-opentelemetry-collector.md
-  - docs/THREAT_MODEL.md:358-371
+  - docs/adr/0016-solo-mode-inside-the-sandbox.md
+  - docs/adr/0017-defence-in-depth-for-agent-configuration.md
+  - docs/adr/0018-supply-chain-pinning-and-signed-releases.md
+  - docs/adr/0019-strict-base-and-level-profiles.md
+  - docs/adr/0020-agent-scoped-identities.md
+  - docs/THREAT_MODEL.md#accepted-risks
   - GOVERNANCE.md (ADR required for changes to decisions)
-  check: ls docs/adr/*.md
+  check:
+  - test -f docs/adr/README.md
   gap: None for this objective.
   risk: 'low: in place and enforced by GOVERNANCE.md.'
   remediation: Keep.
@@ -1748,8 +1920,10 @@ controls:
   - ISO42001:A.8
   status: implemented
   evidence:
-  - SECURITY.md:6-20
-  check: test -f SECURITY.md
+  - SECURITY.md#supported-versions
+  - SECURITY.md#reporting-a-vulnerability
+  check:
+  - test -f SECURITY.md
   gap: None for this objective.
   risk: 'low: documented and linked from the README.'
   remediation: Keep.
@@ -1771,15 +1945,14 @@ controls:
   - CIS-v8:15.6
   - ISO42001:A.10
   - CAF:govern.assess-risks
-  status: missing
+  status: partial
   evidence:
-  - docs/THREAT_MODEL.md:238,312 (Telegram stores redacted text; the Claude API receives the conversation)
-  check: none
-  gap: Anthropic, Telegram, Microsoft Learn MCP, Microsoft release-communications MCP and Microsoft 365 connectors are
-    not listed with data, retention and terms.
+  - docs/governance/AI-BOM.md#external-services
+  check:
+  - test -f docs/governance/AI-BOM.md
+  gap: Retention and terms of each external service are still 'to fill'.
   risk: 'medium: likelihood medium; impact medium (contractual exposure for customer data).'
-  remediation: 'Phase 3: a ''services'' section in docs/compliance/ai-bom.yaml (WS-GOV-002) with data sent, retention,
-    terms URL and review date per service.'
+  remediation: Fill in retention and terms URL per service at the next monthly review.
   effort: S
 - id: WS-GOV-009
   title: Change control for the kit
@@ -1797,7 +1970,10 @@ controls:
   - GOVERNANCE.md (merging, roles)
   - .github/CODEOWNERS:1-2
   - .github/PULL_REQUEST_TEMPLATE.md
-  check: gh api repos/andreshma/claude-workstation/branches/main/protection
+  - .github/workflows/release.yml:27-37 (release tags must be signed)
+  check:
+  - test -f .github/CODEOWNERS
+  - 'live: gh api repos/andreshma/claude-workstation/branches/main/protection'
   gap: Branch protection is stated in GOVERNANCE.md and cannot be verified from the repository contents.
   risk: 'low: single maintainer with CODEOWNERS review.'
   remediation: Include the gh api check in ws-audit --compliance (Phase 4).
@@ -1816,15 +1992,18 @@ controls:
   - WAF-SEC:SE:09
   - ISO42001:A.6
   - NSA-AIDATA:BP9
-  status: missing
+  status: partial
   evidence:
+  - docs/runbook.md#rotating-secrets (rotate or revoke per secret; uninstall and offboarding)
+  - docs/governance/REVIEW-CADENCE.md#yearly (rotation periods)
+  - docs/governance/AI-INCIDENT-RESPONSE.md#secret-leaked-to-a-model-or-memory
   - files/home/.local/bin/ws-secret:8-10 (delete exists)
-  check: none
-  gap: No rotation dates, no reminder and no documented uninstall that revokes the bot, removes MCP registrations and
-    deletes local data.
+  check:
+  - grep -q 'Rotating secrets' docs/runbook.md
+  gap: The rotation periods are still to be confirmed by the owner, and nothing warns when a secret is older than its
+    period (no ws-audit age check).
   risk: 'low: likelihood low; impact medium (a long-lived bot token or key stays valid after a device is lost).'
-  remediation: 'Phase 3: runbook section ''Rotate and offboard'' with commands per secret; ws-audit warns when a ws/<name>
-    secret is older than its rotation period (store set date as ws/<name>.date).'
+  remediation: Record the set date of each ws/<name> secret and warn in ws-audit when it is past its period.
   effort: S
 - id: WS-GOV-011
   title: Impact assessment of AI use
@@ -1841,16 +2020,16 @@ controls:
   - ISO42001:4
   - CAF:govern.assess-risks
   - MS-RAI:Transparency
-  status: partial
+  status: implemented
   evidence:
-  - README.md (purpose)
-  - docs/THREAT_MODEL.md:21-31 (assets)
-  - docs/THREAT_MODEL.md:358-371 (accepted risks)
-  check: none
-  gap: Security impacts are documented; failure costs of wrong or confabulated output and customer-facing impacts are
-    not.
+  - docs/governance/AI-USE-POLICY.md#impact-assessment
+  - docs/THREAT_MODEL.md#assets
+  - docs/THREAT_MODEL.md#accepted-risks
+  check:
+  - test -f docs/governance/AI-USE-POLICY.md
+  gap: None for this objective; reassessed at each quarterly review.
   risk: 'low: single-user tool; the owner reviews outputs.'
-  remediation: 'Phase 3: a short ''Impact assessment'' section in ai-use-policy.md.'
+  remediation: None required.
   effort: S
 - id: WS-GOV-012
   title: User guidance on levels and residual risk
@@ -1866,11 +2045,13 @@ controls:
   - MS-RAI:Transparency
   status: implemented
   evidence:
-  - files/home/.local/bin/tmux-level:147-150 (message per level)
-  - files/home/.local/bin/tmux-solo:67
-  - docs/THREAT_MODEL.md:113-141
+  - files/home/.local/bin/tmux-level:205-208 (message per level)
+  - files/home/.local/bin/tmux-solo:100-102
+  - docs/THREAT_MODEL.md#protection-levels-and-the-floor
+  - docs/governance/AI-USE-POLICY.md#protection-levels-when-to-use-each
   - docs/USAGE.md
-  check: none
+  check:
+  - 'live: ws-test'
   gap: The bar indicator comes from a tmux option, not the effective configuration (ADR 0013 pending).
   risk: 'low: documentation and on-screen messages cover each level.'
   remediation: Derive the indicator from the running process arguments (ADR 0013 item 5).
