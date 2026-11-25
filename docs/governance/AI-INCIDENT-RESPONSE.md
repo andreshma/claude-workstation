@@ -225,7 +225,7 @@ Within a week of a severity 1 or 2 incident:
 | A threat or residual risk changed | [THREAT_MODEL.md](../THREAT_MODEL.md) and the control's `status`, `gap` and `evidence` in [controls.yaml](../compliance/controls.yaml) |
 | A component changed | [AI-BOM.md](AI-BOM.md) |
 
-A severity 3 note goes into the next monthly review. This procedure is rehearsed once a year (owner to confirm) with
+A severity 3 note goes into the next monthly review. This procedure is rehearsed once a year with
 one playbook on a test repository ([REVIEW-CADENCE.md](REVIEW-CADENCE.md)); it has not been rehearsed yet.
 
 Maps to: WS-GOV-003, WS-GOV-006 (CIS-v8:17.8, CIS-v8:17.7, ISO42001:10, NIST-AI-RMF:GOVERN-4.3, SSDF:RV.3).

@@ -743,10 +743,11 @@ ws-audit --verify-log <folder>     # checks a copy (for example one taken during
 ### Rotating secrets
 
 Secrets live in the Windows Credential Manager as `ws/<name>` (`ws-secret`). The rotation periods below come from
-[REVIEW-CADENCE.md](governance/REVIEW-CADENCE.md#yearly) and are owner to confirm. Rotate at once, whatever the period,
-when a device or the phone is lost, or a secret may have reached a model, memory, a log or a backup.
+[REVIEW-CADENCE.md](governance/REVIEW-CADENCE.md#yearly) and were confirmed by the owner on 2026-11-25. Rotate at once,
+whatever the period, when a device or the phone is lost, or a secret may have reached a model, memory, a log or a
+backup.
 
-| Secret | Period (owner to confirm) | Rotate or revoke |
+| Secret | Period | Rotate or revoke |
 |---|---|---|
 | Telegram bot token | Yearly | In @BotFather, `/revoke` the bot's token and copy the new one; then `ws-telegram setup` (stores it with `ws-secret set telegram-bot-token`) and `ws-telegram test` |
 | Telegram PIN | Yearly | `ws-telegram text pin` |

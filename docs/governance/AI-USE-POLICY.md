@@ -1,10 +1,10 @@
 # AI use policy
 
-How AI is used on a workstation installed from this kit: what data may reach a model or memory, which models and
-modes are approved, what always needs a person, and what is not allowed. The owner of the workstation is the owner of
-this policy. Facts about the kit link to the file that implements them; what is still open is named with its control
-id and listed in the [assessment](../compliance/assessment.md#status-after-phase-2). Decisions the owner still has to
-confirm are marked "owner to confirm".
+How AI is used on a workstation installed from this kit: what data may reach a model or memory, which models and modes
+are approved, what always needs a person, and what is not allowed. The owner of the workstation is the owner of this
+policy. Facts about the kit link to the file that implements them; what is still open is named with its control id and
+listed in the [assessment](../compliance/assessment.md#status-after-phase-2). The owner confirmed the decisions in this
+policy on 2026-11-25; a new decision still to confirm is marked "owner to confirm".
 
 ## Contents
 
@@ -133,7 +133,7 @@ What each level does is in [USAGE.md, section 11](../USAGE.md#11-protection-leve
 | Solo mode | Time-boxed work on the owner's own code: auto mode inside the sandbox, in a worktree by default (`tmux-solo new`), back to normal after 4 hours (`@csolo_hours`) | Client code; untrusted repositories; sessions with production credentials loaded |
 | Solo `--unsandboxed` | Short, attended work the sandbox cannot do; audited and marked 🔓 in the tab name | Anything else |
 
-Client code runs only in `full` or `normal` (owner to confirm). Solo mode still lets the normal level's excluded
+Client code runs only in `full` or `normal`. Solo mode still lets the normal level's excluded
 commands out of the sandbox, decided by the auto-mode classifier (WS-AI-004); return the tab with `tmux-solo normal`
 when the task ends rather than waiting for the expiry. A tab started with `tmux-level … --agent NAME` uses that agent
 identity's `az`, `gh` and `kubectl` logins instead of the owner's (WS-AI-026).
@@ -174,7 +174,7 @@ Maps to: WS-GOV-001, WS-AI-021 (NIST-600-1:Intellectual Property, SSDF:PW.7, MS-
 | Controls | Review and `ws-gate`; `ask` rules, guard and the production pattern; the data rules above; budgets and alerts |
 | Residual risk | [THREAT_MODEL.md, Accepted risks](../THREAT_MODEL.md#accepted-risks) and the open gaps in [controls.yaml](../compliance/controls.yaml) |
 | Impact on clients | They receive code reviewed by the owner; AI assistance is disclosed where the contract requires it |
-| Decision | Proceed with these controls; reassess at each quarterly review (owner to confirm) |
+| Decision | Proceed with these controls; reassess at each quarterly review |
 
 Maps to: WS-GOV-011 (NIST-AI-RMF:MAP-3.1, NIST-AI-RMF:MAP-3.2, NIST-AI-RMF:MANAGE-1.1, NIST-AI-RMF:MANAGE-1.4,
 ISO42001:4, ISO42001:8, ISO42001:A.5, CAF:govern.assess-risks, MS-RAI:Transparency).
@@ -185,6 +185,6 @@ ISO42001:4, ISO42001:8, ISO42001:A.5, CAF:govern.assess-risks, MS-RAI:Transparen
 |---|---|
 | Owner | The workstation owner |
 | Last review | 2026-11-25 |
-| Next review | Quarterly (owner to confirm), and on the triggers in [REVIEW-CADENCE.md](REVIEW-CADENCE.md) |
+| Next review | Quarterly, and on the triggers in [REVIEW-CADENCE.md](REVIEW-CADENCE.md) |
 
 Maps to: WS-GOV-001 (NIST-AI-RMF:GOVERN-1.4, ISO42001:A.2).

@@ -4,8 +4,8 @@ What the owner reviews, when, how, and what each review leaves behind as evidenc
 its own: `tests/compliance.sh` and `tests/ai-bom.sh` on every push, the monthly workflow
 `.github/workflows/compliance-monthly.yml` (catalogue, AI-BOM and the OWASP LLM and agentic editions), and
 `ws-audit --compliance` on the workstation for the checks that need it (WS-GOV-005). The rest is manual; each review's
-evidence is a commit and a line in the [review log](#review-log). The cadences below are the owner's decisions and
-are still to be confirmed (owner to confirm).
+evidence is a commit and a line in the [review log](#review-log). The cadences below are the owner's decisions,
+confirmed on 2026-11-25.
 
 ## Contents
 
@@ -94,11 +94,11 @@ Maps to: WS-GOV-005, WS-AI-002 (CSF:ID.IM-01, CIS-v8:4.1, WAF-SEC:SE:01, SSDF:PO
 
 ## Yearly
 
-- **Incident rehearsal** (owner to confirm: yearly). Run one playbook of
+- **Incident rehearsal** (yearly). Run one playbook of
   [AI-INCIDENT-RESPONSE.md](AI-INCIDENT-RESPONSE.md) end to end on a test repository (for example a planted README
   that asks for a push), including `ws-stop-all` and `ws-audit --verify-log`; note the time taken and what was
   missing. Not rehearsed yet.
-- **Secret rotation** (owner to confirm: Telegram bot token and PIN yearly; backup key only on suspicion). Commands in
+- **Secret rotation** (Telegram bot token and PIN yearly; backup key only on suspicion). Commands in
   [runbook.md, Rotating secrets](../runbook.md#rotating-secrets); keep an old backup key until every backup encrypted
   with it has expired. Rotate at once when a device or phone is lost. A `ws-audit` warning for old secrets is not
   built yet (WS-GOV-010).
@@ -122,5 +122,6 @@ Maps to: WS-GOV-004, WS-GOV-002 (NIST-AI-RMF:GOVERN-1.5, CSF:ID.RA-05, ISO42001:
 |---|---|---|---|
 | 2026-11-25 | Initial | Governance documents written (Phase 3 of the hardening) | This folder |
 | 2026-11-25 | Phases 2 to 4 closed | Documents brought in line with the phase 2 code; continuous evidence built (Phase 4); 35 implemented, 32 partial, 2 missing, 1 not applicable | `docs/compliance/assessment.md`, `tests/compliance.sh` |
+| 2026-11-25 | Owner decisions | Confirmed: client code only in `full` or `normal`; quarterly policy review; yearly incident rehearsal; Telegram token and PIN rotated yearly, backup key on suspicion | `AI-USE-POLICY.md`, this file |
 
 Maps to: WS-GOV-005 (NIST-AI-RMF:MANAGE-4.2, ISO42001:10).
