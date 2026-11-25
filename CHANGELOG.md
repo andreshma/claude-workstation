@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- Security and AI governance assessment in `docs/compliance/`: the frameworks the kit is measured against, with
+  their current editions (`frameworks.md`), a catalogue of 70 controls mapped to them with file and line evidence
+  (`controls.yaml`), and the coverage and gap analysis with the hardening plan (`assessment.md`).
+
 ## [3.0.1] - 2026-11-25
 
 ### Fixed
