@@ -1,0 +1,1139 @@
+#!/usr/bin/env python3
+#
+# tmux-res — per-tab resource usage for the tmux status bar, in fixed-width segments that never change size.
+#   A tab is a tmux window; its processes are every pane's process and all its descendants (from /proc/*/stat,
+#   deduplicated; a process that leaves the tree because its parent died keeps its tab). Per tab:
+#     CPU   % of ONE core (100 % = one core busy; 20 cores = up to 2000 %, shown capped at 999 %)
+#     RAM   sum of PSS (/proc/<pid>/smaps_rollup, shared pages split between their users), refreshed every
+#           @ws_res_pss_every s per process and scaled by the RSS in between; RSS when PSS cannot be read
+#     IO    read+write system calls per second (/proc/<pid>/io syscr+syscw: every fd, also pipes, terminals and
+#           sockets) and storage bytes per second (read_bytes+write_bytes: the Linux block layer, not /mnt/c)
+#     NET   TCP bytes per second down/up of the tab's sockets (kernel sock_diag, no privileges); loopback is
+#           left out, UDP/QUIC and sockets in other network namespaces are not seen
+#     GPU   GPU memory of the tab's processes when the driver reports processes (native Linux); "--" when it
+#           does not (WSL2 / WDDM reports none): the machine-wide GPU goes to the separate «host» segment
+#   One sampler per tmux server (PID file + lock), every @ws_res_interval s (2). It writes the window options
+#   @res_p (full panel), @res_c (compact) and @res_t (CPU glyph of the tab list) and the global @res_hgpu, plus
+#   a cache file (tabs.tsv, meta.json) under ${XDG_RUNTIME_DIR:-/tmp}/tmux-res-<uid>/<server>/. The status bar
+#   only reads those options: it never walks /proc.
+# Usage: tmux-res mode full|compact|off   full: panel on the monitor line (compact on the right when it is
+#                                         hidden) · compact: CPU and RAM on the right · off: sampler stopped
+#        tmux-res tabs on|off              CPU glyph after each tab in the tab list (off by default)
+#        tmux-res status                   sampler, its measured cost and what this machine can attribute
+#        tmux-res show                     table of every tab
+#        tmux-res ensure | stop            start the sampler if it is not running / stop it
+#        tmux-res daemon [--samples N]     the sampler itself (started by ensure)
+#        tmux-res sample                   one sample with the state saved in the cache directory (tests)
+#        tmux-res fmt cpu|gib|ops|bytes N  one formatted value (tests)
+# Options: @ws_res_cpu_warn 80 · @ws_res_cpu_crit 150 (%) · @ws_res_ram_warn 4 · @ws_res_ram_crit 8 (GiB) ·
+#          @ws_res_gpu on|off · @ws_res_interval 2 · @ws_res_pss_every 60. Mode and tabs are saved as res_mode= and
+#          res_tabs= in ~/.config/tmux-claude/settings.
+# Tests: WS_RES_PROC (a /proc fixture), WS_RES_PANES (window<TAB>pane_pid lines instead of tmux), WS_RES_TCP
+#   (inode<TAB>acked<TAB>received<TAB>loopback instead of sock_diag), WS_RES_NVIDIA_SMI, WS_RES_NOW, WS_RES_DIR,
+#   WS_RES_HZ, WS_RES_PAGE, WS_RES_INTERVAL, WS_RES_LOOPBACK=1 (count loopback TCP).
+import ctypes
+import fcntl
+import json
+import math
+import os
+import resource
+import shutil
+import signal
+import socket
+import stat
+import struct
+import subprocess
+import sys
+import time
+
+PROC = os.environ.get("WS_RES_PROC", "/proc")
+HZ = int(os.environ.get("WS_RES_HZ") or os.sysconf("SC_CLK_TCK"))
+PAGE = int(os.environ.get("WS_RES_PAGE") or os.sysconf("SC_PAGE_SIZE"))
+FIXTURE_PANES = os.environ.get("WS_RES_PANES")
+FIXTURE_TCP = os.environ.get("WS_RES_TCP")
+LOOPBACK = os.environ.get("WS_RES_LOOPBACK") == "1"
+NET_MAP_EVERY = 10.0   # s between socket → process maps (only processes that had sockets, and new ones)
+NET_MAP_MIN = 6.0      # s between maps when traffic is seen on sockets not mapped yet
+NET_MAP_FULL = 60.0    # s between maps of EVERY process of the tabs
+NET_MAP_PENDING = 20.0 # … or 20 s while some traffic is on sockets no map has found yet
+FULL_SCAN = 60.0       # s between reads of every /proc/<pid>/stat (in between, known outsiders are skipped)
+GPU_EVERY = 4.0        # s between GPU queries through NVML (a query costs ~0.1 ms)
+SMI_EVERY = 60.0       # s between nvidia-smi runs when NVML cannot be loaded (one costs 20-100 ms of CPU)
+GPU_APPS_EVERY = 60.0  # s between queries of the processes using the GPU
+GPU_RETRY = 300.0      # s before trying the GPU again after it failed
+READ_EVERY = 10.0      # s between tmux reads when there is nothing to write
+SETTINGS = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "tmux-claude", "settings")
+GLYPHS = "▁▂▃▄▅▆▇█"
+GLYPH_STEPS = (5, 15, 30, 50, 80, 120, 200)   # CPU % where the glyph goes one block up
+# Colours are references to the theme (tmux-theme sets @t_*), expanded by #{E:…} when the bar is drawn: a theme
+# change recolours the values at once, and the strings stay short (tmux refuses a command over ~16 KB).
+DIM = "#{@t_dim}"
+LEVEL_COLOUR = {"ok": "#{@t_ok}", "warn": "#{@t_tool}", "crit": "#{@t_alert}"}
+MAX_BATCH = 12000      # bytes of arguments per tmux call
+
+
+# ---------------------------------------------------------------- fixed-width formats (every one: constant width)
+def fmt_cpu(pct):
+    """CPU % of one core → 4 columns ("  0%" … "999%"), capped at 999."""
+    if pct is None:
+        return " --%"
+    return "%3d%%" % min(999, max(0, int(round(pct))))
+
+
+def fmt_gib(b):
+    """Bytes → 6 columns in GiB with one decimal ("  0.0G" … "999.9G")."""
+    if b is None:
+        return "   --G"
+    return "%5.1fG" % min(999.9, max(0.0, b / 2 ** 30))
+
+
+def _scaled(v, base, units):
+    """v → 4 columns: 3 digits, or 1-3 digits with a unit suffix (1.2k, 12k, 999k, 1.0M …); capped."""
+    v = max(0.0, float(v))
+    if v < 999.5:
+        return "%3d%s" % (int(round(v)), units[0])
+    for u in units[1:]:
+        v /= base
+        if v < 9.95:
+            return "%3.1f%s" % (v, u)
+        if v < 999.5:
+            return "%3d%s" % (int(round(v)), u)
+    return "999" + units[-1]
+
+
+def fmt_ops(v):
+    """Operations per second → 4 columns, SI units ("   0", " 999", "1.2k", " 12k", "1.0M" … "999T")."""
+    if v is None:
+        return "  --"
+    s = _scaled(v, 1000.0, ("", "k", "M", "G", "T"))
+    return s.rjust(4)
+
+
+def fmt_bytes(v):
+    """Bytes (per second) → 4 columns, binary units ("  0B", "999B", "1.0K", " 12K" … "999T")."""
+    if v is None:
+        return "  --"
+    return _scaled(v, 1024.0, ("B", "K", "M", "G", "T"))
+
+
+def visible(s):
+    """The text of a styled string without its #[…] sequences (what occupies columns)."""
+    out, i = [], 0
+    while i < len(s):
+        if s.startswith("#[", i):
+            j = s.find("]", i)
+            i = len(s) if j < 0 else j + 1
+            continue
+        out.append(s[i])
+        i += 1
+    return "".join(out)
+
+
+def lab(text):
+    return "#[fg=%s]%s#[fg=default]" % (DIM, text)
+
+
+def col(text, level):
+    return "#[fg=%s]%s#[fg=default]" % (LEVEL_COLOUR[level], text)
+
+
+def level(v, warn, crit):
+    if v is None:
+        return "ok"
+    return "crit" if v >= crit else "warn" if v >= warn else "ok"
+
+
+def render(row, cfg, gpu_per_proc):
+    """Window values → (full panel, compact, glyph), each of constant visible width."""
+    cpu, mem = row.get("cpu"), row.get("mem")
+    lc = level(cpu, cfg["cpu_warn"], cfg["cpu_crit"])
+    lm = level(None if mem is None else mem / 2 ** 30, cfg["ram_warn"], cfg["ram_crit"])
+    gpu = fmt_bytes(row.get("gpu")) if gpu_per_proc and row.get("gpu") is not None else "  --"
+    full = " ".join((lab("CPU"), col(fmt_cpu(cpu), lc), lab("RAM"), col(fmt_gib(mem), lm),
+                     lab("IO"), fmt_ops(row.get("ops")) + lab("/s"), fmt_bytes(row.get("iob")) + lab("/s"),
+                     lab("NET") + " " + lab("↓") + fmt_bytes(row.get("rx")), lab("↑") + fmt_bytes(row.get("tx")),
+                     lab("GPU"), gpu))
+    compact = " ".join((lab("tab CPU"), col(fmt_cpu(cpu), lc), lab("RAM"), col(fmt_gib(mem), lm)))
+    if cpu is None:
+        glyph = lab(GLYPHS[0])
+    else:
+        n = sum(1 for s in GLYPH_STEPS if cpu >= s)
+        glyph = lab(GLYPHS[0]) if n == 0 and cpu < 0.5 else col(GLYPHS[n], lc)
+    return full, compact, glyph
+
+
+def render_host_gpu(g):
+    """Machine-wide GPU → constant width for a given GPU (total memory does not change)."""
+    if not g or g.get("total") is None:
+        return ""
+    util = " --%" if g.get("util") is None else "%3d%%" % min(999, g["util"])
+    used = "  --" if g.get("used") is None else "%4.1f" % min(99.9, g["used"] / 1024.0)
+    return "%s %s %s/%.0fG" % (lab("GPU"), util, used, g["total"] / 1024.0)
+
+
+# ---------------------------------------------------------------- /proc readers
+def read(path):
+    """The whole file as text, or None. Raw os.open/os.read: the sampler reads ~600 small /proc files per sample and
+    Python's buffered open() costs three times as much per file."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return None
+    try:
+        chunks = []
+        while True:
+            b = os.read(fd, 65536)
+            if not b:
+                break
+            chunks.append(b)
+            if len(b) < 4096 and path.startswith(PROC + "/"):   # /proc gives a small file in one read
+                break
+        return b"".join(chunks).decode("utf-8", "replace")
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def boot_time():
+    s = read(PROC + "/stat") or ""
+    for line in s.splitlines():
+        if line.startswith("btime "):
+            return int(line.split()[1])
+    return 0
+
+
+IDLE_SKIP = 2          # samples a process idle for a while is not read (its counters do not change while idle)
+
+
+def read_stats(skip=frozenset(), idle=None):
+    """pid → (ppid, starttime ticks, utime+stime+cutime+cstime ticks, rss bytes) of every process but «skip».
+    «idle» (pid → [values, idle streak, samples left to skip]) spares the read of a process that used no CPU in its
+    last reads: it is read again after up to IDLE_SKIP samples, and what it used meanwhile is counted then (the
+    counters are cumulative). Generating /proc/<pid>/stat is most of a sample's cost; most processes are idle."""
+    out = {}
+    for name in os.listdir(PROC):
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        if pid in skip:
+            continue
+        c = idle.get(pid) if idle is not None else None
+        if c is not None and c[2] > 0:
+            c[2] -= 1
+            out[pid] = c[0]
+            continue
+        s = read("%s/%s/stat" % (PROC, name))
+        if not s:
+            continue
+        r = s.rfind(")")
+        f = s[r + 2:].split()
+        try:
+            v = (int(f[1]), int(f[19]), int(f[11]) + int(f[12]) + int(f[13]) + int(f[14]), int(f[21]) * PAGE)
+        except (IndexError, ValueError):
+            continue
+        out[pid] = v
+        if idle is not None:
+            if c is not None and c[0][:3] == v[:3]:
+                streak = c[1] + 1
+                idle[pid] = [v, streak, min(streak, IDLE_SKIP)]
+            else:
+                idle[pid] = [v, 0, 0]
+    if idle is not None:
+        for pid in [p for p in idle if p not in out]:
+            del idle[pid]
+    return out
+
+
+def read_io(pid):
+    """(read+write syscalls, storage bytes) or None when /proc/<pid>/io cannot be read."""
+    s = read("%s/%d/io" % (PROC, pid))
+    if not s:
+        return None
+    v = {}
+    for line in s.splitlines():
+        k, _, n = line.partition(":")
+        try:
+            v[k.strip()] = int(n)
+        except ValueError:
+            pass
+    return (v.get("syscr", 0) + v.get("syscw", 0), v.get("read_bytes", 0) + v.get("write_bytes", 0))
+
+
+def read_pss(pid):
+    s = read("%s/%d/smaps_rollup" % (PROC, pid))
+    if not s:
+        return None
+    for line in s.splitlines():
+        if line.startswith("Pss:"):
+            try:
+                return int(line.split()[1]) * 1024
+            except (IndexError, ValueError):
+                return None
+    return None
+
+
+def socket_inodes(pid):
+    """Inodes of the sockets a process has open (from /proc/<pid>/fd)."""
+    out = []
+    d = "%s/%d/fd" % (PROC, pid)
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return out
+    for n in names:
+        try:
+            link = os.readlink(d + "/" + n)
+        except OSError:
+            continue
+        if link.startswith("socket:["):
+            try:
+                out.append(int(link[8:-1]))
+            except ValueError:
+                pass
+    return out
+
+
+def tcp_sockets():
+    """inode → (bytes acked, bytes received, loopback) of every TCP socket of this network namespace (sock_diag)."""
+    if FIXTURE_TCP:
+        out = {}
+        for line in (read(FIXTURE_TCP) or "").splitlines():
+            p = line.split("\t")
+            if len(p) >= 4 and p[0].isdigit():
+                out[int(p[0])] = (int(p[1]), int(p[2]), p[3] == "1")
+        return out
+    out = {}
+    s = socket.socket(socket.AF_NETLINK, socket.SOCK_DGRAM, 4)   # NETLINK_SOCK_DIAG
+    s.settimeout(1.0)
+    try:
+        for seq, fam in enumerate((socket.AF_INET, socket.AF_INET6), 1):
+            # inet_diag_req_v2: family, protocol, ext (1 << INET_DIAG_INFO - 1), pad, states, sockid (48 bytes)
+            req = struct.pack("=BBBBI", fam, socket.IPPROTO_TCP, 1 << 1, 0, 0xFFFFFFFF) + b"\0" * 48
+            s.send(struct.pack("=IHHII", 16 + len(req), 20, 0x301, seq, 0) + req)   # SOCK_DIAG_BY_FAMILY, DUMP
+            done = False
+            while not done:
+                data = s.recv(1 << 16)
+                off = 0
+                while off + 16 <= len(data):
+                    ln, typ = struct.unpack_from("=IH", data, off)
+                    if ln < 16 or typ in (2, 3):   # NLMSG_ERROR, NLMSG_DONE
+                        done = True
+                        break
+                    b = off + 16
+                    dst = data[b + 24:b + 40]
+                    inode = struct.unpack_from("=I", data, b + 68)[0]
+                    if fam == socket.AF_INET:
+                        loop = dst[0] == 127
+                    else:
+                        loop = dst == b"\0" * 15 + b"\1" or (dst[:12] == b"\0" * 10 + b"\xff\xff" and dst[12] == 127)
+                    a, end = b + 72, off + ln
+                    while a + 4 <= end:
+                        alen, atyp = struct.unpack_from("=HH", data, a)
+                        if alen < 4:
+                            break
+                        if atyp == 2 and alen - 4 >= 136:   # INET_DIAG_INFO: tcp_info.bytes_acked / bytes_received
+                            acked, received = struct.unpack_from("=QQ", data, a + 4 + 120)
+                            if inode:
+                                out[inode] = (acked, received, loop)
+                        a += (alen + 3) & ~3
+                    off += (ln + 3) & ~3
+    finally:
+        s.close()
+    return out
+
+
+# ---------------------------------------------------------------- the sampler
+class Sampler:
+    """Keeps the previous sample and turns counters into per-window rates."""
+
+    def __init__(self, state=None):
+        st = state or {}
+        self.t = st.get("t")                       # epoch of the previous sample
+        self.prev = st.get("prev", {})             # "pid:start" → [total ticks, io ops, io bytes, ppid key, win]
+        self.sticky = st.get("sticky", {})         # "pid:start" → window it belongs to
+        self.pss = st.get("pss", {})               # "pid:start" → [pss, rss when read, epoch]
+        self.net_last = {int(k): v for k, v in st.get("net_last", {}).items()}   # inode → [acked, received] counted
+        self.inode_win = {int(k): v for k, v in st.get("inode_win", {}).items()}
+        self.map_t = st.get("map_t", 0.0)
+        self.net_ok = st.get("net_ok", True)
+        self.pss_ok = st.get("pss_ok", None)
+        self.gpu = st.get("gpu", {})               # host GPU: util, used, total (MiB); apps: pid → MiB
+        self.gpu_apps = {int(k): v for k, v in st.get("gpu_apps", {}).items()}
+        self.gpu_per_proc = st.get("gpu_per_proc", False)
+        self.outsiders = set(st.get("outsiders", []))   # pids in no tab, not read again until the next full scan
+        self.scan_t = st.get("scan_t", 0.0)
+        self.sock_keys = set(st.get("sock_keys", []))   # processes that had sockets at the last map
+        self.mapped = set(st.get("mapped", []))         # processes looked at since the last full map
+        self.map_full_t = st.get("map_full_t", 0.0)
+        self.foreign = set(st.get("foreign", []))       # sockets a full map found in no tab (other programs)
+
+    def state(self):
+        return {"t": self.t, "prev": self.prev, "sticky": self.sticky, "pss": self.pss, "net_last": self.net_last,
+                "inode_win": self.inode_win, "map_t": self.map_t, "net_ok": self.net_ok, "pss_ok": self.pss_ok,
+                "gpu": self.gpu, "gpu_apps": self.gpu_apps, "gpu_per_proc": self.gpu_per_proc,
+                "outsiders": sorted(self.outsiders), "scan_t": self.scan_t, "sock_keys": sorted(self.sock_keys),
+                "mapped": sorted(self.mapped), "map_full_t": self.map_full_t, "foreign": sorted(self.foreign)}
+
+    def sample(self, panes, now, pss_every=60.0, skip_pid=None):
+        """panes: [(window, pane pid)] → {window: {cpu, mem, mem_kind, ops, iob, rx, tx, gpu, procs}}."""
+        # Processes outside every tab cannot join one (a new child has a new pid; reparenting goes to a subreaper
+        # outside the tabs), so their stat is not read again until the next full scan (pid reuse is caught there).
+        if now - self.scan_t >= FULL_SCAN:
+            self.outsiders = set()
+            self.scan_t = now
+        if not hasattr(self, "_idle"):
+            self._idle = {}
+        stats = read_stats(self.outsiders - {root for _, root in panes}, self._idle)
+        if not getattr(self, "_btime", None):
+            self._btime = boot_time()
+        btime = self._btime
+        kids = {}
+        for pid, (ppid, _, _, _) in stats.items():
+            kids.setdefault(ppid, []).append(pid)
+        windows = []
+        for w, _ in panes:
+            if w not in windows:
+                windows.append(w)
+        win_of = {}
+        for w, root in panes:   # breadth-first from each pane; the first window to reach a process keeps it
+            todo = [root] if root in stats else []
+            while todo:
+                p = todo.pop()
+                if p in win_of or p == skip_pid:
+                    continue
+                win_of[p] = w
+                todo.extend(kids.get(p, ()))
+        key = {p: "%d:%d" % (p, stats[p][1]) for p in stats}
+        for p in stats:   # reparented (its parent died, a subreaper adopted it): it stays in its tab
+            if p not in win_of and p != skip_pid and self.sticky.get(key[p]) in windows:
+                win_of[p] = self.sticky[key[p]]
+        self.sticky = {key[p]: w for p, w in win_of.items()}
+        self.outsiders |= {p for p in stats if p not in win_of}
+
+        first = self.t is None
+        dt = max(1e-3, now - self.t) if not first else None
+        rows = {w: {"cpu": 0.0, "mem": 0, "mem_kind": "pss", "ops": 0.0, "iob": 0.0, "rx": 0.0, "tx": 0.0,
+                    "gpu": None, "procs": 0} for w in windows}
+        cur, delta = {}, {}
+        for p, w in win_of.items():
+            ppid, start, tot, rss = stats[p]
+            k = key[p]
+            old = self.prev.get(k)
+            # No CPU time since the previous sample means no system call either: its I/O counters are unchanged.
+            io = read_io(p) if old is None or old[0] != tot else (old[1], old[2])
+            ops, iob = io if io else (0, 0)
+            cur[k] = [tot, ops, iob, key.get(ppid, ""), w]
+            if old is None:   # new to us: born after the previous sample → all of it is new, else a baseline
+                born = btime + start / HZ
+                old = [0, 0, 0] if not first and born > self.t else [tot, ops, iob]
+            delta[k] = [tot - old[0], ops - old[1], iob - old[2]]
+            rows[w]["procs"] += 1
+        # A child that ended was added to its parent's cutime/cstime and /proc/<pid>/io when the parent reaped it:
+        # what was already counted of that child is taken off the parent so it is not counted twice.
+        for k, old in self.prev.items():
+            if k not in cur and old[3] in delta:
+                d = delta[old[3]]
+                d[0] -= old[0]
+                d[1] -= old[1]
+                d[2] -= old[2]
+        if not first:
+            for k, d in delta.items():
+                r = rows[cur[k][4]]
+                r["cpu"] += max(0, d[0]) / HZ / dt * 100.0
+                r["ops"] += max(0, d[1]) / dt
+                r["iob"] += max(0, d[2]) / dt
+        self.prev = cur
+
+        # RAM: PSS for new processes now, the rest refreshed in turns (smaps_rollup walks the page tables).
+        live = set(cur)
+        self.pss = {k: v for k, v in self.pss.items() if k in live}
+        stale = sorted((self.pss[k][2], k) for k in live if k in self.pss)
+        budget = max(1, int(math.ceil(len(live) * (dt or 2.0) / max(1.0, pss_every))))
+        refresh = [k for k in live if k not in self.pss] + [k for t, k in stale if now - t >= pss_every][:budget]
+        for k in refresh:
+            p = int(k.split(":")[0])
+            v = read_pss(p)
+            if v is not None:
+                self.pss[k] = [v, stats[p][3], now]
+                self.pss_ok = True
+            elif self.pss_ok is None:
+                self.pss_ok = False
+        for p, w in win_of.items():
+            k, rss = key[p], stats[p][3]
+            c = self.pss.get(k)
+            if c:
+                rows[w]["mem"] += int(c[0] * rss / c[1]) if c[1] else c[0]
+            else:
+                rows[w]["mem"] += rss
+                rows[w]["mem_kind"] = "rss"
+
+        self._key = key
+        self._net(rows, win_of, now, first, dt)
+        if self.gpu_per_proc:
+            for p, mib in self.gpu_apps.items():
+                w = win_of.get(p)
+                if w is not None:
+                    rows[w]["gpu"] = (rows[w]["gpu"] or 0) + mib * 2 ** 20
+            for r in rows.values():
+                if r["gpu"] is None:
+                    r["gpu"] = 0
+        if first:
+            for r in rows.values():
+                r.update(cpu=None, ops=None, iob=None, rx=None, tx=None)
+        self.t = now
+        return rows
+
+    def _net(self, rows, win_of, now, first, dt):
+        if not self.net_ok:
+            for r in rows.values():
+                r["rx"] = r["tx"] = None
+            return
+        try:
+            socks = tcp_sockets()
+        except OSError:
+            self.net_ok = False
+            for r in rows.values():
+                r["rx"] = r["tx"] = None
+            return
+        socks = {i: v for i, v in socks.items() if LOOPBACK or not v[2]}
+        self.foreign &= set(socks)
+        pending = any(i not in self.inode_win and i not in self.foreign
+                      and list(v[:2]) != list(self.net_last.get(i, (0, 0))[:2]) for i, v in socks.items())
+        if now - self.map_t >= NET_MAP_EVERY or (pending and now - self.map_t >= NET_MAP_MIN):
+            # Reading every fd of every process is the costly part: a full map every NET_MAP_FULL s, in between only
+            # the processes that had sockets and the ones not looked at yet (a shell with no socket is skipped).
+            full = now - self.map_full_t >= (NET_MAP_PENDING if pending else NET_MAP_FULL)
+            if full:
+                self.inode_win, self.sock_keys, self.mapped = {}, set(), set()
+                self.map_full_t = now
+            for p, w in win_of.items():
+                k = self._key.get(p)
+                if not full and k in self.mapped and k not in self.sock_keys:
+                    continue
+                found = socket_inodes(p)
+                self.mapped.add(k)
+                if found:
+                    self.sock_keys.add(k)
+                else:
+                    self.sock_keys.discard(k)
+                for i in found:
+                    self.inode_win.setdefault(i, w)
+            live = set(self._key.values())
+            self.mapped &= live
+            self.sock_keys &= live
+            self.inode_win = {i: w for i, w in self.inode_win.items() if i in socks and w in rows}
+            if full:   # what a full map did not find belongs to programs outside the tabs: it no longer triggers maps
+                self.foreign = set(socks) - set(self.inode_win)
+            self.map_t = now
+        last = {}
+        for i, (acked, received, _) in socks.items():
+            old = self.net_last.get(i)
+            if old is None:   # a socket opened after the previous sample counts from zero
+                old = [acked, received] if first else [0, 0]
+            w = self.inode_win.get(i)
+            if w in rows and not first:
+                rows[w]["tx"] += max(0, acked - old[0]) / dt
+                rows[w]["rx"] += max(0, received - old[1]) / dt
+                old = [acked, received]
+            elif first:
+                old = [acked, received]
+            last[i] = old   # not mapped yet: what it moved is counted once it is mapped
+        self.net_last = last
+
+    def poll_gpu(self, smi, now, want_apps):
+        """Blocking nvidia-smi query (the daemon runs it in a child it does not wait for). Returns success."""
+        try:
+            r = subprocess.run([smi, "--query-gpu=utilization.gpu,memory.used,memory.total",
+                                "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=8)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        parse_gpu(self, r.returncode, r.stdout)
+        if want_apps:
+            try:
+                a = subprocess.run([smi, "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"],
+                                   capture_output=True, text=True, timeout=8)
+                parse_apps(self, a.returncode, a.stdout)
+            except (OSError, subprocess.SubprocessError):
+                pass
+        return r.returncode == 0
+
+
+def _num(s):
+    try:
+        return int(float(s.strip()))
+    except ValueError:
+        return None
+
+
+def parse_gpu(s, rc, out):
+    line = out.strip().splitlines()[0] if rc == 0 and out.strip() else ""
+    p = [x for x in line.split(",")]
+    if len(p) >= 3:
+        s.gpu = {"util": _num(p[0]), "used": _num(p[1]), "total": _num(p[2])}
+    elif s.gpu:
+        s.gpu = {"util": None, "used": None, "total": s.gpu.get("total")}
+
+
+def parse_apps(s, rc, out):
+    apps = {}
+    for line in out.splitlines() if rc == 0 else ():
+        p = line.split(",")
+        if len(p) >= 2 and _num(p[0]) is not None and _num(p[1]) is not None:
+            apps[_num(p[0])] = _num(p[1])
+    s.gpu_apps = apps
+    if apps:
+        s.gpu_per_proc = True
+
+
+class Nvml:
+    """The machine's GPU through NVML (libnvidia-ml, loaded once with ctypes): ~0.1 ms per query, where running
+    nvidia-smi costs 20-100 ms of CPU each time (NVML is initialised again by every run)."""
+
+    class _Util(ctypes.Structure):
+        _fields_ = [("gpu", ctypes.c_uint), ("memory", ctypes.c_uint)]
+
+    class _Mem(ctypes.Structure):
+        _fields_ = [("total", ctypes.c_ulonglong), ("free", ctypes.c_ulonglong), ("used", ctypes.c_ulonglong)]
+
+    class _Proc(ctypes.Structure):   # nvmlProcessInfo_v1_t: the ABI of the unversioned symbol
+        _fields_ = [("pid", ctypes.c_uint), ("used", ctypes.c_ulonglong)]
+
+    def __init__(self):
+        self.lib, self.handles = None, []
+        for name in ("libnvidia-ml.so.1", "/usr/lib/wsl/lib/libnvidia-ml.so.1"):
+            try:
+                lib = ctypes.CDLL(name)
+                break
+            except OSError:
+                lib = None
+        try:
+            if lib is None or lib.nvmlInit_v2() != 0:
+                return
+            n = ctypes.c_uint()
+            if lib.nvmlDeviceGetCount_v2(ctypes.byref(n)) != 0:
+                return
+            for i in range(n.value):
+                h = ctypes.c_void_p()
+                if lib.nvmlDeviceGetHandleByIndex_v2(i, ctypes.byref(h)) == 0:
+                    self.handles.append(h)
+        except AttributeError:
+            return
+        self.lib = lib if self.handles else None
+
+    def query(self):
+        """{util: % (the busiest GPU), used, total: MiB (all GPUs)} or None."""
+        util, used, total = 0, 0, 0
+        for h in self.handles:
+            u, m = self._Util(), self._Mem()
+            if self.lib.nvmlDeviceGetUtilizationRates(h, ctypes.byref(u)) != 0 or \
+                    self.lib.nvmlDeviceGetMemoryInfo(h, ctypes.byref(m)) != 0:
+                return None
+            util, used, total = max(util, u.gpu), used + (m.used >> 20), total + (m.total >> 20)
+        return {"util": util, "used": used, "total": total}
+
+    def apps(self):
+        """pid → MiB of the processes using a GPU. WSL2/WDDM reports none."""
+        out = {}
+        for h in self.handles:
+            n = ctypes.c_uint(0)
+            rc = self.lib.nvmlDeviceGetComputeRunningProcesses(h, ctypes.byref(n), None)
+            if rc not in (0, 7) or n.value == 0:   # 7: NVML_ERROR_INSUFFICIENT_SIZE, n holds the count
+                continue
+            n = ctypes.c_uint(n.value + 8)
+            arr = (self._Proc * n.value)()
+            if self.lib.nvmlDeviceGetComputeRunningProcesses(h, ctypes.byref(n), arr) == 0:
+                for i in range(n.value):
+                    out[arr[i].pid] = out.get(arr[i].pid, 0) + (arr[i].used >> 20)
+        return out
+
+
+class Gpu:
+    """GPU source of the daemon: NVML when it loads, else nvidia-smi in a child process read on a later sample."""
+
+    def __init__(self):
+        self.smi = os.environ.get("WS_RES_NVIDIA_SMI") or ""
+        self.nvml = None if self.smi else Nvml()
+        if self.nvml is not None and self.nvml.lib is None:
+            self.nvml = None
+        if not self.smi and self.nvml is None:
+            self.smi = shutil.which("nvidia-smi") or "/usr/lib/wsl/lib/nvidia-smi"
+        self.next = self.apps_next = 0.0
+        self.proc, self.started = None, 0.0
+
+    def poll(self, s, now):
+        if self.nvml is not None:
+            if now >= self.next:
+                g = self.nvml.query()
+                if g is None:
+                    s.gpu = {"util": None, "used": None, "total": (s.gpu or {}).get("total")}
+                else:
+                    s.gpu = g
+                self.next = now + GPU_EVERY
+            if now >= self.apps_next:
+                s.gpu_apps = self.nvml.apps()
+                s.gpu_per_proc = s.gpu_per_proc or bool(s.gpu_apps)
+                self.apps_next = now + GPU_APPS_EVERY
+            return
+        if self.proc is not None and self.proc.poll() is not None:
+            o = self.proc.stdout.read()
+            self.proc.stdout.close()
+            head, _, apps = o.partition("\n--apps--\n")
+            parse_gpu(s, 0 if head.strip() else 1, head)
+            if apps:
+                parse_apps(s, 0, apps)
+            if not head.strip():
+                self.next = now + GPU_RETRY
+            self.proc = None
+        elif self.proc is not None and now - self.started > 10:
+            self.proc.kill()
+        if self.proc is None and now >= self.next and os.access(self.smi, os.X_OK):
+            q = "'%s' --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits" % self.smi
+            if now >= self.apps_next:
+                q += "; echo --apps--; '%s' --query-compute-apps=pid,used_memory --format=csv,noheader,nounits" % self.smi
+                self.apps_next = now + GPU_APPS_EVERY
+            self.proc = subprocess.Popen(["sh", "-c", q], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                         stdin=subprocess.DEVNULL, text=True)
+            self.started, self.next = now, now + SMI_EVERY
+
+
+# ---------------------------------------------------------------- tmux side
+def tmux_bin():
+    return shutil.which("tmux") or "tmux"
+
+
+def server_socket():
+    t = os.environ.get("TMUX", "")
+    if t:
+        return t.split(",")[0]
+    try:
+        r = subprocess.run([tmux_bin(), "display", "-p", "#{socket_path}"], capture_output=True, text=True, timeout=5)
+        return r.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def state_dir(sock):
+    d = os.environ.get("WS_RES_DIR")
+    if not d:
+        # Never a predictable name in the shared /tmp (CWE-377): the per-user runtime dir, else the user's cache.
+        base = os.environ.get("XDG_RUNTIME_DIR") or os.path.join(
+            os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "tmux-res")
+        d = os.path.join(base, "tmux-res-%d" % os.getuid(), (sock or "fixture").replace("/", "_"))
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    st = os.lstat(d)
+    if st.st_uid != os.getuid() or not stat.S_ISDIR(st.st_mode):
+        raise SystemExit("tmux-res: %s is not a directory owned by you; refusing to use it" % d)
+    if stat.S_IMODE(st.st_mode) & 0o077:
+        os.chmod(d, 0o700)
+    return d
+
+
+def settings_get(name):
+    v = ""
+    for line in (read(SETTINGS) or "").splitlines():
+        if line.startswith(name + "="):
+            v = line.split("=", 1)[1].strip()
+    return v
+
+
+def settings_put(name, value):
+    lines = [x for x in (read(SETTINGS) or "").splitlines() if not x.startswith(name + "=")]
+    lines.append("%s=%s" % (name, value))
+    os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
+    tmp = SETTINGS + ".tmp"
+    with open(tmp, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    os.replace(tmp, SETTINGS)
+
+
+def fnum(s, default):
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return default
+
+
+READ_FMT = ["list-panes", "-a", "-F", "P\t#{window_id}\t#{pane_pid}\t#{?#{&&:#{window_active},#{session_attached}},1,0}", ";", "list-clients", "-F", "C\t#{client_name}",
+            ";", "display", "-p", "G\t#{@ws_res_mode}\t#{@ws_res_tabs}\t#{status-interval}\t#{@ws_res_cpu_warn}\t"
+            "#{@ws_res_cpu_crit}\t#{@ws_res_ram_warn}\t#{@ws_res_ram_crit}\t#{@ws_res_gpu}\t#{@ws_res_interval}\t"
+            "#{@ws_res_pss_every}\t#{status}"]
+
+
+def parse_read(out):
+    panes, clients, g = [], 0, None
+    seen = set()
+    for line in out.splitlines():
+        p = line.split("\t")
+        if p[0] == "P" and len(p) >= 3 and p[2].isdigit() and (p[1], p[2]) not in seen:
+            seen.add((p[1], p[2]))
+            panes.append((p[1], int(p[2])))
+        elif p[0] == "C":
+            clients += 1
+        elif p[0] == "G" and len(p) >= 12:
+            g = p[1:]
+    return panes, clients, g
+
+
+def active_windows(out):
+    """Windows on screen now (the current window of an attached session): their panel is written every sample."""
+    return {p[1] for p in (line.split("\t") for line in out.splitlines()) if p[0] == "P" and p[-1] == "1"}
+
+
+def config(g):
+    g = g or [""] * 11
+    return {"mode": g[0] or settings_get("res_mode") or "full", "tabs": g[1] or settings_get("res_tabs") or "off",
+            "interval_status": g[2], "cpu_warn": fnum(g[3], 80.0), "cpu_crit": fnum(g[4], 150.0),
+            "ram_warn": fnum(g[5], 4.0), "ram_crit": fnum(g[6], 8.0), "gpu": g[7] or "on",
+            "interval": max(0.2, fnum(os.environ.get("WS_RES_INTERVAL") or g[8], 2.0)),
+            "pss_every": max(5.0, fnum(g[9], 60.0)), "status": g[10]}
+
+
+def placeholders():
+    full, compact, _ = render({}, {"cpu_warn": 80, "cpu_crit": 150, "ram_warn": 4, "ram_crit": 8}, False)
+    return full, compact, lab(" ")
+
+
+def batch(cmds):
+    """tmux commands → argument lists joined with «;», each under MAX_BATCH bytes."""
+    out, cur, size = [], [], 0
+    for c in cmds:
+        n = sum(len(a.encode()) + 1 for a in c) + 2
+        if cur and size + n > MAX_BATCH:
+            out.append(cur[:-1])
+            cur, size = [], 0
+        cur += c + [";"]
+        size += n
+    if cur:
+        out.append(cur[:-1])
+    return out
+
+
+def write_cache(d, rows, s, now, cfg, cost):
+    lines = ["# tmux-res v1\t%d\t%.1f\twindow cpu%%-of-one-core mem-bytes mem-kind io-ops/s io-bytes/s "
+             "net-rx/s net-tx/s gpu-bytes procs" % (now, cfg["interval"])]
+    for w, r in sorted(rows.items()):
+        def v(x, f="%.1f"):
+            return "-" if x is None else f % x
+        lines.append("\t".join((w, v(r["cpu"]), str(r["mem"]), r["mem_kind"], v(r["ops"]), v(r["iob"], "%.0f"),
+                                v(r["rx"], "%.0f"), v(r["tx"], "%.0f"), v(r["gpu"], "%.0f"), str(r["procs"]))))
+    atomic(os.path.join(d, "tabs.tsv"), "\n".join(lines) + "\n")
+    meta = {"pid": os.getpid(), "t": now, "interval": cfg["interval"], "mode": cfg["mode"], "tabs": cfg["tabs"],
+            "net_per_tab": s.net_ok, "pss": s.pss_ok, "gpu_host": bool(s.gpu.get("total")),
+            "gpu_per_tab": s.gpu_per_proc, "gpu": s.gpu, "cost": cost}
+    atomic(os.path.join(d, "meta.json"), json.dumps(meta) + "\n")
+
+
+def atomic(path, text):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def daemon(samples=0):
+    sock = None if FIXTURE_PANES else server_socket()
+    if not FIXTURE_PANES and not sock:
+        return 1
+    d = state_dir(sock)
+    lock = open(os.path.join(d, "lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("tmux-res: already running for this server")
+        return 0
+    pidf = os.path.join(d, "pid")
+    atomic(pidf, "%d\n" % os.getpid())
+    stop = []
+    signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    tm = [tmux_bin(), "-S", sock] if sock else None
+    s = Sampler()
+    gpu = Gpu()
+    try:   # one open /proc/<pid>/stat per process of the tabs (StatFiles)
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, min(hard, 4096)), hard))
+    except (ValueError, OSError):
+        pass
+    written = {}
+    layout = None
+    globals_set = False
+    fails = n = 0
+    t0, c0 = time.time(), sum(os.times()[:4])
+    out = read(FIXTURE_PANES) if FIXTURE_PANES else ""
+    pending = []
+    last_read = last_all = 0.0
+    clients = 0
+    try:
+        while not stop:
+            # One tmux call per sample: the reads for this sample and the writes of the previous one. With nothing
+            # to write (every tab idle) the tabs and options are read again only every READ_EVERY s.
+            if tm and (pending or not clients or time.time() - last_read >= READ_EVERY):
+                last_read = time.time()
+                try:
+                    r = subprocess.run(tm + READ_FMT + pending, capture_output=True, text=True, timeout=5)
+                    out = r.stdout
+                    if r.returncode != 0 and pending:
+                        written = {}   # a window closed between samples: rewrite everything next time
+                        print("tmux: %s" % r.stderr.strip()[:300], file=sys.stderr, flush=True)
+                    fails = 0 if "G\t" in out else fails + 1
+                except (OSError, subprocess.SubprocessError):
+                    fails += 1
+                if fails >= 3:
+                    break
+            elif not tm:
+                out = read(FIXTURE_PANES) or ""
+            panes, clients, g = parse_read(out)
+            cfg = config(g)
+            if cfg["mode"] == "off":
+                break
+            if tm and not clients:   # nobody looks at this server: no sampling, only watch for a client every interval
+                s = Sampler()        # the next sample after an attach starts from a fresh baseline
+                time.sleep(cfg["interval"])
+                continue
+            now = float(os.environ.get("WS_RES_NOW") or time.time())
+            rows = s.sample(panes, now, cfg["pss_every"], skip_pid=os.getpid())
+            if cfg["gpu"] != "off":
+                gpu.poll(s, now)
+            n += 1
+            cost = (sum(os.times()[:4]) - c0) / max(1e-3, time.time() - t0) * 100.0
+            write_cache(d, rows, s, now, cfg, round(cost, 3))
+            # Writes, only what changed and only the options the bar shows now (@res_p in full mode, @res_c in compact
+            # mode or when the monitor line is hidden, @res_t with the tab glyphs on), never while a menu is open
+            # (status-interval 0: a redraw flickers it).
+            cmds = []
+            if tm and clients and cfg["interval_status"] != "0":
+                shown = (cfg["mode"] == "full", cfg["mode"] == "compact" or cfg["status"] != "2", cfg["tabs"] == "on")
+                if shown != layout:
+                    written, layout = {}, shown
+                if not globals_set:
+                    pf, pc, pt = placeholders()
+                    cmds += [["set", "-gw", "@res_p", pf], ["set", "-gw", "@res_c", pc], ["set", "-gw", "@res_t", pt],
+                             ["set", "-g", "@ws_res_mode", cfg["mode"]], ["set", "-g", "@ws_res_tabs", cfg["tabs"]]]
+                    globals_set = True
+                # The panel of a tab nobody is looking at is refreshed every READ_EVERY s, not every sample: with many
+                # busy tabs most writes (and the tmux call they need) would be for windows off screen.
+                on_screen = active_windows(out)
+                everyone = time.time() - last_all >= READ_EVERY
+                if everyone:
+                    last_all = time.time()
+                for w, row in rows.items():
+                    for opt, v, on in zip(("@res_p", "@res_c", "@res_t"), render(row, cfg, s.gpu_per_proc), shown):
+                        if opt != "@res_t" and not everyone and w not in on_screen:
+                            continue
+                        if on and written.get((w, opt)) != v:
+                            cmds.append(["set", "-w", "-t", w, opt, v])
+                            written[(w, opt)] = v
+                hg = render_host_gpu(s.gpu) if cfg["gpu"] != "off" else ""
+                if written.get(("", "@res_hgpu")) != hg:
+                    cmds.append(["set", "-g", "@res_hgpu", hg])
+                    written[("", "@res_hgpu")] = hg
+                live = set(rows)
+                written = {k: v for k, v in written.items() if k[0] in live or k[0] == ""}
+            batches = batch(cmds)
+            for b in batches[1:]:   # many tabs changed at once (start, theme): the rest goes now, in more calls
+                subprocess.run(tm + b, capture_output=True, timeout=5)
+            pending = [";"] + batches[0] if batches else []
+            if samples and n >= samples:
+                if tm and pending:
+                    subprocess.run(tm + pending[1:], capture_output=True, timeout=5)
+                break
+            time.sleep(cfg["interval"])
+    finally:
+        if read(pidf) == "%d\n" % os.getpid():
+            os.unlink(pidf)
+    return 0
+
+
+def running(d):
+    pid = (read(os.path.join(d, "pid")) or "").strip()
+    if pid.isdigit() and "tmux-res" in (read("/proc/%s/cmdline" % pid) or ""):
+        return int(pid)
+    return None
+
+
+def ensure():
+    if (settings_get("res_mode") or "full") == "off" and not FIXTURE_PANES:
+        return 0
+    sock = None if FIXTURE_PANES else server_socket()
+    if not FIXTURE_PANES and not sock:
+        return 1
+    d = state_dir(sock)
+    if running(d):
+        return 0
+    with open(os.devnull, "rb") as nul_in, open(os.path.join(d, "log"), "ab") as log:
+        subprocess.Popen([sys.executable, os.path.abspath(__file__), "daemon"], stdin=nul_in, stdout=log, stderr=log,
+                         start_new_session=True, close_fds=True)
+    return 0
+
+
+def tmux(*args):
+    try:
+        return subprocess.run([tmux_bin()] + list(args), capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def stop():
+    d = state_dir(server_socket())
+    pid = running(d)
+    if pid:
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(30):
+            if not running(d):
+                break
+            time.sleep(0.1)
+    for w in sorted(set(tmux("list-windows", "-a", "-F", "#{window_id}").split())):
+        tmux("set", "-wu", "-t", w, "@res_p", ";", "set", "-wu", "-t", w, "@res_c", ";", "set", "-wu", "-t", w,
+             "@res_t")
+    tmux("set", "-gwu", "@res_p", ";", "set", "-gwu", "@res_c", ";", "set", "-gwu", "@res_t", ";",
+         "set", "-gu", "@res_hgpu")
+    return 0
+
+
+def cmd_mode(m):
+    if m not in ("full", "compact", "off"):
+        print("usage: tmux-res mode full|compact|off", file=sys.stderr)
+        return 2
+    settings_put("res_mode", m)
+    tmux("set", "-g", "@ws_res_mode", m)
+    if m == "off":
+        stop()
+    else:
+        ensure()
+    tmux("refresh-client", "-S")
+    tmux("display", "Tab resources: %s" % m)
+    return 0
+
+
+def cmd_tabs(v):
+    if v not in ("on", "off"):
+        print("usage: tmux-res tabs on|off", file=sys.stderr)
+        return 2
+    settings_put("res_tabs", v)
+    tmux("set", "-g", "@ws_res_tabs", v)
+    tmux("refresh-client", "-S")
+    tmux("display", "CPU glyph on each tab: %s" % v)
+    return 0
+
+
+def load_meta(d):
+    try:
+        return json.loads(read(os.path.join(d, "meta.json")) or "{}")
+    except ValueError:
+        return {}
+
+
+def cmd_status():
+    d = state_dir(server_socket())
+    m, pid = load_meta(d), running(d)
+    print("Sampler:        %s" % ("running, pid %d, every %.1f s" % (pid, m.get("interval", 2)) if pid else "stopped"))
+    print("Mode:           %s · tab glyphs %s" % (settings_get("res_mode") or "full", settings_get("res_tabs") or "off"))
+    if m:
+        print("Cost:           %.2f %% of one core since it started (process and its children)" % m.get("cost", 0))
+        print("Last sample:    %ds ago" % max(0, time.time() - m.get("t", 0)))
+        print("RAM per tab:    %s" % ("PSS (smaps_rollup)" if m.get("pss") else "RSS (smaps_rollup not readable)"))
+        print("NET per tab:    %s" % ("TCP via sock_diag" if m.get("net_per_tab") else "no (sock_diag unavailable)"))
+        g = m.get("gpu") or {}
+        print("GPU host:       %s" % ("yes, %s MiB total" % g.get("total") if g.get("total")
+                                       else "no (no NVML library or nvidia-smi answered)"))
+        print("GPU per tab:    %s" % ("yes" if m.get("gpu_per_tab") else "no: the driver reports no processes "
+                                       "(WSL2/WDDM), shown as --"))
+    print("Cache:          %s" % d)
+    return 0
+
+
+def cmd_show():
+    d = state_dir(server_socket())
+    names = {}
+    for line in tmux("list-windows", "-a", "-F", "#{window_id}\t#{session_name}:#{window_index} #{window_name}"
+                     ).splitlines():
+        w, _, n = line.partition("\t")
+        names.setdefault(w, n)
+    m = load_meta(d)
+    print("%-28s %4s %6s %4s %4s %4s %4s %4s %5s" % ("tab", "CPU", "RAM", "IO", "IO/s", "↓", "↑", "GPU", "procs"))
+    for line in (read(os.path.join(d, "tabs.tsv")) or "").splitlines():
+        if line.startswith("#"):
+            continue
+        p = line.split("\t")
+        if len(p) < 10:
+            continue
+
+        def f(x):
+            return None if x == "-" else float(x)
+        gpu = fmt_bytes(f(p[8])) if m.get("gpu_per_tab") and p[8] != "-" else "  --"
+        print("%-28s %s %s %s %s %s %s %s %5s" % (names.get(p[0], p[0])[:28], fmt_cpu(f(p[1])), fmt_gib(f(p[2])),
+                                                  fmt_ops(f(p[4])), fmt_bytes(f(p[5])), fmt_bytes(f(p[6])),
+                                                  fmt_bytes(f(p[7])), gpu, p[9]))
+    return 0
+
+
+def cmd_sample():
+    """One sample with the state kept in the cache directory (tests): prints window, values and the three strings."""
+    d = state_dir(None if FIXTURE_PANES else server_socket())
+    sf = os.path.join(d, "state.json")
+    try:
+        st = json.loads(read(sf) or "{}")
+    except ValueError:
+        st = {}
+    s = Sampler(st)
+    if FIXTURE_PANES:
+        panes, _, g = parse_read(read(FIXTURE_PANES) or "")
+    else:
+        panes, _, g = parse_read(tmux(*READ_FMT))
+    cfg = config(g)
+    smi = os.environ.get("WS_RES_NVIDIA_SMI", "")
+    if smi and smi != "none":
+        s.poll_gpu(smi, 0, True)
+    now = float(os.environ.get("WS_RES_NOW") or time.time())
+    rows = s.sample(panes, now, cfg["pss_every"])
+    write_cache(d, rows, s, now, cfg, 0.0)
+    atomic(sf, json.dumps(s.state()))
+    for w, r in sorted(rows.items()):
+        full, compact, glyph = render(r, cfg, s.gpu_per_proc)
+        print("\t".join([w] + ["-" if r[k] is None else str(round(r[k], 3)) if isinstance(r[k], float) else str(r[k])
+                               for k in ("cpu", "mem", "mem_kind", "ops", "iob", "rx", "tx", "gpu", "procs")]
+                        + [full, compact, glyph]))
+    hg = render_host_gpu(s.gpu)
+    if hg:
+        print("host\t" + hg)
+    return 0
+
+
+def main(argv):
+    cmd = argv[1] if len(argv) > 1 else ""
+    if cmd == "daemon":
+        n = int(argv[3]) if len(argv) > 3 and argv[2] == "--samples" else 0
+        return daemon(n)
+    if cmd == "ensure":
+        return ensure()
+    if cmd == "stop":
+        return stop()
+    if cmd == "mode" and len(argv) > 2:
+        return cmd_mode(argv[2])
+    if cmd == "tabs" and len(argv) > 2:
+        return cmd_tabs(argv[2])
+    if cmd == "status":
+        return cmd_status()
+    if cmd == "show":
+        return cmd_show()
+    if cmd == "sample":
+        return cmd_sample()
+    if cmd == "fmt" and len(argv) > 3:
+        f = {"cpu": fmt_cpu, "gib": fmt_gib, "ops": fmt_ops, "bytes": fmt_bytes}.get(argv[2])
+        if f:
+            print("[%s]" % f(float(argv[3])))
+            return 0
+    if cmd == "width" and len(argv) > 2:
+        print(len(visible(argv[2])))
+        return 0
+    with open(os.path.abspath(__file__)) as f:
+        for line in f.read().splitlines()[1:]:
+            if not line.startswith("#"):
+                break
+            print(line[2:])
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

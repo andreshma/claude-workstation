@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+#
+# tmux-az-name — prints the name of the default Azure subscription for the status bar, read from the Azure CLI's own
+# profile file instead of running `az account show` (a Python start-up on every 15 s refresh, the bar's most
+# expensive segment). The file holds subscription names and ids, never tokens; prints nothing when there is no
+# profile or no default subscription.
+# Usage: tmux-az-name              (honours AZURE_CONFIG_DIR, as az does)
+set -uo pipefail
+
+profile="${AZURE_CONFIG_DIR:-$HOME/.azure}/azureProfile.json"
+[[ -r "$profile" ]] || exit 0
+# The Azure CLI writes the file with a UTF-8 byte order mark, which jq refuses.
+sed '1s/^\xEF\xBB\xBF//' "$profile" 2>/dev/null \
+  | jq -r 'first(.subscriptions[]? | select(.isDefault == true) | .name) // empty' 2>/dev/null
+exit 0

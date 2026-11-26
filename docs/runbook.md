@@ -140,6 +140,45 @@ stay in clear and `ws-audit` fails; the first run with a key seals the clear cop
 2. From another tab: `pkill -f '<part of the command>'` (for example `pkill -f 'claude auth status'`).
 3. Last resort: `Ctrl+b :` and then `respawn-pane -k` (a clean shell in the same folder, without closing the tab).
 
+### Tab resources: the panel is missing, frozen or costs too much
+
+The per-tab panel (monitor line, `Ctrl+b v`) comes from one sampler per tmux server, `tmux-res` ([ADR 0029](adr/0029-per-tab-resources-and-fixed-width-status-bar.md)).
+
+- **Check it:** `tmux-res status` (running or not, its measured cost since it started, what this machine can attribute)
+  and `tmux-res show` (every tab). Its log and cache: `${XDG_RUNTIME_DIR}/tmux-res-<uid>/<server>/` (`log`,
+  `tabs.tsv`, `meta.json`).
+- **Panel missing:** the mode is `off` or `compact` (`tmux-res mode full`), or the monitor line is hidden (`Ctrl+b v`).
+  The bar starts the sampler on its next refresh (`tmux-background`); `tmux-res ensure` starts it now. A second one
+  never runs: the lock file stops it.
+- **Values frozen:** the sampler skips writes while a menu is open and samples nothing while no client is attached;
+  if it died, `tmux-res ensure`. A `tmux: …` line in its log is a write tmux refused (a tab closed between two
+  samples is normal; anything else, report it).
+- **Too expensive:** `tmux set -g @ws_res_interval 4` halves the cost; `@ws_res_gpu off` stops the GPU queries;
+  `tmux-res mode off` stops the sampler. Measured with 40 tabs and ~290 processes: see WS-GOV-014 in
+  `docs/compliance/controls.yaml`.
+
+### Network and GPU per tab: what can and cannot be measured
+
+| Metric | Per tab | Why |
+|---|---|---|
+| Network, TCP | yes, without privileges | the kernel's `sock_diag` (what `ss -ti` reads) gives the bytes of every TCP socket, and `/proc/<pid>/fd` says which process holds it. Loopback is left out |
+| Network, UDP and QUIC | no | Linux keeps no byte counters per UDP socket for an unprivileged reader. Claude Code, git, npm and az use HTTPS over TCP, so this rarely matters |
+| Sockets in another network namespace | no | a sandboxed tool with its own network namespace reaches the network through a proxy in Claude's process: that traffic is counted on Claude's tab |
+| GPU under WSL2 | no | the driver runs in WDDM mode: NVML and `nvidia-smi --query-compute-apps` report no processes. The machine's GPU (utilisation and memory) is shown after `host` |
+| Windows processes (interop `.exe`: MemPalace, recall, `pwsh.exe`) | no | they run in Windows; only the Linux stub that relays their stdio is counted. Use Task Manager |
+
+To count **every** protocol per process you need packet capture or eBPF, with privileges. If you want it, install
+nethogs and give it the capabilities yourself (the kit does not do it and does not read its output):
+
+```bash
+sudo apt install nethogs
+sudo setcap cap_net_raw,cap_net_admin+ep "$(command -v nethogs)"
+nethogs -t -d 2          # per process, every 2 s, in a pane of its own
+```
+
+Undo with `sudo setcap -r "$(command -v nethogs)"`. Anyone who can run that binary can then capture traffic on the
+machine: on a shared machine, do not.
+
 ### The menu or the shortcuts do not respond
 
 - Reload the configuration: `tmux source-file ~/.tmux.conf`.

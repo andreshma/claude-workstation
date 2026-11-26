@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+#
+# tmux-fit — makes a status bar segment exactly N columns wide: pads it with spaces or cuts it (with …), counting
+# the columns tmux draws (#[…] styles take none; emoji and CJK take two, combining marks and VS16 none). A segment
+# whose text changes (the traffic light, the subscription, the branch) then never moves the rest of the bar.
+# Usage: tmux-fit [-r] N -- command [args…]   runs the command (its stderr discarded) and fits its first line
+#        tmux-fit [-r] N < text                fits the text read from stdin
+#        tmux-fit --width < text               prints the number of columns the text takes
+#   -r aligns right (the padding goes first). Your own segments in ~/.config/ws-local/bar-extra.conf can use it too:
+#   #(~/.local/bin/tmux-fit 12 -- ~/bin/my-segment.sh)
+set -uo pipefail
+export LC_ALL=C.UTF-8
+
+# cwidth <code point> → REPLY = columns (0, 1 or 2), the wcwidth tmux uses for the characters the bar shows.
+cwidth() {
+  local c=$1
+  if (( c == 0x200B || c == 0x200C || c == 0x200D || (c >= 0x300 && c <= 0x36F) || (c >= 0xFE00 && c <= 0xFE0F) \
+        || (c >= 0x20D0 && c <= 0x20FF) )); then REPLY=0
+  elif (( (c >= 0x1100 && c <= 0x115F) || c == 0x231A || c == 0x231B || c == 0x2329 || c == 0x232A \
+        || (c >= 0x23E9 && c <= 0x23EC) || c == 0x23F0 || c == 0x23F3 || c == 0x25FD || c == 0x25FE \
+        || c == 0x2614 || c == 0x2615 || (c >= 0x2648 && c <= 0x2653) || c == 0x267F || c == 0x2693 || c == 0x26A1 \
+        || c == 0x26AA || c == 0x26AB || c == 0x26BD || c == 0x26BE || c == 0x26C4 || c == 0x26C5 || c == 0x26CE \
+        || c == 0x26D4 || c == 0x26EA || c == 0x26F2 || c == 0x26F3 || c == 0x26F5 || c == 0x26FA || c == 0x26FD \
+        || c == 0x2705 || c == 0x270A || c == 0x270B || c == 0x2728 || c == 0x274C || c == 0x274E \
+        || (c >= 0x2753 && c <= 0x2755) || c == 0x2757 || (c >= 0x2795 && c <= 0x2797) || c == 0x27B0 || c == 0x27BF \
+        || c == 0x2B1B || c == 0x2B1C || c == 0x2B50 || c == 0x2B55 || (c >= 0x2E80 && c <= 0x303E) \
+        || (c >= 0x3041 && c <= 0x33FF) || (c >= 0x3400 && c <= 0x4DBF) || (c >= 0x4E00 && c <= 0x9FFF) \
+        || (c >= 0xA000 && c <= 0xA4CF) || (c >= 0xAC00 && c <= 0xD7A3) || (c >= 0xF900 && c <= 0xFAFF) \
+        || (c >= 0xFE30 && c <= 0xFE4F) || (c >= 0xFF00 && c <= 0xFF60) || (c >= 0xFFE0 && c <= 0xFFE6) \
+        || c == 0x1F004 || c == 0x1F0CF || c == 0x1F18E || (c >= 0x1F191 && c <= 0x1F19A) \
+        || (c >= 0x1F200 && c <= 0x1F251) || (c >= 0x1F300 && c <= 0x1F64F) || (c >= 0x1F680 && c <= 0x1F6FF) \
+        || (c >= 0x1F7E0 && c <= 0x1F7EB) || (c >= 0x1F900 && c <= 0x1F9FF) || (c >= 0x1FA70 && c <= 0x1FAFF) \
+        || (c >= 0x20000 && c <= 0x3FFFD) )); then REPLY=2
+  else REPLY=1; fi
+}
+
+# fit <text> <width> <right> → the fitted text on stdout.
+fit() {
+  local s="$1" w="$2" right="$3" out="" used=0 i=0 n=${#1} ch cp j cut=0
+  while (( i < n )); do
+    ch="${s:i:1}"
+    if [[ "$ch" == "#" && "${s:i+1:1}" == "[" ]]; then   # a style: copied whole, takes no column
+      j="${s:i}"; j="${j%%]*}"; out+="$j]"; i=$(( i + ${#j} + 1 )); continue
+    fi
+    printf -v cp '%d' "'$ch"; cwidth "$cp"
+    if (( used + REPLY > w )); then cut=1; break; fi
+    out+="$ch"; used=$(( used + REPLY )); i=$(( i + 1 ))
+  done
+  if (( cut )); then   # make room for the … (one column), dropping characters from the end
+    while (( used + 1 > w )) && [[ -n "$out" ]]; do
+      ch="${out: -1}"; out="${out%?}"; printf -v cp '%d' "'$ch"; cwidth "$cp"; used=$(( used - REPLY ))
+    done
+    (( w > 0 )) && { out+="…"; used=$(( used + 1 )); }
+    [[ "$out" == *"#["* ]] && out+="#[default]"   # a style cut before its end must not leak into the next segment
+  fi
+  local pad=""; (( used < w )) && printf -v pad '%*s' $(( w - used )) ''
+  if [[ "$right" == 1 ]]; then printf '%s%s' "$pad" "$out"; else printf '%s%s' "$out" "$pad"; fi
+}
+
+if [[ "${1:-}" == --width ]]; then
+  IFS= read -r s || true; used=0; i=0
+  while (( i < ${#s} )); do
+    ch="${s:i:1}"
+    if [[ "$ch" == "#" && "${s:i+1:1}" == "[" ]]; then j="${s:i}"; j="${j%%]*}"; i=$(( i + ${#j} + 1 )); continue; fi
+    printf -v cp '%d' "'$ch"; cwidth "$cp"; used=$(( used + REPLY )); i=$(( i + 1 ))
+  done
+  echo "$used"; exit 0
+fi
+right=0; [[ "${1:-}" == -r ]] && { right=1; shift; }
+w="${1:-}"; [[ "$w" =~ ^[0-9]+$ ]] || { echo "usage: tmux-fit [-r] N [-- command…]" >&2; exit 2; }
+shift
+if [[ "${1:-}" == -- ]]; then
+  shift; text="$(timeout 10 "$@" 2>/dev/null | head -1)"
+else
+  IFS= read -r text || true
+fi
+text="${text%$'\r'}"
+fit "$text" "$w" "$right"

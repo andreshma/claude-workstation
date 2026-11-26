@@ -122,6 +122,9 @@
 .local/bin/tmux-status
 .local/bin/tmux-art
 .local/bin/tmux-hud
+.local/bin/tmux-res
+.local/bin/tmux-fit
+.local/bin/tmux-az-name
 .local/bin/tmux-active
 .local/bin/tmux-scene
 .local/bin/tmux-ux

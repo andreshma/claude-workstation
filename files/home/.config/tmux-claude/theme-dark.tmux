@@ -8,6 +8,7 @@ set -g @t_alert colour196
 set -g @t_agent colour177
 set -g @t_az colour214
 set -g @t_branch colour110
+set -g @t_dim colour244
 set -g status-style 'bg=colour235,fg=colour250'
 setw -g window-status-style 'bg=colour237,fg=colour250'
 setw -g window-status-current-style 'bg=colour238,fg=colour255,bold'

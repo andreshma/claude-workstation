@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# tmux-ux — style of menus and floating windows (rounded borders, colors) and the monitor's second line.
+# tmux-ux — style of menus and floating windows (rounded borders, colors) and the monitor's second line (the
+# active tab's resources from tmux-res, then the machine's from tmux-hud).
 # Loaded by ~/.config/tmux-claude/ux.tmux on start or reload. Each option is tried separately: on a tmux that
 # does not know it (< 3.3/3.4) it is simply skipped.
 set -uo pipefail
@@ -14,6 +15,8 @@ menu-border-lines|rounded
 popup-border-style|fg=colour31
 popup-border-lines|rounded
 OPTS
-tmux set -g status-format[1] '#[align=left] #(~/.local/bin/tmux-hud)' 2>/dev/null
+# Monitor line: with tab resources in full mode (tmux-res), first the ACTIVE TAB's own panel (fixed width, written by
+# the sampler as the window option @res_p) and then, after «| host», the whole machine: GPU (@res_hgpu) and tmux-hud.
+tmux set -g status-format[1] '#[align=left]#{?#{==:#{@ws_res_mode},full}, #[fg=#{@t_dim}]tab#[fg=default] #{p-2:window_index} #{E:@res_p} #[fg=#{@t_dim}]| host#[fg=default],}#{?@res_hgpu, #{E:@res_hgpu},} #(~/.local/bin/tmux-hud)' 2>/dev/null
 [[ "$(tmux show -gqv @hud)" == off ]] || tmux set -g status 2
 exit 0
