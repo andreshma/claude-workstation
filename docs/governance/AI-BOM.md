@@ -112,14 +112,14 @@ user's network and files ([THREAT_MODEL.md, Sandbox](../THREAT_MODEL.md#sandbox)
 by `untrusted-content.sh` (WS-AI-001).
 
 <!-- ai-bom:begin mcp -->
-| Server | Transport | Command or URL | Pin | Opt-in | Always-ask rules |
-|---|---|---|---|---|---|
-| `mempalace` | stdio | `@WINHOME@/.local/bin/mempalace-mcp.exe` | sha256 pinned on first registration (`~/.local/share/ws-kit/mcp-trust.tsv`) | No | 15 |
-| `recall` | stdio | `@WINHOME@/source/repos/recall/.venv/Scripts/python.exe -I -m recall mcp` | sha256 pinned on first registration (`~/.local/share/ws-kit/mcp-trust.tsv`) | No | 0 |
-| `microsoft-learn` | http | `https://learn.microsoft.com/api/mcp` | URL only (server side) | No | 0 |
-| `azure` | stdio | `@HOME@/.local/share/ws-kit/npm/azure-mcp/node_modules/.bin/azmcp server start` | `@azure/mcp@4.0.0-beta.9`, npm sha512 in the lock (prerelease) | No | 31 |
-| `ms-release-comms` | http | `https://www.microsoft.com/releasecommunications/mcp` | URL only (server side) | No | 0 |
-| `chrome-devtools` | stdio | `@HOME@/.local/share/ws-kit/npm/chrome-devtools-mcp/node_modules/.bin/chrome-devtools-mcp --isolated --no-usage-statistics --no-performance-crux --redact-network-headers` | `chrome-devtools-mcp@1.14.0`, npm sha512 in the lock | Yes | 0 |
+| Server | Transport | Command or URL | Pin | Opt-in | Confinement | Always-ask rules |
+|---|---|---|---|---|---|---|
+| `mempalace` | stdio | `@WINHOME@/.local/bin/mempalace-mcp.exe` | sha256 pinned on first registration (`~/.local/share/ws-kit/mcp-trust.tsv`) | No | not confined (Windows executable reached through WSL interop) | 15 |
+| `recall` | stdio | `@WINHOME@/source/repos/recall/.venv/Scripts/python.exe -I -m recall mcp` | sha256 pinned on first registration (`~/.local/share/ws-kit/mcp-trust.tsv`) | No | not confined (Windows Python (.venv/Scripts/python.exe) reached through WSL interop) | 0 |
+| `microsoft-learn` | http | `https://learn.microsoft.com/api/mcp` | URL only (server side) | No | remote (runs at the provider) | 0 |
+| `azure` | stdio | `@HOME@/.local/share/ws-kit/npm/azure-mcp/node_modules/.bin/azmcp server start` | `@azure/mcp@4.0.0-beta.9`, npm sha512 in the lock (prerelease) | No | ws-mcp-jail, network, own Azure config | 31 |
+| `ms-release-comms` | http | `https://www.microsoft.com/releasecommunications/mcp` | URL only (server side) | No | remote (runs at the provider) | 0 |
+| `chrome-devtools` | stdio | `@HOME@/.local/share/ws-kit/npm/chrome-devtools-mcp/node_modules/.bin/chrome-devtools-mcp --isolated --no-usage-statistics --no-performance-crux --redact-network-headers` | `chrome-devtools-mcp@1.14.0`, npm sha512 in the lock | Yes | ws-mcp-jail, network | 0 |
 <!-- ai-bom:end mcp -->
 
 | Server | Upstream | Hosts it needs | Credentials reachable | Data | Risk |
@@ -127,7 +127,7 @@ by `untrusted-content.sh` (WS-AI-001).
 | `mempalace` | External repository, not inspected | None expected (`HF_HUB_OFFLINE=1`); not verifiable from the repo | The user's, on the Windows side | Reads and writes the memory store: drawers, knowledge graph, diary. Every write asks through `memory-gate.sh`, which stamps provenance and blocks `<private>` text (WS-AI-012) | High (WS-AI-012, WS-AI-009) |
 | `recall` | External repository, not inspected | None expected (`HF_HUB_OFFLINE=1`) | The user's, on the Windows side | Search queries; returns passages of the local book corpus | Medium (WS-AI-009, WS-AI-024) |
 | `microsoft-learn` | Microsoft | `learn.microsoft.com` | None | Search queries and URLs chosen by the agent; returns untrusted text | Medium (WS-AI-001) |
-| `azure` | Microsoft | The Azure endpoints of the tools called (not listed in the repo); no registry access at start | The user's Azure CLI login | Tool arguments; returns subscription and resource data. Mutating tools and the `keyvault`, `role`, `storage`, `sql`, `cosmos` and other data tools always ask; mutating tools against a production subscription are blocked by the guard (WS-SEC-006) | High (WS-AI-009, WS-AI-011) |
+| `azure` | Microsoft | The Azure endpoints of the tools called (not listed in the repo); no registry access at start | Only the tab's Azure CLI login (`AZURE_CONFIG_DIR`, the one folder `ws-mcp-jail --azure-config` binds); no other credential, profile or Windows path (ADR 0024) | Tool arguments; returns subscription and resource data. Mutating tools and the `keyvault`, `role`, `storage`, `sql`, `cosmos` and other data tools always ask; mutating tools against a production subscription are blocked by the guard (WS-SEC-006) | High (WS-AI-009, WS-AI-011) |
 | `ms-release-comms` | Microsoft | `www.microsoft.com` | None | Queries; returns untrusted text | Medium (WS-AI-001) |
 | `chrome-devtools` | Google (Chrome DevTools team) | The pages the agent opens, in a Chrome reachable from WSL | None with `--isolated` (its own temporary profile); a Windows Chrome attached through a debugging port exposes whatever that profile holds | Page content, network and console of the pages it drives, as untrusted text; usage statistics and update checks off | Medium (WS-AI-011) |
 

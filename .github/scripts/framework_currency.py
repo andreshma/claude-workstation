@@ -3,7 +3,9 @@
 
 Checks the OWASP lists the catalogue leans on most (Top 10 for LLM Applications and Top 10 for Agentic
 Applications): fetches each official page named in the Sources table and looks for an edition year newer than the one
-recorded. Network trouble is a warning (exit 0): the check is retried next month. A newer edition prints an
+recorded. It also watches the Microsoft cloud security benchmark (MCSB, versioned «vN», possibly «(preview)»): a page
+that names a newer major version (v3), or a recorded preview that is no longer marked as preview anywhere on the page
+(it became generally available), is a change. Network trouble is a warning (exit 0): the check is retried next month. A newer edition prints an
 issue-ready message (also to the step summary) and exits 1, so the scheduled run turns red and the owner is told.
 The other frameworks are re-verified by hand at the quarterly review (docs/governance/REVIEW-CADENCE.md).
 
@@ -28,6 +30,11 @@ LISTS = {
     ),
     "OWASP-ASI": (r"Top 10 for Agentic", ("OWASP-ASI",)),
 }
+# Benchmarks versioned «vN»: prefix → the words that name the benchmark in a title or heading.
+BENCHMARKS = {"MCSB": r"cloud security benchmark"}
+PREVIEW = re.compile(
+    r"\bv(\d+)\s*\(preview\)|\bv(\d+) is currently in preview", re.IGNORECASE
+)
 UA = "framework-currency-check/1.0"
 
 
@@ -52,8 +59,8 @@ def recorded_year(version: str) -> int | None:
     return int(y[0]) if y else None
 
 
-def page_years(page: str, words: str) -> set[int]:
-    """Edition years in the page's title and headings that name the list."""
+def headings(page: str) -> str:
+    """The text of the page's title and h1 to h3 headings."""
     text = " ".join(
         re.findall(
             r"<(?:title|h1|h2|h3)[^>]*>(.*?)</(?:title|h1|h2|h3)>",
@@ -61,7 +68,35 @@ def page_years(page: str, words: str) -> set[int]:
             re.IGNORECASE | re.DOTALL,
         )
     )
-    text = html.unescape(re.sub(r"<[^>]+>", " ", text))
+    return html.unescape(re.sub(r"<[^>]+>", " ", text))
+
+
+def benchmark_changes(page: str, recorded: str, words: str) -> list[str]:
+    """What changed for a «vN [(preview)]» benchmark: a newer major version named in the title or headings, or the
+    recorded preview edition no longer marked as preview anywhere on the page (it became generally available)."""
+    m = re.search(r"\bv(\d+)", recorded)
+    if not m:
+        return []
+    have, out = int(m.group(1)), []
+    text = headings(page)
+    majors = {
+        int(v)
+        for w in re.finditer(words, text, re.IGNORECASE)
+        for v in re.findall(r"\bv(\d+)\b", text[w.start() : w.end() + 40])
+    }
+    newer = sorted(v for v in majors if v > have)
+    if newer:
+        out.append("the official page names " + ", ".join(f"v{v}" for v in newer))
+    plain = html.unescape(re.sub(r"<[^>]+>", " ", page))
+    previews = {int(a or b) for a, b in PREVIEW.findall(plain)}
+    if "preview" in recorded.lower() and have in majors and have not in previews:
+        out.append(f"v{have} is no longer marked as preview (generally available)")
+    return out
+
+
+def page_years(page: str, words: str) -> set[int]:
+    """Edition years in the page's title and headings that name the list."""
+    text = headings(page)
     years = set()
     for m in re.finditer(words, text, re.IGNORECASE):
         near = text[max(0, m.start() - 40) : m.end() + 60]
@@ -117,7 +152,35 @@ def main(argv: list[str]) -> int:
             f"{prefix}: recorded «{s['version']}», official pages show {sorted(seen) or 'no edition year'}"
         )
         if newer:
-            changed.append((prefix, s, newer))
+            changed.append(
+                (
+                    prefix,
+                    s,
+                    ["the official page now names " + ", ".join(map(str, newer))],
+                )
+            )
+    for prefix, words in BENCHMARKS.items():
+        s = src.get(prefix)
+        if not s:
+            warned.append(f"{prefix}: not in the Sources table of frameworks.md")
+            continue
+        try:
+            page = (
+                Path(local[prefix]).read_text(encoding="utf-8")
+                if prefix in local
+                else fetch(s["url"])
+            )
+        except Exception as e:  # noqa: BLE001 — any network failure is a warning, never a red run
+            warned.append(
+                f"{prefix}: could not read {s['url']} ({type(e).__name__}: {e})"
+            )
+            continue
+        found = benchmark_changes(page, s["version"], words)
+        print(
+            f"{prefix}: recorded «{s['version']}», {'; '.join(found) or 'unchanged on the official page'}"
+        )
+        if found:
+            changed.append((prefix, s, found))
     lines = []
     if changed:
         lines += [
@@ -126,10 +189,9 @@ def main(argv: list[str]) -> int:
             "The monthly currency check found a newer edition than the one the control catalogue maps to:",
             "",
         ]
-        for prefix, s, newer in changed:
+        for prefix, s, what in changed:
             lines.append(
-                f"- **{s['name']}** (`{prefix}`): recorded `{s['version']}`, the official page now names "
-                f"{', '.join(map(str, newer))} ({s['url']})."
+                f"- **{s['name']}** (`{prefix}`): recorded `{s['version']}`; {'; '.join(what)} ({s['url']})."
             )
         lines += [
             "",
@@ -147,14 +209,17 @@ def main(argv: list[str]) -> int:
                 "3. Regenerate the tables: `python3 files/home/.local/lib/ws_compliance.py --write-assessment`, "
                 "then `bash tests/compliance.sh`."
             ),
-            "4. Update the ASI cross-reference in `docs/THREAT_MODEL.md` if the agentic list changed.",
+            (
+                "4. Update the ASI cross-reference in `docs/THREAT_MODEL.md` if the agentic list changed; for MCSB, "
+                "re-read the control ids and titles of the new edition (PA-6 was renamed between v1 and v2)."
+            ),
         ]
     for w in warned:
         print(f"::warning::{w}")
         lines.append(f"> warning: {w}")
     if not changed:
         print(
-            "✔ the OWASP LLM and agentic Top 10 editions recorded in frameworks.md are still the newest named"
+            "✔ the OWASP LLM and agentic Top 10 and MCSB editions recorded in frameworks.md are still the newest named"
         )
     if summary and lines:
         with open(summary, "a", encoding="utf-8") as fh:

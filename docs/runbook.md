@@ -206,6 +206,26 @@ stay in clear and `ws-audit` fails; the first run with a key seals the clear cop
   ([ADR 0016](adr/0016-solo-mode-inside-the-sandbox.md)). For work the sandbox cannot do, `tmux-solo this
   --unsandboxed` is the audited exception (🔓 in the tab name, a `solo-unsandboxed` audit event); prefer the normal
   level.
+- **`az`, `gh`, `git push` or `kubectl` fail or ask in a solo tab:** on purpose ([ADR 0022](adr/0022-solo-mode-without-excluded-commands.md)):
+  solo excludes no command from the sandbox, so those tools run without your credentials and outside the allow list
+  they have no network, and each of them is an `ask` rule the auto-mode classifier cannot approve. For a solo task
+  that needs them: `tmux-solo this --with-network-tools` (they leave the sandbox again, each one asking you; 1 hour
+  by default, `--hours` up to 4; 🌐 in the tab name and `solo-network-tools` in the audit log), or the normal level.
+- **`ws-audit` fails on "solo profiles: no command leaves the sandbox without asking":** a generated profile in
+  `~/.config/claude-levels/` was edited or is from an older kit: `tmux-level --settings-file solo` (and `solo-net`)
+  writes it again.
+- **An MCP server (azure, chrome-devtools) does not start after the update:** it runs in `ws-mcp-jail`
+  ([ADR 0024](adr/0024-mcp-server-confinement-and-allow-list.md)). `ws-mcp-jail --probe` exits 0 when bubblewrap can
+  create its namespaces; if not: `sudo apt-get install bubblewrap` and, on Ubuntu 24.04, check that the AppArmor
+  restriction on unprivileged user namespaces allows `bwrap`. To see the view a server gets:
+  `ws-mcp-jail --print --name azure --net --azure-config -- <command>`. Its state is in `~/.local/state/ws-mcp/<name>`
+  and each start is logged in `~/.local/state/ws-mcp/jail.log`. A server that needs a path the jail does not show gets
+  it through `"jail": {"ro": […]}` in `files/mcp-servers.json` and `bash install.sh --mcp-refresh`; credential stores,
+  `~/.claude*`, the audit log and Windows drives are refused even then.
+- **An MCP server is "blocked by policy" in `/mcp` after `install.sh --managed --mcp-allowlist`:** it is not in the
+  managed allow list. A claude.ai connector or plugin server you keep goes into `~/.config/ws-mcp/allow-extra.json`
+  (`[{"serverUrl": "https://…/*"}]`), then run the command again; a kit server whose definition changed needs the same
+  after `bash install.sh --mcp-refresh`. `ws-audit` lists what the list would block.
 - **Solo mode ended by itself:** it expires after 4 hours (`@csolo_hours`, `WS_SOLO_HOURS`, `--hours N`, 1 to 24) and
   `tmux-watch` returns the tab to normal. Start it again with Menu → "Claude in this tab" → "Protection" → "Solo mode:
   auto inside the sandbox for 4 h (asks you for critical actions)".
@@ -249,6 +269,15 @@ stay in clear and `ws-audit` fails; the first run with a key seals the clear cop
   lines.
 - **The gate blocks a commit:** fix what is marked with ✖; justified per-repository exception:
   `git config ws.gate.skip <rule>`.
+- **"throwaway repository (under the temp dir, no remote)":** a test or scratch repository under `/tmp` or `/var/tmp`
+  with no remote skips Conventional Commits and lint at commit time; secrets, forbidden files, size and
+  `Co-authored-by` still apply, and a push from it re-checks every message
+  ([ADR 0023](adr/0023-git-gate-agent-trailer-and-throwaway-repositories.md)). A repository with a remote, or anywhere
+  else, is never a throwaway.
+- **Commits made by Claude carry `Agent-Session:` (and `Agent:`) lines:** the gate adds them to every commit made from
+  a Claude Code session, so `git log` tells agent commits from yours; your own commits from a plain shell carry
+  nothing. To leave them out in one repository: `git config ws.gate.agentTrailer false` (in a plain shell; logged).
+  Find an agent's commits with `git log --grep '^Agent-Session: '`.
 - **"gitleaks is missing, so secrets cannot be checked" blocks every commit:** the secret scan is mandatory.
   Install it with `ws-tools install base`. For a repository that must commit on a machine without it:
   `git config ws.gate.allowNoGitleaks true` (each such commit is logged in `~/.local/state/ws-gate/opt-outs.log`).
@@ -667,6 +696,24 @@ packs, `~/.config/tmux-claude/lang`) stay in place and are harmless.
 | `ws-backup-lite` | All of Claude (conversations, subagents, todos, plans, `/rewind`, history, memory, audit log and a copy of its anchors), tmux and inventory | Daily, automatic (14 copies); encrypted with `age` to the cloud key and any `age-recipients` | `%UserProfile%\WSL-Backups\lite` | `ws-restore-lite --restore` |
 | Kit (GitHub) | All the configuration | On push | `andreshma/claude-workstation` | `install.sh` |
 | `devsnapshot` (optional) | The whole distro | By hand | `%UserProfile%\WSL-Backups` | `wsl --import` |
+
+### Recovery objectives
+
+The targets the backup layers are built for (WS-GOV-013; Well-Architected RE:04 and RE:09). The recovery point
+(RPO) follows from each layer's frequency; the recovery times (RTO) are targets for one owner with the runbook open,
+not measurements: time the next drill (`ws-restore-lite --restore` into a throwaway distro) and write the result here.
+
+| What is lost | RPO (data you can lose) | RTO target | Restored from |
+|---|---|---|---|
+| A tab layout after a crash or restart | 1 minute | 2 minutes | tmux continuum and resurrect (`tmux-recover`) |
+| Conversations and the audit log (disk lost, distro intact on Windows) | 15 minutes | 30 minutes | `ws-backup` mirror (`ws-restore-lite --mirror`) |
+| Everything of Claude (memory, plans, history, anchors) | 24 hours | 1 hour | `ws-backup-lite` (`ws-restore-lite --restore`) |
+| The workstation configuration | The last pushed commit of the kit | 1 hour on a new distro | `install.sh` from a verified tag |
+| The whole distro | The last `devsnapshot` | 30 minutes | `wsl --import` |
+| Cloud copy (Windows profile lost) | The last `ws-backup-cloud` run | Half a day (new laptop) | [Restoring encrypted backups](#restoring-encrypted-backups) |
+
+Out of scope: availability of the remote services (Claude, GitHub, Azure, Telegram) and of Windows itself; an
+outage of one of them is waited out, not recovered from (docs/compliance/assessment.md, scope).
 
 ### Test, back up and restore
 

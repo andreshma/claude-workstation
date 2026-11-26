@@ -137,6 +137,7 @@ flowchart TB
 | Content and memory gates | `.claude/hooks/untrusted-content.sh`, `prompt-screen.sh`, `memory-gate.sh`, `memory-filter.sh`, `ws-memory` | Label untrusted tool output and screen it for injection markers; stop prompts that carry secrets; ask for every memory write with stamped provenance; keep `<private>` text out of memory. |
 | Containment | `.claude/hooks/ws-runtime-gate.sh`, `ws-stop-all`, `ws-anomaly` | The emergency stop and the hard spend limit, held in every Claude by one hook; anomaly detection over the audit log and sandbox hits. |
 | Supply chain | `files/mcp-servers.lock.json`, `.local/lib/ws-npm/`, `ws-pinned`, `ws-kit-update`, `.config/ws-kit/allowed_signers`, `agent-browser` | Pinned MCP servers and agent tools; signed kit releases; the browser wrapper's safe defaults. |
+| MCP confinement | `ws-mcp-jail`, the `jail` keys of `files/mcp-servers.json`, `lib.sh` (`mcp_want`, `mcp_allowlist`) | Local Linux MCP servers run in bubblewrap with only their state dir writable; the managed `allowedMcpServers` drop-in ([ADR 0024](adr/0024-mcp-server-confinement-and-allow-list.md)). |
 | Managed policy | `files/etc/claude-code/managed-settings.json` (installed by `install.sh --managed`) | The deny floor and the guard as a root-owned drop-in. |
 | Compliance | `.local/lib/ws_compliance.py` (`ws-audit --compliance`), `docs/compliance/`, `tests/compliance.sh`, `tests/ai-bom.sh` | Run the catalogue's machine-checkable checks; keep the catalogue, the assessment and the AI-BOM in step with the code. |
 | Routing | `.claude/hooks/ws-routing.sh`, `intent-route.sh`, `.local/lib/ws-routing.sh`, `cr`, `ws-routing-confirm` | Suggest a model per task and ask before switching. |
@@ -284,7 +285,7 @@ level adds or removes on top of them ([ADR 0019](adr/0019-strict-base-and-level-
 | **Full** (`full`) 🔒 | On, no unsandboxed commands and no excluded commands (`az`, `gh`, `git push`, `kubectl`… stay inside and mostly fail) | On | On | Untrusted repositories, risky changes |
 | **Normal** (`normal`) | On, with the excluded commands that `~/.config/claude-levels/normal-adds.json` adds | On | On | Daily work |
 | **Pure** (`bare`) 🔓 | Off | Off (Claude asks as it would without the kit) | On | Comparing against stock Claude Code |
-| **Solo mode** 🤖 | On (`autoAllowBashIfSandboxed`), with normal's excluded commands judged by the auto-mode classifier; expires after 4 h. `--unsandboxed` turns it off as an audited exception | On; Claude runs in `auto` permission mode | On | Leaving Claude to work alone on a task ([ADR 0016](adr/0016-solo-mode-inside-the-sandbox.md)) |
+| **Solo mode** 🤖 | On (`autoAllowBashIfSandboxed`, no unsandboxed retry), no command excluded: normal's excluded commands stay inside and ask; `--with-network-tools` lets them out again, each one asking, for at most 4 h; expires after 4 h. `--unsandboxed` turns it off as an audited exception | On; Claude runs in `auto` permission mode | On | Leaving Claude to work alone on a task ([ADR 0016](adr/0016-solo-mode-inside-the-sandbox.md)) |
 
 The floor is the part no level turns off ([ADR 0013](adr/0013-minimum-protection-floor.md)): the `deny` rules
 (credential files, `ws-secret get`, cloud keys and connection strings, bypassing the git gate) and the `guard.sh`
@@ -300,7 +301,7 @@ Protection levels are applied by restarting Claude with different arguments, not
 | `normal` | `claude-resume --settings ~/.config/claude-levels/normal.json` (on top of every settings source) |
 | `full` | `claude-resume --setting-sources project,local --settings ~/.config/claude-levels/full-<hash>.json` (one profile per project folder; `full.json` when no folder is given) |
 | `bare` | `claude-resume --setting-sources project,local --settings ~/.config/claude-levels/bare.json` |
-| solo mode | `claude-resume --permission-mode auto --settings ~/.config/claude-levels/solo.json`; with `--unsandboxed`, `solo-unsandboxed.json` |
+| solo mode | `claude-resume --permission-mode auto --settings ~/.config/claude-levels/solo.json`; with `--with-network-tools`, `solo-net.json`; with `--unsandboxed`, `solo-unsandboxed.json` |
 | any level with `--agent NAME` | The same command prefixed with `WS_AGENT=NAME AZURE_CONFIG_DIR=… GH_CONFIG_DIR=… KUBECONFIG=…` under `~/.config/ws-agent/NAME/` ([ADR 0020](adr/0020-agent-scoped-identities.md)) |
 | any restart of a tab | The same command after `eval "$(ws-profile --export NAME)" &&`, NAME being the tab's profile (`@cprofile`), so the pane's shell and its Claude get the profile's environment ([ADR 0021](adr/0021-per-tab-profiles.md)) |
 
@@ -320,7 +321,7 @@ flowchart LR
     shell --> cr["claude-resume<br/>(normal level, --fenced settings)"]
     prefix --> cr
     cr --> claude["claude with CLAUDE_CONFIG_DIR,<br/>AZURE_CONFIG_DIR, GH_CONFIG_DIR,<br/>KUBECONFIG, WS_PROFILE, WS_MEMORY"]
-    claude --> mcp["Azure MCP server<br/>(inherits the env;<br/>AZURE_TOKEN_CREDENTIALS=AzureCliCredential)"]
+    claude --> mcp["Azure MCP server in ws-mcp-jail<br/>(inherits the env; only its state dir<br/>and AZURE_CONFIG_DIR in view;<br/>AZURE_TOKEN_CREDENTIALS=AzureCliCredential)"]
     claude --> hooks["memory-filter.sh, memory-gate.sh<br/>(WS_MEMORY: off, on, wing:W)"]
 ```
 
@@ -331,7 +332,9 @@ reads limited to that project. `bare` is the whole file with `permissions` reduc
 not loaded as a source in either case, because Claude Code merges lists across the sources it loads and a list cannot
 be removed by overriding it ([ADR 0013](adr/0013-minimum-protection-floor.md)). `normal.json` is only
 `normal-adds.json`, which Claude Code merges on top of the user settings; `solo.json` is
-`~/.config/claude-solo/settings.json` merged with it. Swarm agents start at `full` with a profile that also denies
+`~/.config/claude-solo/settings.json` with normal's excluded commands turned into `ask` rules and none excluded,
+`solo-net.json` adds the exclusions back and `solo-unsandboxed.json` turns the sandbox off, both keeping those `ask`
+rules ([ADR 0022](adr/0022-solo-mode-without-excluded-commands.md)). Swarm agents start at `full` with a profile that also denies
 `git push` and `gh pr create`/`merge`.
 
 ## Telemetry

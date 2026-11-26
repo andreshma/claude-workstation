@@ -126,6 +126,22 @@ A server that fails its check is skipped with a warning and the session runs wit
 the installed trees later; `ws-update` runs `ws-pinned verify --online` (registry signatures). Moving a pin is a
 reviewed change to the kit: [runbook](runbook.md#pinned-npm-packages).
 
+**Confinement** ([ADR 0024](adr/0024-mcp-server-confinement-and-allow-list.md)). Claude Code starts MCP servers
+outside its sandbox, so the kit starts each local Linux server through `ws-mcp-jail` (bubblewrap):
+
+| Server | In the jail | It sees | Network |
+|---|---|---|---|
+| `azure` | Yes | The system, the kit, its pinned install, its state dir `~/.local/state/ws-mcp/azure` and the tab's own `AZURE_CONFIG_DIR` | Yes (`--net`) |
+| `chrome-devtools` (opt-in) | Yes | The system, the kit, its pinned install and its state dir | Yes (`--net`) |
+| `mempalace`, `recall` | No: Windows executables through WSL interop, which bubblewrap cannot confine (`jailOptOut` in `files/mcp-servers.json`) | Everything you can read | Yes |
+
+Never inside the jail: `~/.ssh` and every credential store of the guard's list, `~/.claude*`, the audit log, the
+other profiles' logins, telemetry and the Windows drives; token variables are removed from its environment. Without a
+working bubblewrap the server does not start (`ws-mcp-jail --probe` says why). `bash install.sh --mcp-refresh`
+registers the jailed form over an older one; `ws-audit` warns about a local server that is neither jailed nor opted
+out. To jail a server of your own, give it a `"jail": {"net": true}` object in `files/mcp-servers.json` (and its lock);
+to leave one out, `"jail": false` with a `"jailOptOut"` reason.
+
 ### Browser tools (optional)
 
 Two ways to let an agent drive a browser, both off until you install them:
@@ -158,10 +174,18 @@ your own files can change ([ADR 0019](adr/0019-strict-base-and-level-profiles.md
 | `/etc/claude-code/managed-settings.d/50-ws-kit.json` | The `deny` floor, `disableBypassPermissionsMode`, `enableAllProjectMcpServers: false` and the guard hook failing closed |
 | `/etc/claude-code/hooks/guard.sh` | A copy of the guard that the managed hook runs |
 | `/etc/claude-code/ws-credential-paths.txt` | The credential paths the guard also reads |
+| `/etc/claude-code/managed-settings.d/55-ws-mcp-allow.json` (only with `--mcp-allowlist`) | `allowedMcpServers`: the kit's servers by exact command (the `ws-mcp-jail` form included) or URL, plus `allowManagedMcpServersOnly: true` so no user, project or local setting can add to it |
 
 It prints every command first; `--dry-run` only prints them. An organization's own `managed-settings.json` is left
 alone. Restart Claude afterwards (`/status` shows the managed source). After a kit update that changes `guard.sh`, run
 it again; `install.sh` warns when the root copy is older.
+
+`--mcp-allowlist` blocks every MCP server it does not list, and Claude Code applies it to the claude.ai connectors
+and plugin servers too ([managed MCP](https://code.claude.com/docs/en/managed-mcp.md); a `serverName` entry "is not a
+security control", so the kit never uses one). Before installing it, list the connectors and plugin servers you keep
+in `~/.config/ws-mcp/allow-extra.json`, a JSON array such as `[{"serverUrl": "https://mcp.example.com/*"}]`; the
+generated list is printed before `sudo` asks. Run it again after a kit update that changes `files/mcp-servers.json`;
+`ws-audit` lists the registered servers the list would block.
 
 ## 3. First run
 
@@ -451,7 +475,7 @@ watcher's traffic light, the Azure subscription, the git branch and the time.
 | `!` | Bell: something in the tab asked for attention |
 | `[Z]` | A pane is zoomed |
 | 🔒 / 🔓 | Protection level `full` / `bare` |
-| 🤖 before the name | Solo mode |
+| 🤖 before the name | Solo mode (🌐🤖 with the network tools, 🔓🤖 without sandbox) |
 | `·P` after the name | The tab was switched to the personal account |
 | `⬢acme` (colored) | The tab runs with the custom profile `acme` (its label and colour from `profile.conf`) |
 | `⏺` | The pane is being recorded |
@@ -672,7 +696,7 @@ generated profile that adds or removes permissions on top of it
 | Full (`full`) 🔒 | `c` | Sandbox on with no way out: no unsandboxed commands and no excluded commands, so `az`, `gh`, `git push`, `kubectl` and similar run inside the sandbox, without network or credentials, and mostly fail. Sandboxed commands read only the tab's project. All kit rules stay |
 | Normal (`normal`) | `n` | The strict base plus what `~/.config/claude-levels/normal-adds.json` adds: the commands excluded from the sandbox that need network and credentials (`az`, `gh`, `git push`, `terraform`, `kubectl`…). Every kit launcher, `claude-resume` and a restored tab start here |
 | Pure (`bare`) 🔓 | `p` | No sandbox and none of the kit's `allow`/`ask` rules: Claude asks as it would without the kit |
-| Solo mode 🤖 | `s` | Claude in `auto` permission mode **inside** the sandbox: commands run without asking one by one, but in bubblewrap and the network allow list; the excluded commands of normal run outside it only after the auto-mode classifier. The `ask` rules still ask you. It expires after 4 hours. `t` starts it in a new tab and `w` in a new worktree ([ADR 0016](adr/0016-solo-mode-inside-the-sandbox.md)) |
+| Solo mode 🤖 | `s` | Claude in `auto` permission mode **inside** the sandbox: commands run without asking one by one, but in bubblewrap and the network allow list, and no command leaves it: `az`, `gh`, `git push`, `kubectl` and the other commands normal excludes run inside the sandbox (without your credentials), and each of them asks you, so the auto-mode classifier never approves one. The other `ask` rules still ask you. It expires after 4 hours. `t` starts it in a new tab and `w` in a new worktree ([ADR 0016](adr/0016-solo-mode-inside-the-sandbox.md), [ADR 0022](adr/0022-solo-mode-without-excluded-commands.md)) |
 
 A `claude` typed by hand in a shell starts at the strict base, without the excluded commands; start it with
 `claude-resume` (or restart the tab) to get the normal level.
@@ -692,6 +716,9 @@ tmux-solo normal               # back to normal
 tmux-solo new [folder] [--here]  # new tab in solo mode; in a git repo, its own worktree unless --here
 tmux-solo worktree [folder]    # new tab in a fresh worktree <repo>.wt/solo-<date> (branch solo/<date>)
 tmux-solo this --unsandboxed   # the old solo mode, sandbox off: an audited exception (🔓 in the tab name)
+tmux-solo this --with-network-tools [--hours N]
+                               # normal's excluded commands for this solo tab, each one asking you; 1 h by default,
+                               # 4 h at most (WS_SOLO_NET_HOURS), 🌐 in the tab name, audited
 ```
 
 In the "Protection" submenu, "Active rules (/permissions)" and "Sandbox status (/sandbox)" show what Claude actually
@@ -1241,7 +1268,7 @@ The other `WS_*` variables follow the same pattern: the Spanish word became its 
 | Restart Claude | `tmux-claude-restart` | [9](#9-working-with-claude-in-a-tab) |
 | Swarm and handoff | `tmux-swarm`, `ws-handoff` | [9](#9-working-with-claude-in-a-tab) |
 | Accounts and profiles | `ws-profile`, `claude-account`, `claude-as`, `claude-work`, `claude-personal` | [10](#10-accounts-and-profiles) |
-| Protection | `tmux-level` (`--agent`), `tmux-solo` (`--hours`, `--unsandboxed`) | [11](#11-protection-levels) |
+| Protection | `tmux-level` (`--agent`), `tmux-solo` (`--hours`, `--unsandboxed`, `--with-network-tools`), `ws-mcp-jail` | [11](#11-protection-levels) |
 | Emergency stop and anomalies | `ws-stop-all`, `ws-anomaly` | [11](#emergency-stop-and-anomalies) |
 | Memory review | `ws-memory` | [12](#other) |
 | Dashboard and reports | `ws-telemetry` (`prompts`, `budgets --override`), `ws-report`, `ws-otel`, `ws-hooks`, `claude-report`, `ws-audit` (`--verify-log`, `--compliance`) | [12](#12-reports-and-telemetry) |
@@ -1274,6 +1301,8 @@ The other `WS_*` variables follow the same pattern: the Spanish word became its 
 | `GUARD_PROD_REGEX` | `prod\|prd\|produccion` | What the guard treats as a production subscription or context, after the list in `~/.config/ws-guard/production.conf` |
 | `WS_KIT` | `~/code/claude-workstation` | The kit checkout `ws-kit-update` and `ws-audit --compliance` use |
 | `WS_SOLO_HOURS` | `4` | Default expiry of solo mode (1 to 24); the tmux option `@csolo_hours` also sets it |
+| `WS_SOLO_NET_HOURS` | `1` | Default expiry of `tmux-solo --with-network-tools` (1 to 4) |
+| `WS_GATE_TEMP_ROOTS` | `/tmp:/var/tmp` | Tests only: narrows the roots where the git gate treats a repository without remotes as a throwaway; an entry outside `/tmp` and `/var/tmp` is ignored |
 | `WS_SWARM_LEVEL` | `full` | `normal` starts swarm agents at the normal level (audited exception; push still denied) |
 | `WS_MEMORY_PRIVATE` | Not set | `skip` sends nothing of a session that contains a `<private>` tag to MemPalace |
 | `WS_MEMORY_GATE` | Not set | `warn` keeps the private block and the audit record of memory writes but does not ask (audited on every write; never set it from Claude) |

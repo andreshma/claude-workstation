@@ -1228,6 +1228,22 @@ test_level() {
   [[ "$r" == "claude-resume --settings '$T/levels/normal.json'" && "$(stat -c %a "$T/levels/normal.json")" == 600 ]] \
     && jq -e '.sandbox.excludedCommands | index("az *") and index("git push *")' "$T/levels/normal.json" >/dev/null \
     && ok "normal starts through claude-resume with the profile that adds the sandbox exclusions (0600)" || fail "normal command: $r"
+  # ADR-022: solo excludes nothing and every excluded command of normal asks; solo-net brings them back, asking.
+  r="$(E env WS_LEVELS_DIR="$T/levels" tmux-level --settings-file solo 2>&1)"
+  jq -e '(.sandbox | has("excludedCommands") | not) and (.permissions.ask | index("Bash(gh *)") and index("Bash(git push *)"))' "$r" >/dev/null 2>&1 \
+    && ok "the solo profile excludes no command and makes normal's excluded commands ask" || fail "solo profile: $r"
+  r="$(E env WS_LEVELS_DIR="$T/levels" tmux-level --settings-file solo-net 2>&1)"
+  jq -e '(.sandbox.excludedCommands | index("az *")) and (.permissions.ask | index("Bash(az *)"))' "$r" >/dev/null 2>&1 \
+    && ok "solo --with-network-tools excludes them again, each one asking" || fail "solo-net profile: $r"
+  # ADR-024: a jailed MCP server sees neither ~/.ssh nor another profile's logins.
+  if have ws-mcp-jail && E ws-mcp-jail --probe; then
+    mkdir -p "$TH/.ssh" "$TH/.config/ws-agent/other" "$TH/.local/share/ws-kit/npm/fake/node_modules/.bin"
+    echo KEY > "$TH/.ssh/id_t"; echo TOK > "$TH/.config/ws-agent/other/t"
+    printf '#!/bin/sh\ncat "$HOME/.ssh/id_t" "$HOME/.config/ws-agent/other/t" 2>/dev/null; echo end\n' \
+      > "$TH/.local/share/ws-kit/npm/fake/node_modules/.bin/fake"; chmod +x "$TH/.local/share/ws-kit/npm/fake/node_modules/.bin/fake"
+    r="$(E ws-mcp-jail --name fake -- "$TH/.local/share/ws-kit/npm/fake/node_modules/.bin/fake" </dev/null 2>&1)"
+    [[ "$r" == end ]] && ok "ws-mcp-jail: a jailed MCP server reads neither ~/.ssh nor another profile's logins" || fail "ws-mcp-jail: $r"
+  else warn "ws-mcp-jail: bubblewrap cannot create namespaces here (the jailed MCP servers would not start)"; fi
   jq -e '.sandbox | has("excludedCommands") | not' "$RH/.claude/settings.json" >/dev/null \
     && ok "the user settings exclude no command from the sandbox (strict base; normal adds them)" || fail "settings.json still has sandbox.excludedCommands"
   r="$(printf '%s' '{"permissions":{"allow":["Bash(ls:*)"],"deny":["Read(~/.aws/**)"],"disableBypassPermissionsMode":"disable"}}' > "$T/s-bp.json"; E tmux-level --profile bare "$T/s-bp.json")"

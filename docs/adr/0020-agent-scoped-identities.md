@@ -1,6 +1,7 @@
 # 0020. Agent-scoped identities per tab
 
-- Status: Accepted (the commit trailer part is open); amended by [0021](0021-per-tab-profiles.md): an identity is also the credential part of a profile
+- Status: Accepted; amended by [0021](0021-per-tab-profiles.md) (an identity is also the credential part of a profile)
+  and by [0023](0023-git-gate-agent-trailer-and-throwaway-repositories.md) (2026-11-25: the commit trailer is built)
 - Date: 2026-11-25
 
 ## Context and problem statement
@@ -66,3 +67,9 @@ Option **C**, small version.
   default folders where the sandbox does not hide them; at the normal level `~/.azure` and `~/.config/gh` are hidden
   only from sandboxed commands, not from the excluded ones.
 - Negative: new tabs, solo mode and swarms do not take `--agent` yet; it is applied through `tmux-level`.
+
+## Amendment (2026-11-25)
+
+The open trailer is built by [0023](0023-git-gate-agent-trailer-and-throwaway-repositories.md), in `commit-msg`
+rather than `prepare-commit-msg` (it then covers `-m`, `-F` and the editor): commits from a Claude Code session carry
+`Agent-Session: <profile>/<session id>` and, under an agent identity, `Agent: <WS_AGENT>`; never `Co-authored-by`.

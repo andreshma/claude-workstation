@@ -267,7 +267,7 @@ flowchart TB
   human -- "yes" --> run
   rules -- "allow" --> run{"Bash command?"}
   run -- "sandboxed" --> sbx["Sandbox (bubblewrap)<br/>denyRead credentials, network allow list"]
-  run -- "excluded command (normal and solo only)" --> host["Your shell privileges<br/>az, gh, git push…"]
+  run -- "excluded command (normal; solo only with --with-network-tools, asking)" --> host["Your shell privileges<br/>az, gh, git push…"]
   run -- "other tool (Read, Edit, WebFetch, MCP…)" --> tool["Tool runs"]
   sbx --> post
   host --> post
@@ -275,6 +275,24 @@ flowchart TB
   post -- "marker found" --> audit[("~/.claude/audit<br/>hash-chained, injection-suspect")]
   post --> result["Result and context back to the model"]
   denied --> audit
+```
+
+### An MCP server starts in its jail
+
+What `ws-mcp-jail` puts in front of a local stdio MCP server
+([ADR 0024](adr/0024-mcp-server-confinement-and-allow-list.md)). Claude Code starts the registered command; for a
+server with a `jail` object in `files/mcp-servers.json` that command is the wrapper.
+
+```mermaid
+flowchart LR
+  cc["Claude Code<br/>(starts MCP servers outside its sandbox)"] --> jail{{"ws-mcp-jail --name N [--net] [--azure-config]"}}
+  jail -- "Windows .exe (WSL interop)" --> refuse["Refused, exit 126:<br/>cannot be confined;<br/>register with jail: false + reason"]
+  jail -- "bubblewrap cannot create namespaces" --> closed["Not started, exit 125<br/>(fail closed)"]
+  jail -- "Linux server" --> bwrap["bwrap: new namespaces, no capabilities"]
+  bwrap --> ro["Read-only: /usr /etc /opt, the kit,<br/>PATH directories, the server's package"]
+  bwrap --> rw["Read-write: ~/.local/state/ws-mcp/N<br/>(+ the tab's AZURE_CONFIG_DIR with --azure-config)"]
+  bwrap --> none["Not in view: ~/.ssh and every credential store,<br/>~/.claude*, the audit log, other profiles,<br/>/mnt/c, /run (interop, agent sockets), tokens in env"]
+  bwrap --> net["Network: only with --net"]
 ```
 
 ### Local data becomes the dashboard and the reports

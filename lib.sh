@@ -98,3 +98,64 @@ render_templates() {
            -e "s#@HOME@#${home}#g" -e "s#@LINUX_USER@#${lu}#g" "$f"
   done < <(find "$dir" -type f -print0)
 }
+
+#######################################
+# The definition install.sh registers for an MCP server (ADR-024): a stdio server whose entry in mcp-servers.json
+# has a "jail" object runs through ~/.local/bin/ws-mcp-jail, with --net, --azure-config, --ro and --rw taken from
+# that object; "jail": false (with "jailOptOut", the reason) or an HTTP server is registered as written. The jail
+# keys are never passed to claude mcp add-json.
+# Arguments: mcp-servers.json, server name, home. Outputs: compact JSON.
+#######################################
+mcp_want() {
+  jq -c --arg n "$2" --arg h "$3" '.[$n] as $s
+    | ($s | del(.jail, .jailOptOut)) as $d
+    | if (($s.type // "stdio") == "stdio") and (($s.jail | type) == "object") then
+        $d + {command: ($h + "/.local/bin/ws-mcp-jail"),
+              args: (["--name", $n] + (if $s.jail.net then ["--net"] else ["--no-net"] end)
+                     + (if $s.jail.azureConfig then ["--azure-config"] else [] end)
+                     + ([($s.jail.ro // [])[] | ["--ro", .]] | add // [])
+                     + ([($s.jail.rw // [])[] | ["--rw", .]] | add // [])
+                     + ["--", $s.command] + ($s.args // []))}
+      else $d end' "$1"
+}
+
+#######################################
+# The inverse of mcp_want for export.sh: a registration that runs through ws-mcp-jail goes back to the server's own
+# command and arguments, and keeps the kit's jail keys. Arguments: kit mcp-servers.json, ~/.claude.json.
+# Outputs: the merged mcp-servers.json.
+#######################################
+mcp_unwrap_merge() {
+  jq -s '(.[0] // {}) as $k
+    | ((.[1].mcpServers // {}) | to_entries | map(
+        .key as $n | .value |= (
+          (if ((.command // "") | endswith("/ws-mcp-jail")) and ((.args // []) | index("--")) then
+             (.args | index("--")) as $i | .command = .args[$i + 1] | .args = .args[($i + 2):]
+           else . end)
+          + ({jail: $k[$n].jail, jailOptOut: $k[$n].jailOptOut} | with_entries(select(.value != null)))))
+       | from_entries) as $r
+    | $k + $r' "$1" "$2"
+}
+
+#######################################
+# The managed MCP allow list (WS-AI-010, ADR-024), as a managed-settings.d drop-in: one entry per kit server, matched
+# by what it runs, never by name (Claude Code's docs: «A serverName entry, in either list, is not a security
+# control»): serverCommand is the exact command and arguments install.sh registers (ws-mcp-jail included), serverUrl
+# the exact URL of an HTTP server. allowManagedMcpServersOnly makes Claude Code ignore allow lists in user, project
+# and local settings, so a repository cannot widen it. Every other server is blocked, the claude.ai connectors and
+# plugin servers included, unless the owner lists them in the optional extra file (a JSON array of allowedMcpServers
+# entries, e.g. {"serverUrl": "https://mcp.example.com/*"}), reviewed when install.sh --managed prints it.
+# Arguments: rendered mcp-servers.json, home, [extra entries file]. Outputs: the drop-in JSON.
+#######################################
+mcp_allowlist() {
+  local n extra='[]' entries=()
+  if [[ -n "${3:-}" && -s "$3" ]]; then
+    extra="$(jq -c 'if type == "array" then . else error("not an array") end' "$3" 2>/dev/null)" \
+      || { warn "$3 is not a JSON array of allowedMcpServers entries: ignored"; extra='[]'; }
+  fi
+  while IFS= read -r n; do
+    entries+=("$(mcp_want "$1" "$n" "$2" | jq -c 'if .type == "http" then {serverUrl: .url}
+                                                  else {serverCommand: ([.command] + (.args // []))} end')")
+  done < <(jq -r 'keys[]' "$1")
+  printf '%s\n' "${entries[@]}" | jq -s --argjson x "$extra" \
+    '{allowManagedMcpServersOnly: true, allowedMcpServers: (. + $x | unique)}'
+}

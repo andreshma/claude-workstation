@@ -329,15 +329,22 @@ against the AI and security frameworks is in [docs/compliance/assessment.md](doc
 - **Untrusted content.** Web fetches, searches, MCP results and network commands come back labelled as untrusted data
   and screened for injection markers (a heuristic; hits are audited). Memory writes ask every time, carry a
   provenance stamped by the hook, and never contain text marked `<private>`.
-- **Solo mode inside the sandbox** ([ADR 0016](docs/adr/0016-solo-mode-inside-the-sandbox.md)): auto mode with the
-  sandbox on and a 4-hour expiry; the unsandboxed variant is an audited exception. Swarm agents run at the `full`
-  level with `git push` denied.
+- **Solo mode inside the sandbox** ([ADR 0016](docs/adr/0016-solo-mode-inside-the-sandbox.md),
+  [ADR 0022](docs/adr/0022-solo-mode-without-excluded-commands.md)): auto mode with the sandbox on, no command
+  excluded from it and a 4-hour expiry; `az`, `gh`, `git push` and the other credentialed tools ask, so the
+  classifier never approves them; `--with-network-tools` and `--unsandboxed` are audited, time-boxed exceptions.
+  Swarm agents run at the `full` level with `git push` denied.
+- **MCP servers in a jail** ([ADR 0024](docs/adr/0024-mcp-server-confinement-and-allow-list.md)): the local Linux
+  servers run in `ws-mcp-jail` (bubblewrap), seeing neither credentials, other profiles, Claude's conversations nor
+  Windows; the two Windows servers cannot be confined and are reported; `install.sh --managed --mcp-allowlist`
+  blocks every server the kit does not list.
 - **Containment and evidence.** `ws-stop-all` blocks every prompt and tool call in every Claude, closes them and turns
   Telegram off; `ws-anomaly` flags sessions with repeated blocks or denials; the audit log is a hash chain with
   anchors on the Windows side (`ws-audit --verify-log`), kept 395 days. Agent identities (`--agent`) give a tab its
   own cloud and git logins ([ADR 0020](docs/adr/0020-agent-scoped-identities.md)).
 - **Commit gate** (`ws-gate`): secrets, lint, Conventional Commits, dependencies and infrastructure-as-code checks on
-  commit and push.
+  commit and push; commits made by an agent carry an `Agent-Session` trailer, never `Co-authored-by`
+  ([ADR 0023](docs/adr/0023-git-gate-agent-trailer-and-throwaway-repositories.md)).
 - **Telemetry is local.** Hook traces hold no prompt text. The local OpenTelemetry collector does keep content on disk
   (the owner's choice, ADR 0014), with recognizable secrets masked and files readable only by the user. Text that
   leaves the machine through the kit's own channels (Telegram messages, panes pasted into Claude, handoff summaries)
@@ -366,7 +373,7 @@ Details in [docs/TESTING.md](docs/TESTING.md).
 |---|---|
 | `bash tests/run.sh` | Installer and exporter in temporary homes (templates, secret blocking, backups, idempotence, migration of the names used before 3.0), JSON and shellcheck of the payload, and the guard tests |
 | `bash tests/guard.sh` | The PreToolUse guard: bypass variants, protected configuration, credential paths, production list, agent identity and profiles, false positives and fail-closed behavior |
-| `bash tests/<area>.sh` | The other standalone suites (twenty-one with the two above): hooks, audit chain and anomalies, memory gate, spend and stop gate, solo sandbox, per-tab profiles, supply chain and signed updates, Telegram approvals, backup encryption, gate secret scan, Windows interop, and the compliance catalogue and AI-BOM checks |
+| `bash tests/<area>.sh` | The other standalone suites (twenty-nine with the two above): hooks, audit chain and anomalies, host checks, memory gate, spend and stop gate, solo sandbox, per-tab profiles, supply chain and signed updates, Telegram approvals, backup encryption, gate secret scan and commit message, MCP jail, the telemetry collector, Windows interop, and the compliance catalogue and AI-BOM checks |
 | `ws-test` | Behavior of the **installed** workstation, with an isolated home, isolated tmux sockets and a simulated Claude; costs no usage |
 | `ws-test --ai` | The same plus non-deterministic checks against the real Claude |
 | `ws-verify` | Read-only verification before pushing: scripts, tmux (also the running server: `--live`), Claude Code settings, the kit and the tests |

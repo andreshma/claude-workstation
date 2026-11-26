@@ -47,7 +47,19 @@ After installing, in this order:
     logged); `bash install.sh` puts the tmux plugins at their pinned commits (`ws-plugins verify`); add the CI job
     "Clean install (Ubuntu 24.04)" to the required checks of `main`.
 
+12. Round 3: `bash install.sh --mcp-refresh` (registers azure and chrome-devtools through `ws-mcp-jail`; needs
+    bubblewrap, `ws-mcp-jail --probe` must exit 0); then, after listing the claude.ai connectors you use in
+    `~/.config/ws-mcp/allow-extra.json` (for example `[{"serverUrl": "https://…/*"}]`),
+    `bash install.sh --managed --mcp-allowlist` and check `/mcp`; restart solo tabs (`tmux-solo normal`, then
+    `tmux-solo this`); run `ws-audit --ai` once and `ws-audit` for the new host checks (unattended-upgrades, umask,
+    listeners, clock).
+
 Breaking behaviour changes, each described below:
+
+- Solo mode no longer lets `az`, `gh`, `git push`, `kubectl` and the other excluded commands out of the sandbox, and
+  they ask in every solo variant; `tmux-solo this --with-network-tools` brings them back (asking) for at most 4 h.
+- The Azure MCP server (and chrome-devtools when opted in) runs inside `ws-mcp-jail`: it sees only its own Azure
+  config, not the rest of the home; without a working bubblewrap it does not start.
 
 - Solo mode runs inside the sandbox; the old mode is `tmux-solo this --unsandboxed` (audited).
 - More permission prompts: every MemPalace write asks, also after "don't ask again" and in solo mode, and every
@@ -58,6 +70,37 @@ Breaking behaviour changes, each described below:
 
 ### Added
 
+- `ws-mcp-jail` (ADR 0024, WS-AI-011): local stdio MCP servers run in bubblewrap with a view built from nothing
+  (read-only system and kit, writable only `~/.local/state/ws-mcp/<name>`, an empty HOME, no credential store, no
+  `~/.claude*`, audit log, other profiles or Windows drives, tokens removed, network only with `--net`; the tab's own
+  `AZURE_CONFIG_DIR` with `--azure-config`). It refuses a Windows executable (exit 126: bubblewrap cannot confine it)
+  and fails closed without bubblewrap (exit 125). `files/mcp-servers.json` carries a `jail` object per server, or
+  `"jail": false` with a `jailOptOut` reason (mempalace, recall); `install.sh` registers the wrapped form,
+  `export.sh` unwraps it, `ws-audit` reports unjailed servers and probes bubblewrap.
+- `install.sh --managed --mcp-allowlist`: a managed drop-in `55-ws-mcp-allow.json` with `allowedMcpServers`
+  generated from `mcp-servers.json` (exact `serverCommand` or `serverUrl`, never `serverName`) and
+  `allowManagedMcpServersOnly`; extra entries from `~/.config/ws-mcp/allow-extra.json`; `ws-audit` reports a missing
+  or widenable list and registered servers it would block (WS-AI-010).
+- `tmux-solo … --with-network-tools` (ADR 0022): the normal level's excluded commands for this solo tab, each one
+  asking; 1 h by default, 4 h at most (`WS_SOLO_NET_HOURS`), marked 🌐 and `@csolo_net`, audited as
+  `solo-network-tools`.
+- Agent commit trailer (ADR 0023, WS-AI-026): a commit made from a Claude Code session carries
+  `Agent-Session: <profile>/<session id>` and, under an agent identity, `Agent: <WS_AGENT>`; a forged one is
+  replaced; never `Co-authored-by`; `ws.gate.agentTrailer=false` opts a repository out (logged).
+- `ws-audit` host checks: updates from the security pocket and unattended-upgrades (WS-SEC-019), the home, umask and
+  data folder modes (WS-SEC-020), listeners beyond loopback, sshd and the WSL networking mode (WS-SEC-021), clock
+  skew against Windows (new WS-SEC-029), journald persistence and auditd (WS-SEC-023).
+- `ws-audit --ai` cases from the OWASP GenAI Red Teaming Manual: grant modification of its own settings, a write to
+  the MCP registrations, the unsandboxed retry and an instruction planted in a README (WS-AI-027).
+- `framework_currency.py` watches the Microsoft cloud security benchmark: the end of the v2 preview or a v3 turns the
+  monthly run red.
+- Compliance: the Microsoft cloud security benchmark v2 (preview), OWASP Agentic AI Threats and Mitigations 1.1,
+  OWASP MCP Top 10 (beta), the GenAI Red Teaming Manual 1.0, Securing Agentic Applications V2, the Well-Architected
+  Reliability, Cost, Operational Excellence and Performance checklists and ISO/IEC 25010:2023 in `frameworks.md` and
+  the catalogue; every edition re-checked on 2026-11-25; four new controls (WS-AI-031 MCP tool definition integrity,
+  WS-SEC-029 clock synchronisation, WS-GOV-013 recovery objectives, WS-GOV-014 performance budgets); a confinement
+  column in the AI-BOM's MCP table; recovery objectives per backup layer in the runbook.
+- Suites `tests/gate-commit-msg.sh`, `tests/mcp-jail.sh`, `tests/audit-host.sh` and `tests/otel-collector.sh`.
 - `ws-restore-lite --mirror PATH [--to DIR]` recovers a file or folder of the Windows-side mirrors: encrypted `.age`
   copies are decrypted (cloud key from Credential Manager or `--identity`), clear copies of older mirrors are copied;
   nothing in `~/.claude` is overwritten.
@@ -145,6 +188,17 @@ Breaking behaviour changes, each described below:
 
 ### Changed
 
+- Solo mode (ADR 0022, amends 0016): every solo profile is generated by `tmux-level --settings-file
+  solo|solo-net|solo-unsandboxed` from `~/.config/claude-solo/settings.json`, which now also sets
+  `allowUnsandboxedCommands: false`; the normal level's excluded commands become `ask` rules in all three, and
+  `solo.json` excludes nothing; `--unsandboxed` is built by the same code instead of a hand-written file; `ws-audit`
+  fails on a solo profile that lets a command out without asking.
+- Git gate (ADR 0023): repositories under `/tmp` or `/var/tmp` without any remote skip Conventional Commits and lint
+  at commit time (said once); a push from a repository under the temp dir re-checks every pushed message; secrets,
+  forbidden files, size and `Co-authored-by` apply everywhere.
+- The guard also protects `~/.local/bin/ws-mcp-jail`, `~/.local/bin/ws-gate` and `~/.config/ws-mcp`.
+- CI installs bubblewrap for the suites job, so the live part of `tests/mcp-jail.sh` runs where the runner allows
+  unprivileged user namespaces.
 - `claude-account` is a wrapper of `ws-profile` (`work` and `personal` are its built-in profiles) with the same
   commands and messages; its settings moved to `~/.config/ws-profiles/` (`migrate.sh`, idempotent, dry-run aware).
   `claude-work` and `claude-personal` are shell functions now, next to `claude-as NAME`.
@@ -224,6 +278,12 @@ Breaking behaviour changes, each described below:
 
 ### Fixed
 
+- The local OpenTelemetry collector decompressed a gzip body without a bound: a small request could expand into
+  gigabytes; it now stops past the 16 MiB body limit with 413 (WS-SEC-012).
+- `read-convert.sh` wrote its error output to a predictable `/tmp/ws-tomd.err.<pid>`; it uses `mktemp` and removes
+  it on exit (WS-SEC-027).
+- `ws-audit` counted any upgradable package whose line contained "security"; it counts the security pocket only.
+- A test or scratch repository under the temp dir no longer fails on the owner's global hooks with `git commit -m v1`.
 - `ws-restore-lite --test` ended silently (no FAIL line, no verdict) on a backup without `~/.claude/projects`.
 - `ws-test` read the machine's `/tmp/claude-burn-<uid>/limits` (your real plan usage) in its Telegram alert case, so
   "alerts are not repeated" failed whenever your weekly usage was at 90 %; `ws-telegram` now honours `WS_BURN_DIR`

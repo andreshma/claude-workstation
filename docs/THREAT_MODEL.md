@@ -112,11 +112,13 @@ The first part describes each control with its residual risk. The second part li
 - The user settings exclude **no** command from the sandbox ([ADR 0019](adr/0019-strict-base-and-level-profiles.md)).
   The commands that need network and credentials (`aws`, `az`, `azd`, `gh`, remote git operations, `helm`, `kubectl`,
   `terraform`, database clients, `pwsh.exe`, `obsidian`, read-only Docker subcommands) are excluded only by the normal
-  and solo profiles, from `~/.config/claude-levels/normal-adds.json`.
+  profile, from `~/.config/claude-levels/normal-adds.json`, and by the solo profile only with `--with-network-tools`,
+  where each of them asks ([ADR 0022](adr/0022-solo-mode-without-excluded-commands.md)).
 
-Residual: in normal and solo, the excluded commands run with the user's full privileges (or the tab's agent identity)
-and are constrained only by the permission rules and the guard. Hooks, MCP servers, the Telegram channel and Claude
-Code's `!` mode run outside the sandbox at every level. The sandbox is off in `bare` and in
+Residual: in normal (and in solo with `--with-network-tools`, after a prompt), the excluded commands run with the
+user's full privileges (or the tab's agent identity) and are constrained only by the permission rules and the guard.
+Hooks, the Telegram channel and Claude Code's `!` mode run outside the sandbox at every level; MCP servers too, the
+Linux ones inside `ws-mcp-jail` ([ADR 0024](adr/0024-mcp-server-confinement-and-allow-list.md)). The sandbox is off in `bare` and in
 `tmux-solo --unsandboxed`. Whether WSL interop works from inside bubblewrap is probed by
 `tests/interop-adversarial.sh --live` but not asserted; every command that names a `.exe` asks instead.
 
@@ -125,12 +127,14 @@ Code's `!` mode run outside the sandbox at every level. The sandbox is off in `b
 | Path | `full` | `normal` | `bare` | solo | solo `--unsandboxed` |
 |---|---|---|---|---|---|
 | Sandboxed commands | Network allow list | Network allow list | No sandbox: unrestricted | Network allow list, no prompt | No sandbox: unrestricted |
-| Excluded commands (az, gh, git push…) | None: they stay in the sandbox | Unrestricted, after the rules and the guard | Not applicable | Unrestricted, after the auto-mode classifier | Not applicable |
+| Excluded commands (az, gh, git push…) | None: they stay in the sandbox | Unrestricted, after the rules and the guard | Not applicable | None: they stay in the sandbox and ask; with `--with-network-tools` unrestricted after you approve each one | Not applicable (they ask) |
 | WebFetch | Five documentation and registry hosts allowed, others ask | Same | Claude Code's default prompt | Auto-mode classifier | Auto-mode classifier |
-| MCP servers, hooks, Telegram, `!` mode | Unrestricted | Unrestricted | Unrestricted | Unrestricted | Unrestricted |
+| Jailed MCP servers (azure, chrome-devtools) | Unrestricted network, filesystem limited to the jail | Same | Same | Same | Same |
+| Windows MCP servers (mempalace, recall), hooks, Telegram, `!` mode | Unrestricted | Unrestricted | Unrestricted | Unrestricted | Unrestricted |
 
 Residual: `github.com` and `*.githubusercontent.com` are in the allow list and can carry data out (a gist, an issue,
-a raw upload through `gh`). MCP servers have no per-server egress limit: confinement (`ws-mcp-jail`) is not built.
+a raw upload through `gh`). `ws-mcp-jail` confines what a Linux MCP server can read, not where it connects: a server
+registered with `--net` has no per-host egress limit, and the two Windows servers are not confined at all.
 WebFetch to an unlisted host is one approval away, and in solo it is the classifier's decision.
 
 #### Permission rules
@@ -156,12 +160,13 @@ Levels are per tab ([ADR 0012](adr/0012-per-tab-protection.md)); the floor is wh
 
 | Control | `full` | `normal` | `bare` | solo mode | solo `--unsandboxed` |
 |---|---|---|---|---|---|
-| Sandbox | On, no excluded commands | On, with the excluded commands of `normal-adds.json` | Off | On, sandboxed commands run without a prompt (`autoAllowBashIfSandboxed`) | Off |
+| Sandbox | On, no excluded commands | On, with the excluded commands of `normal-adds.json` | Off | On, no excluded commands (unless `--with-network-tools`), no unsandboxed retry, sandboxed commands run without a prompt (`autoAllowBashIfSandboxed`) | Off |
+| Normal's excluded commands | Inside the sandbox | Outside, after the rules | Not applicable | `ask` rules (the classifier cannot approve them) | `ask` rules |
 | `allow` / `ask` | Yes | Yes | No | Yes, with `--permission-mode auto` | Yes, with `--permission-mode auto` |
 | `deny` (floor) | Yes | Yes | Yes | Yes | Yes |
 | `guard.sh` (floor) | Yes | Yes | Yes | Yes | Yes |
 | Memory gate, untrusted-content labelling, prompt screen, runtime gate | Yes | Yes | Yes | Yes | Yes |
-| Expiry | No | No | No | 4 hours (`@csolo_hours`) | 4 hours |
+| Expiry | No | No | No | 4 hours (`@csolo_hours`); 1 hour, at most 4, with `--with-network-tools` | 4 hours |
 | Telegram may run a proposed command | Yes | Yes | No | No | No |
 
 How it is enforced:
@@ -172,8 +177,9 @@ How it is enforced:
 - `full` and `bare` start Claude with `--setting-sources project,local` and a generated `--settings` profile, so user
   settings are not loaded as a source (passing an empty list does not remove entries from another source). If the
   installed Claude does not support `--setting-sources`, the level is not applied and the user is told.
-- Solo uses `~/.config/claude-levels/solo.json`: the solo settings plus normal's additions. `--unsandboxed` writes a
-  profile that turns the sandbox off, marks the tab 🔓 and records `solo-unsandboxed` in the audit log.
+- Solo uses `~/.config/claude-levels/solo.json`, `solo-net.json` (`--with-network-tools`: marked 🌐, audited as
+  `solo-network-tools`) or `solo-unsandboxed.json` (`--unsandboxed`: marked 🔓, audited as `solo-unsandboxed`), all
+  generated by `tmux-level` from the solo settings with normal's excluded commands as `ask` rules (ADR 0022).
 - Profiles are regenerated on each use and stored with mode 0600, in a folder the guard protects.
 - Optional: `bash install.sh --managed` installs the floor as a root-owned managed drop-in
   (`/etc/claude-code/managed-settings.d/50-ws-kit.json`) with its own copy of the guard
@@ -183,8 +189,8 @@ Residual:
 
 - `normal` keeps an intended way out: the excluded commands, limited by rules and the guard.
 - In `bare` and solo `--unsandboxed` nothing confines a command the user approves, or that the classifier lets
-  through, except the `deny` list and the guard. In sandboxed solo, the excluded commands leave the sandbox after the
-  classifier's review only.
+  through, except the `deny` list and the guard (in solo the credentialed network tools still ask). In sandboxed
+  solo, no command leaves the sandbox without a prompt.
 - A repository's own `.claude/settings*.json` is still loaded in every level and can add allow rules or excluded
   commands; `ws-audit` warns about it but does not stop it.
 - Without `--managed`, the floor lives in user-writable files; the guard and the `Edit` deny rules protect them from
@@ -509,7 +515,8 @@ conversations, the audit log and captured pane contents.
 
 | Threat | Control | Residual risk |
 |---|---|---|
-| From sandboxed to unsandboxed | `allowUnsandboxedCommands: false`; the strict base excludes no command; `full` removes the excluded commands; solo keeps the sandbox; every `.exe` asks | In `normal` and solo, excluded commands are an intended way out, limited by rules, the guard and (solo) the classifier |
+| From sandboxed to unsandboxed | `allowUnsandboxedCommands: false` (also in the solo profile); the strict base excludes no command; `full` removes the excluded commands; solo excludes none and makes them ask; every `.exe` asks | In `normal`, excluded commands are an intended way out, limited by rules and the guard; in solo only with `--with-network-tools` and a prompt each |
+| From an MCP server to the user's files | `ws-mcp-jail`: credential stores, `~/.claude*`, the audit log, other profiles and the Windows drives are not in the server's view; fail closed | MemPalace and recall are Windows processes and cannot be jailed; `--net` servers reach any host |
 | Through Windows interop | `Bash(*.exe*)` and the Windows shells in `ask`; the guard blocks encoded and download-and-run PowerShell | Interop from inside bubblewrap is probed, not asserted; `appendWindowsPath=false` is optional |
 | From the phone to a shell | Allow list, PIN, block lists, sandbox check, one-time codes, stop marker | See [Telegram remote control](#telegram-remote-control) |
 | From an edited file to code execution outside the sandbox | The lint-on-edit hook does not run the repository's own `eslint` or `prettier`; those remain in the pre-commit stage | None stated |
@@ -550,8 +557,13 @@ conversations, the audit log and captured pane contents.
 Residual:
 
 - The Azure MCP server is pinned to a prerelease (`4.0.0-beta.9`): no stable 4.x exists yet; the lock records why.
-- MCP servers are not confined: they run outside the sandbox with the user's network and files (`ws-mcp-jail` is not
-  built).
+- MCP servers run outside Claude Code's sandbox. The Linux ones (azure, chrome-devtools) run in `ws-mcp-jail`, with
+  only their state dir writable and no credential store or other profile in view, but with the network; MemPalace and
+  recall are Windows executables that bubblewrap cannot confine (opted out with the reason, reported by `ws-audit`).
+- The tools an MCP server advertises (names, descriptions, schemas) are not pinned: a server can change them at any
+  time (rug pull; WS-AI-031, open).
+- The managed MCP allow list (`install.sh --managed --mcp-allowlist`) is opt-in; without it any server a user,
+  repository or plugin registers runs, and `ws-audit` finds it afterwards.
 - Trust on first use cannot detect a local executable that was already compromised when it was first pinned.
 - Until the maintainer's public key is in `files/home/.config/ws-kit/allowed_signers`, every update needs
   `--allow-unsigned`; a stolen signing key, or a compromised maintainer account plus key, still ships an update.
@@ -571,9 +583,9 @@ above, the kit's controls and the catalogue controls that cite it.
 | Item | Threat in this setup | Kit controls | Catalogue controls | Main residual |
 |---|---|---|---|---|
 | `ASI01` Agent Goal Hijack | Instructions in a README, an issue, a web page or an MCP result redirect an agent | `untrusted-content.sh`, the guard, `ask` rules, the sandbox, `ws-anomaly`, `tests/interop-adversarial.sh` | WS-AI-001, WS-AI-027, WS-AI-030 | Screening is heuristic; social engineering without markers |
-| `ASI02` Tool Misuse and Exploitation | An agent uses a legitimate tool (az, kubectl, an MCP tool) destructively | Strict base, levels, `ask` and `deny` rules, production list, per-level egress, Telegram allow list | WS-AI-002, WS-AI-003, WS-AI-004, WS-AI-005, WS-AI-008, WS-AI-011, WS-AI-018, WS-SEC-003, WS-SEC-005 | Excluded commands and MCP servers have open egress |
-| `ASI03` Identity and Privilege Abuse | An agent acts with every credential the owner holds | Credential denies at every level, `--agent` identities, production guard, bypass mode disabled, Telegram PIN | WS-AI-002, WS-AI-003, WS-AI-007, WS-AI-015, WS-AI-016, WS-AI-026, WS-SEC-002, WS-SEC-006 | Agent identities are optional; no commit trailer |
-| `ASI04` Agentic Supply Chain Vulnerabilities | A poisoned MCP server, npm package, plugin or kit update | Lock file and integrity, trust on first use, registration denied to agents, signed release tags, SHA-pinned CI, SBOM | WS-AI-009, WS-AI-010, WS-SEC-015, WS-SEC-016, WS-GOV-002 | Azure beta, unpinned tmux plugins, no MCP confinement |
+| `ASI02` Tool Misuse and Exploitation | An agent uses a legitimate tool (az, kubectl, an MCP tool) destructively | Strict base, levels, `ask` and `deny` rules, production list, per-level egress, Telegram allow list | WS-AI-002, WS-AI-003, WS-AI-004, WS-AI-005, WS-AI-008, WS-AI-011, WS-AI-018, WS-SEC-003, WS-SEC-005 | Excluded commands at the normal level and `--net` MCP servers have open egress; solo asks for every excluded command |
+| `ASI03` Identity and Privilege Abuse | An agent acts with every credential the owner holds | Credential denies at every level, `--agent` identities, production guard, bypass mode disabled, Telegram PIN | WS-AI-002, WS-AI-003, WS-AI-007, WS-AI-015, WS-AI-016, WS-AI-026, WS-SEC-002, WS-SEC-006 | Agent identities are optional; the `Agent-Session` trailer is attribution, not a boundary |
+| `ASI04` Agentic Supply Chain Vulnerabilities | A poisoned MCP server, npm package, plugin or kit update | Lock file and integrity, trust on first use, registration denied to agents, signed release tags, SHA-pinned CI, SBOM | WS-AI-009, WS-AI-010, WS-SEC-015, WS-SEC-016, WS-GOV-002 | Azure beta; the Windows MCP servers are not confined; MCP tool definitions are not pinned (WS-AI-031) |
 | `ASI05` Unexpected Code Execution | Generated or injected code runs outside the sandbox | Sandbox, `.exe` asks, PowerShell and download-and-run blocks, lint-on-edit without repository tools, `ws-learn` checks | WS-AI-004, WS-AI-017, WS-AI-027, WS-SEC-001, WS-SEC-005, WS-SEC-022, WS-SEC-027 | Telegram-run git commands honour repository config |
 | `ASI06` Memory and Context Poisoning | A fact written to MemPalace, or an edited `CLAUDE.md` or skill, steers later sessions | Memory gate with provenance, `<private>` filter, `ws-memory review`, guard on instruction files, untrusted labelling | WS-AI-001, WS-AI-012, WS-AI-013, WS-AI-014, WS-AI-024 | MemPalace's own mining; no expiry; recall corpus outside the repo |
 | `ASI07` Insecure Inter-Agent Communication | Swarm agents share a task file, memory and MCP servers | Swarm worktrees at the full level with push denied; memory writes ask | WS-AI-015, WS-AI-029 | The kit owns no agent-to-agent channel; agent teams are Claude Code's |
@@ -590,8 +602,9 @@ These risks are known and accepted as the code stands today. Each is described w
 |---|---|
 | The OpenTelemetry collector keeps prompt, response and tool text on disk | The owner's decision ([ADR 0014](adr/0014-local-opentelemetry-collector.md)): the data stays on the machine, with recognizable secrets masked; `WS_OTEL_CONTENT=0` turns content off |
 | In `bare`, Claude can read credentials or run destructive commands if you approve them | On purpose ([ADR 0012](adr/0012-per-tab-protection.md)): the level exists to compare against stock Claude Code; the floor stays |
-| In `normal` and solo, excluded commands leave the sandbox | An intended way out for commands that need network and credentials, limited by the rules, the guard and, in solo, the classifier |
-| MCP servers run outside the sandbox | Claude Code runs them as the user; the kit pins them and asks for their risky tools; confinement is pending |
+| In `normal`, excluded commands leave the sandbox (in solo only with `--with-network-tools`, each one asking) | An intended way out for commands that need network and credentials, limited by the rules and the guard; solo never lets the classifier approve one ([ADR 0022](adr/0022-solo-mode-without-excluded-commands.md)) |
+| MCP servers run outside Claude Code's sandbox; MemPalace and recall unconfined | Claude Code runs them as the user; the kit pins them, asks for their risky tools and jails the Linux ones in `ws-mcp-jail`; the two Windows executables cannot be confined by bubblewrap until they ship Linux builds ([ADR 0024](adr/0024-mcp-server-confinement-and-allow-list.md)) |
+| No auditd on the workstation | One user on a WSL distribution; the kit's hash-chained audit log records agent actions; `ws-audit` reports journald persistence and auditd (WS-SEC-023) |
 | A broken `jq` or a missing guard blocks every tool call | The guard fails closed; that is the intended trade-off |
 | A local process can post fake telemetry | Same privilege as the user; it affects reports only |
 | Without `hard=1`, spend alerts and budgets do not stop a session | They inform; holding work is the owner's opt-in |
@@ -607,18 +620,18 @@ otherwise. Do not rely on any of the unimplemented items:
 | Item | Current state |
 |---|---|
 | Organization-managed policy carrying the floor | Implemented as an option: `bash install.sh --managed` installs a root-owned drop-in; without it the floor lives in user settings and the generated profiles. Not verified as root in a live install. |
-| Strict user base, with `normal` and solo mode adding exclusions through `--settings` | Implemented ([ADR 0019](adr/0019-strict-base-and-level-profiles.md)). |
+| Strict user base, with `normal` adding exclusions through `--settings` | Implemented ([ADR 0019](adr/0019-strict-base-and-level-profiles.md)); solo adds none and makes them ask ([ADR 0022](adr/0022-solo-mode-without-excluded-commands.md)). |
 | PIN and a read-only allow list to run a command from Telegram | Implemented: PIN on by default, `RUN_ALLOW` allow list, block lists as a second check. |
 | `install.sh` setting git's hooks path | Implemented: set when no hooks path is configured; an existing one is not replaced; `ws-check` reports it. |
 | Escaped paths in the menus | Done for the status bar only. |
 | Encrypted backups with expiry | Light backups encrypted when a recipient exists, Windows-side copies expire after 30 days; the incremental copies stay in clear. |
 | Bar indicator derived from the effective configuration | Derived from a tmux option. |
 | A test for every promise | Guard bypasses and fail-closed in `tests/guard.sh`; the Telegram allow list in `tests/telegram-approvals.sh`; the gate without gitleaks in `tests/gate-secret-scan.sh`; malicious folder and tab names in menus are not covered. |
-| MCP server confinement (`ws-mcp-jail`) and a registration check in `ws-audit` that fails on a server not in `files/mcp-servers.json` | Not built; `ws-audit` reports only failing servers. |
-| `Agent-Session` commit trailer ([ADR 0020](adr/0020-agent-scoped-identities.md)) | Not built. |
-| Pinned tmux plugins (`plugins.lock`) and independent checksums in `ws-tools` | Not built. |
-| `ws-audit --ai` adversarial cases with a real Claude (planted injection, Windows interop) | Deterministic cases in `tests/interop-adversarial.sh`; live cases not built. |
-| The Telegram event log in the audit chain | Not built. |
+| MCP server confinement (`ws-mcp-jail`) and a registration check in `ws-audit` that fails on a server not in `files/mcp-servers.json` | Implemented for the Linux servers ([ADR 0024](adr/0024-mcp-server-confinement-and-allow-list.md)) and the registration check; the managed `allowedMcpServers` list is an owner step (`install.sh --managed --mcp-allowlist`), not verified as root. MCP tool-definition pinning is not built (WS-AI-031). |
+| `Agent-Session` commit trailer ([ADR 0020](adr/0020-agent-scoped-identities.md)) | Implemented in `ws-gate commit-msg` ([ADR 0023](adr/0023-git-gate-agent-trailer-and-throwaway-repositories.md)). |
+| Pinned tmux plugins (`plugins.lock`) and independent checksums in `ws-tools` | Implemented (`plugins.lock`, `ws-tools.lock`). |
+| `ws-audit --ai` adversarial cases with a real Claude (planted injection, Windows interop) | Built: grant modification, MCP registration write, unsandboxed retry and a README with a planted instruction; not yet run on the live machine. Windows interop from inside bubblewrap stays a probe. |
+| The Telegram event log in the audit chain | Decisions and ▶ Run are chained; notifications and alerts stay a separate log. |
 | Runtime behaviour checked only against the documentation | `--settings` deep merge, `updatedInput` together with `ask`, `onFailure` and `if` at run time, exit 2 on UserPromptSubmit and the Telegram "Stop this tab" button; `claude doctor` accepts the settings. |
 
 ## Out of scope

@@ -257,8 +257,10 @@ tab() {
   [[ "$a" == "$b" ]] || resume=0
   # The tab keeps its level: solo (as claude-account did), full or bare (tmux-level), otherwise normal.
   if [[ -n "$(tmux show -wqv -t "$win" @csolo)" ]]; then
-    if [[ -n "$(tmux show -wqv -t "$win" @csolo_nosb)" ]]; then sp="${WS_LEVELS_DIR:-$HOME/.config/claude-levels}/solo-unsandboxed.json"
-    else sp="$(tmux-level --settings-file solo 2>/dev/null)" || sp="$HOME/.config/claude-solo/settings.json"; fi
+    local sv=solo   # the same solo variant (ADR-022); the strict one when the profile cannot be generated
+    [[ -n "$(tmux show -wqv -t "$win" @csolo_net)" ]] && sv=solo-net
+    [[ -n "$(tmux show -wqv -t "$win" @csolo_nosb)" ]] && sv=solo-unsandboxed
+    sp="$(tmux-level --settings-file "$sv" 2>/dev/null)" || sp="$HOME/.config/claude-solo/settings.json"
     cmd="claude-resume --permission-mode auto --settings '$sp'"
   else
     lvl="$(tmux show -wqv -t "$win" @clevel)"; [[ "$lvl" == full || "$lvl" == bare ]] || lvl=normal

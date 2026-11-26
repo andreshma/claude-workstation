@@ -188,11 +188,23 @@ echo "== Framework currency check (fixture pages, no network)"
 FC="$ROOT/.github/scripts/framework_currency.py"
 printf '<title>OWASP Top 10 for Agentic Applications for 2026</title><h1>Top 10 for Agentic Applications 2026</h1>' > "$T/asi.html"
 printf '<title>OWASP GenAI LLM Top 10 2027</title><h2>LLM Top 10 for 2027</h2>' > "$T/llm27.html"
-fc() { python3 -I "$FC" --root "$ROOT" --page "OWASP-ASI=$T/asi.html" --page "OWASP-LLM26=$T/asi.html" --page "OWASP-LLM25=$1" --summary "$T/sum.md"; }
+# MCSB fixtures: the v2 preview as published on 2026-11-25, the same page once GA, and a page that names a v3.
+printf '<title>Overview of the Microsoft cloud security benchmark v2 (preview)</title><h1>Overview of Microsoft cloud security benchmark v2 (preview)</h1><div class="NOTE"><p>Microsoft cloud security benchmark v2 is currently in preview.</p></div>' > "$T/mcsb.html"
+printf '<title>Overview of the Microsoft cloud security benchmark v2</title><h1>Overview of Microsoft cloud security benchmark v2</h1><p>Released.</p>' > "$T/mcsb-ga.html"
+printf '<title>Overview of the Microsoft cloud security benchmark v3 (preview)</title><h1>Microsoft cloud security benchmark v3 (preview)</h1><p>v2 (preview) was superseded.</p>' > "$T/mcsb-v3.html"
+fc() { python3 -I "$FC" --root "$ROOT" --page "OWASP-ASI=$T/asi.html" --page "OWASP-LLM26=$T/asi.html" --page "OWASP-LLM25=$1" \
+         --page "MCSB=${2:-$T/mcsb.html}" --summary "$T/sum.md"; }
 check "the recorded editions are current: exit 0" fc "$T/asi.html"
 check "a newer LLM edition: exit 1"               not fc "$T/llm27.html"
 check "…with an issue-ready summary"              grep -q 'Framework edition changed' "$T/sum.md"
-check "an unreadable page only warns (exit 0)"    fc "$T/missing.html"
+check "an unreadable page only warns (exit 0)"    fc "$T/missing.html" "$T/missing-mcsb.html"
+check "frameworks.md records MCSB v2 as a preview" grep -qE '^\| `MCSB` \| [^|]+ \| v2 \(preview\)' "$ROOT/docs/compliance/frameworks.md"
+: > "$T/sum.md"
+check "MCSB v2 leaving preview (GA): exit 1"      not fc "$T/asi.html" "$T/mcsb-ga.html"
+check "…named in the summary"                     grep -q 'v2 is no longer marked as preview' "$T/sum.md"
+: > "$T/sum.md"
+check "an MCSB v3: exit 1"                        not fc "$T/asi.html" "$T/mcsb-v3.html"
+check "…named in the summary"                     grep -q 'names v3' "$T/sum.md"
 
 printf '\n%d ok, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

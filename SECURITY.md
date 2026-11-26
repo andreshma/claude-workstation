@@ -30,9 +30,11 @@ are in [docs/governance/](docs/governance/README.md).
   [ADR 0013](docs/adr/0013-minimum-protection-floor.md), [ADR 0019](docs/adr/0019-strict-base-and-level-profiles.md)):
   the user settings are strict (no command leaves the sandbox); `normal`, which every kit launcher starts, adds the
   commands excluded from the sandbox (az, gh, git push…) from `~/.config/claude-levels/normal-adds.json`; `full` keeps
-  them inside the sandbox; `bare` is Claude almost as it ships. Solo mode runs in auto mode **inside** the sandbox and
-  expires after 4 hours; `--unsandboxed` is an audited exception
-  ([ADR 0016](docs/adr/0016-solo-mode-inside-the-sandbox.md)).
+  them inside the sandbox; `bare` is Claude almost as it ships. Solo mode runs in auto mode **inside** the sandbox,
+  excludes no command from it (the credentialed tools ask) and expires after 4 hours; `--with-network-tools` and
+  `--unsandboxed` are audited exceptions ([ADR 0016](docs/adr/0016-solo-mode-inside-the-sandbox.md),
+  [ADR 0022](docs/adr/0022-solo-mode-without-excluded-commands.md)). Local Linux MCP servers run in `ws-mcp-jail`
+  ([ADR 0024](docs/adr/0024-mcp-server-confinement-and-allow-list.md)).
 - **The floor** stays at every level: the `deny` rules and `guard.sh`, which fails closed (also when the hook itself
   is missing, `onFailure: block`). `bash install.sh --managed` can install it as a root-owned managed drop-in.
   Bypass-permissions mode is disabled.

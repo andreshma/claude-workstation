@@ -18,8 +18,9 @@
 #                (state, traces, notifications, MemPalace, recall, bar) and whatever your organization and repo impose.
 #
 # The profiles are GENERATED every time in ~/.config/claude-levels/ (0600): full.json and bare.json from your
-# ~/.claude/settings.json (always up to date), normal.json from normal-adds.json, and solo.json (tmux-solo) from
-# ~/.config/claude-solo/settings.json plus normal-adds.json. full and bare start with --setting-sources project,local,
+# ~/.claude/settings.json (always up to date), normal.json from normal-adds.json, and solo.json, solo-net.json and
+# solo-unsandboxed.json (tmux-solo) from ~/.config/claude-solo/settings.json, with normal's excluded commands turned
+# into ask rules (ADR-022). full and bare start with --setting-sources project,local,
 # so as NOT to load the user settings, and --settings with their profile. It has to be this way because Claude Code
 # MERGES the lists of every source it loads (documented in «Lists merge instead of overriding»): passing an empty
 # list does not remove what another source sets; the only way to remove it is not to load that source (and the
@@ -36,10 +37,11 @@
 # account; ws-profile tab NAME switches all of it. A level change keeps the tab's profile (@cprofile): the command is
 # typed after «eval "$(ws-profile --export NAME)" &&», which gives the pane's shell that profile's environment.
 # Usage: tmux-level full|normal|bare [PANE] [--agent NAME|none]
-#      tmux-level --profile full|normal|bare|solo [settings.json] [folder]   prints the generated profile (tests)
+#      tmux-level --profile full|normal|bare|solo|solo-net|solo-unsandboxed [settings.json] [folder]
+#                                     prints the generated profile (tests)
 #      tmux-level --command full|normal|bare [folder] [--agent NAME] [--pane PANE]
 #                                     prints the command Claude would start with (--pane: with that tab's profile)
-#      tmux-level --settings-file normal|solo                              writes that profile, prints its path
+#      tmux-level --settings-file normal|solo|solo-net|solo-unsandboxed    writes that profile, prints its path
 #      tmux-level --prefix PANE          prints the profile prefix a restart of that pane types
 #      tmux-level --fenced settings.json   prints the copy of that profile with the fence of this process's profile
 #                                     (WS_PROFILE, else the one of CLAUDE_CONFIG_DIR), or the same path if none
@@ -105,10 +107,22 @@ profile() {   # level [settings] [project folder] → JSON
       # Only what normal adds; Claude Code merges it into the user settings. Unreadable or not an object: nothing
       # is added (strict), never something half-read.
       jq -e 'if type == "object" then . else error("not an object") end' "$ADDS" 2>/dev/null || echo '{}' ;;
-    solo)
-      # Solo mode keeps normal's exclusions (they run outside the sandbox only after the auto-mode classifier).
+    solo|solo-net|solo-unsandboxed)
+      # Solo mode never self-approves a credentialed network tool (ADR-022, WS-AI-004): every command normal excludes
+      # from the sandbox (az, gh, git push, kubectl…) becomes an «ask» rule, which the auto-mode classifier cannot
+      # approve. solo: no excluded commands, so those tools run INSIDE the sandbox (no network outside the allow list,
+      # no credential folders). solo-net (tmux-solo --with-network-tools, audited and time-boxed): normal's exclusions
+      # come back, each one still asking you. solo-unsandboxed: the sandbox is off; the same ask rules stay.
       [[ -f "$SOLO" ]] || { echo "$SOLO is missing" >&2; return 1; }
-      jq -s "$MERGE" "$SOLO" <(profile normal) 2>/dev/null || { echo "$SOLO is not valid JSON" >&2; return 1; } ;;
+      jq -e 'type == "object"' "$SOLO" >/dev/null 2>&1 || { echo "$SOLO is not valid JSON" >&2; return 1; }
+      local adds asks
+      adds="$(profile normal)"
+      asks="$(jq -c '{permissions: {ask: ((.sandbox.excludedCommands // []) | map("Bash(" + . + ")"))}}' <<<"$adds")"
+      case "$1" in
+        solo) jq -s "$MERGE" "$SOLO" <(echo "$asks") ;;
+        solo-net) jq -s "$MERGE" "$SOLO" <(echo "$adds") <(echo "$asks") ;;
+        solo-unsandboxed) jq -s "$MERGE" "$SOLO" <(echo "$asks") <(echo '{"sandbox":{"enabled":false}}') ;;
+      esac ;;
     *) echo "invalid level: $1" >&2; return 2 ;;
   esac
 }
@@ -210,7 +224,8 @@ case "${1:-}" in
              echo "$(profile_prefix "$ppane")$pre$c"; exit 0 ;;
   --fenced) fenced "${2:?settings file}"; exit 0 ;;
   --prefix) profile_prefix "${2:-}"; exit 0 ;;
-  --settings-file) [[ "${2:-}" == normal || "${2:-}" == solo ]] || { echo "usage: tmux-level --settings-file normal|solo" >&2; exit 2; }
+  --settings-file) [[ "${2:-}" =~ ^(normal|solo|solo-net|solo-unsandboxed)$ ]] \
+                     || { echo "usage: tmux-level --settings-file normal|solo|solo-net|solo-unsandboxed" >&2; exit 2; }
              settings_file "$2"; exit $? ;;
   full|normal|bare|completo|puro) ;;
   *) sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
@@ -247,7 +262,7 @@ case "$level" in
   normal)   tmux set -wu -t "$win" @clevel \; set -wu -t "$win" @clevel_ico ;;
 esac
 # Solo mode is a different start: choosing a level leaves it, with its expiry and unsandboxed marks.
-for o in @csolo @csolo_until @csolo_nosb; do tmux set -wu -t "$win" "$o" 2>/dev/null || true; done
+for o in @csolo @csolo_until @csolo_nosb @csolo_net; do tmux set -wu -t "$win" "$o" 2>/dev/null || true; done
 if [[ -n "$agent" && "$agent" != none ]]; then tmux set -w -t "$win" @cagent "$agent"; else tmux set -wu -t "$win" @cagent 2>/dev/null || true; fi
 d="$(mkdir -p "$HOME/.local/share/ws-telemetry/levels" && echo "$HOME/.local/share/ws-telemetry/levels")"
 jq -nc --arg n "$level" --arg p "$(basename "$(tmux display -p -t "$pane" '#{pane_current_path}')")" \

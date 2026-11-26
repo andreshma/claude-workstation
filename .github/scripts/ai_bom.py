@@ -169,8 +169,8 @@ def pin_of(name: str, lock: dict) -> tuple[str, str]:
 def t_mcp(root: Path, d: dict) -> list[str]:
     ask = d["settings"].get("permissions", {}).get("ask", [])
     out = [
-        "| Server | Transport | Command or URL | Pin | Opt-in | Always-ask rules |",
-        "|---|---|---|---|---|---|",
+        "| Server | Transport | Command or URL | Pin | Opt-in | Confinement | Always-ask rules |",
+        "|---|---|---|---|---|---|---|",
     ]
     for n, v in d["mcp"].items():
         if not isinstance(v, dict):
@@ -180,6 +180,15 @@ def t_mcp(root: Path, d: dict) -> list[str]:
         )
         pin, opt = pin_of(n, d["lock"])
         nask = sum(1 for r in ask if r.startswith(f"mcp__{n}__"))
+        jail = v.get("jail")
+        if v.get("type") == "http":
+            conf = "remote (runs at the provider)"
+        elif isinstance(jail, dict):
+            conf = "ws-mcp-jail" + (", network" if jail.get("net") else ", no network")
+            conf += ", own Azure config" if jail.get("azureConfig") else ""
+        else:
+            why = str(v.get("jailOptOut") or "no reason given").split(":")[0]
+            conf = f"not confined ({why})"
         out.append(
             row(
                 [
@@ -188,6 +197,7 @@ def t_mcp(root: Path, d: dict) -> list[str]:
                     f"`{target.strip()}`",
                     pin,
                     opt,
+                    conf,
                     nask,
                 ]
             )

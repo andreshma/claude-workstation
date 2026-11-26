@@ -25,9 +25,9 @@ log "$n configuration files"
 
 if [[ -s "$HOME/.claude.json" ]]; then
   # Merged, not replaced: a kit server that is not registered here (an opt-in one such as chrome-devtools) stays; a
-  # registered one takes this machine's definition.
+  # registered one takes this machine's definition, unwrapped from ws-mcp-jail and with the kit's jail keys (ADR-024).
   [[ -s "$KEEP/mcp-servers.json" ]] || echo '{}' > "$KEEP/mcp-servers.json"
-  jq -s '(.[0] // {}) + (.[1].mcpServers // {})' "$KEEP/mcp-servers.json" "$HOME/.claude.json" > "$MCP_FILE"
+  mcp_unwrap_merge "$KEEP/mcp-servers.json" "$HOME/.claude.json" > "$MCP_FILE"
   log "$(jq 'length' "$MCP_FILE") user MCP servers: $(jq -r 'keys | join(", ")' "$MCP_FILE")"
 fi
 
