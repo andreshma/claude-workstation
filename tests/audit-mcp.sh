@@ -108,7 +108,7 @@ run mcp_registration > "$T/out"
 check "a serverUrl pattern allows the HTTP server" grep -q '^ok.*allow list blocks: 0' "$T/out"
 check "without allowManagedMcpServersOnly it warns" grep -q '^warn.*cannot be widened' "$T/out"
 check "lib.sh generates the drop-in from mcp-servers.json, by command and URL, never by name" \
-  bash -c "source '$ROOT/lib.sh'; mcp_allowlist '$ROOT/files/mcp-servers.json' /home/u | jq -e '.allowManagedMcpServersOnly and (.allowedMcpServers | length) == 6 and all(.allowedMcpServers[]; has(\"serverName\") | not) and any(.allowedMcpServers[]; .serverCommand[0] == \"/home/u/.local/bin/ws-mcp-jail\")'"
+  bash -c "source '$ROOT/lib.sh'; mcp_allowlist '$ROOT/files/mcp-servers.json' /home/u | jq -e '.allowManagedMcpServersOnly and (.allowedMcpServers | length) == 6 and all(.allowedMcpServers[]; has(\"serverName\") | not) and any(.allowedMcpServers[]; .serverCommand[0] == \"/home/u/.local/bin/ws-mcp-keepalive\" and .serverCommand[4] == \"/home/u/.local/bin/ws-mcp-jail\")'"
 
 printf '\n%d ok, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

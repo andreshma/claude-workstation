@@ -6,7 +6,8 @@ document (data, risk, upstream, retention) is written by hand. Sources:
   models   files/home/.claude/settings.json (.model, .fallbackModel, .modelSettings), the agents' front matter,
            files/home/.local/lib/ws-routing.sh (routing_model) and the model names the kit scripts pass to Claude
   agents   files/home/.claude/agents/*.md front matter (model, effort, tools, disallowedTools)
-  mcp      files/mcp-servers.json, files/mcp-servers.lock.json and the always-ask rules in settings.json
+  mcp      files/mcp-servers.json (confinement, keepalive), files/mcp-servers.lock.json and the always-ask rules in
+           settings.json
   tools    files/home/.local/lib/ws-npm/*/package.json (npm packages installed with ws-pinned)
   hooks    .hooks in settings.json (event, matcher, script and what it wraps, timeout)
   plugins  .enabledPlugins and .extraKnownMarketplaces in settings.json
@@ -169,8 +170,8 @@ def pin_of(name: str, lock: dict) -> tuple[str, str]:
 def t_mcp(root: Path, d: dict) -> list[str]:
     ask = d["settings"].get("permissions", {}).get("ask", [])
     out = [
-        "| Server | Transport | Command or URL | Pin | Opt-in | Confinement | Always-ask rules |",
-        "|---|---|---|---|---|---|---|",
+        "| Server | Transport | Command or URL | Pin | Opt-in | Confinement | Restart after an exit | Always-ask rules |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for n, v in d["mcp"].items():
         if not isinstance(v, dict):
@@ -189,6 +190,12 @@ def t_mcp(root: Path, d: dict) -> list[str]:
         else:
             why = str(v.get("jailOptOut") or "no reason given").split(":")[0]
             conf = f"not confined ({why})"
+        if v.get("type") == "http":
+            restart = "Claude Code reconnects it"
+        elif v.get("keepalive") is False:
+            restart = "none (`/mcp` → Reconnect)"
+        else:
+            restart = "ws-mcp-keepalive"
         out.append(
             row(
                 [
@@ -198,6 +205,7 @@ def t_mcp(root: Path, d: dict) -> list[str]:
                     pin,
                     opt,
                     conf,
+                    restart,
                     nask,
                 ]
             )

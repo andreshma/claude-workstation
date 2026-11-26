@@ -28,7 +28,10 @@
 #                      servers included, unless they are listed in ~/.config/ws-mcp/allow-extra.json (a JSON array of
 #                      {"serverUrl": …} or {"serverCommand": […]} entries). The file is printed before sudo asks.
 # Every stdio MCP server with a "jail" object in mcp-servers.json is registered through ws-mcp-jail (bubblewrap);
-# "jail": false needs a "jailOptOut" reason (Windows executables cannot be confined). --mcp-refresh re-registers.
+# "jail": false needs a "jailOptOut" reason (Windows executables cannot be confined). Every stdio server also runs
+# through ws-mcp-keepalive (ADR-025: restarted when it exits mid-session) unless it says "keepalive": false. A
+# registration that runs the same server without the kit's current wrappers is re-registered automatically;
+# --mcp-refresh re-registers any other difference.
 # MCP servers are checked against files/mcp-servers.lock.json first: npm ones are installed with ws-pinned from a
 # committed package-lock.json, local executables are pinned by sha256 on first use; a mismatch skips that server.
 # The kit's files are templates: @WINHOME@, @WIN_USER@, @HOME@ and @LINUX_USER@ are
@@ -314,11 +317,19 @@ if (( MCP )) && [[ -s "$MCP_FILE" ]]; then
     elif [[ "$(jq -r --arg n "$name" '.[$n].jail' "$MCP_FILE")" == false ]]; then
       printf '  note    %s is not jailed: %s\n' "$name" "$(jq -r --arg n "$name" '.[$n].jailOptOut // "no reason given"' "$MCP_FILE" | cut -c1-90)"
     fi
+    if [[ "$(jq -r --arg n "$name" '(.[$n].type // "stdio") + " " + (.[$n].keepalive | tostring)' "$MCP_FILE")" == "stdio false" ]]; then
+      printf '  note    %s is not kept alive (keepalive: false): if it exits, /mcp → Reconnect\n' "$name"
+    fi
     have="$(mcp_registered "$name")"
     if [[ -n "$have" ]]; then
       if mcp_same "$have" "$want"; then printf '  same    %s\n' "$name"; continue; fi
-      # Refresh on request, or always when the registration is the unpinned npx form an earlier kit used.
-      if (( MCP_REFRESH )) \
+      # Refresh on request; always when the registration is the unpinned npx form an earlier kit used, or the same
+      # server without the kit's current wrappers (ws-mcp-keepalive, ws-mcp-jail): what runs inside does not change.
+      if mcp_same "$(mcp_unwrap <<<"$have")" "$(mcp_unwrap <<<"$want")"; then
+        printf '  changed %s (same server, registered again with the wrappers of mcp-servers.json)\n' "$name"
+        (( DRY )) || { claude mcp remove "$name" --scope user </dev/null >/dev/null 2>&1 || true
+                     claude mcp add-json "$name" "$want" --scope user </dev/null >/dev/null; }
+      elif (( MCP_REFRESH )) \
          || [[ "$(jq -r '.command // ""' <<<"$have")" == npx && "$(jq -r '.command' <<<"$want")" != npx ]]; then
         printf '  changed %s (re-registered from mcp-servers.json)\n' "$name"
         (( DRY )) || { claude mcp remove "$name" --scope user </dev/null >/dev/null 2>&1 || true

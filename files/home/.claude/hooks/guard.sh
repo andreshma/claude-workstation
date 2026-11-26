@@ -78,7 +78,8 @@ cfg_hard+=("$H/.claude.json" "$H/.config/git/hooks" "$H/.config/claude-levels" "
   "$H/.claude/audit" "$H/.local/state/ws-stop-all" "$H/.local/state/ws-budget-over" "$H/.local/state/ws-budget-override"
   "$H/.local/state/ws-gate" "$H/.local/lib/ws-tools.lock" "$H/.local/lib/ws-mirror.sh" "$H/.config/tmux-claude/plugins.lock"
   "$H/.tmux/plugins" "$H/.local/state/ws-tools" "$H/.local/state/ws-plugins" "$H/.local/state/ws-backup-mirror.state"
-  "$H/.local/bin/ws-mcp-jail" "$H/.local/bin/ws-gate" "$H/.config/ws-mcp")   # ADR-024: the MCP jail and its allow list
+  "$H/.local/bin/ws-mcp-jail" "$H/.local/bin/ws-gate" "$H/.config/ws-mcp"   # ADR-024: the MCP jail and its allow list
+  "$H/.local/bin/ws-mcp-keepalive" "$H/.local/state/ws-mcp")   # ADR-025: the keepalive, its logs and the jail state
 cred=()
 for f in /etc/claude-code/ws-credential-paths.txt "$H/.local/lib/ws-credential-paths.txt"; do
   [[ -r "$f" ]] || continue

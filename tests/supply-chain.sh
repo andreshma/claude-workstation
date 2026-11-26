@@ -106,9 +106,10 @@ check "  and the install says why" grep -q 'rogue is not in mcp-servers.lock.jso
 check "the local server is registered and pinned on first use" bash -c "jq -e '.mcpServers.loc' '$H/.claude.json' && grep -q '^loc' '$H/.local/share/ws-kit/mcp-trust.tsv'"
 check "the remote server in the lock is registered" reg microsoft-learn
 if grep -q 'new     chrome-devtools-mcp\|same    chrome-devtools-mcp' "$T/i1.log"; then
-  check "the npm server is registered at the pinned path, through ws-mcp-jail (ADR-024)" \
-    jq -e --arg h "$H" '.mcpServers["chrome-devtools"] | .command == ($h + "/.local/bin/ws-mcp-jail")
-      and .args[(.args | index("--")) + 1] == ($h + "/.local/share/ws-kit/npm/chrome-devtools-mcp/node_modules/.bin/chrome-devtools-mcp")' \
+  check "the npm server is registered at the pinned path, through ws-mcp-keepalive and ws-mcp-jail (ADR-024, ADR-025)" \
+    jq -e --arg h "$H" '.mcpServers["chrome-devtools"] | .command == ($h + "/.local/bin/ws-mcp-keepalive")
+      and .args[3] == ($h + "/.local/bin/ws-mcp-jail") and (.args[3:] as $j
+      | $j[($j | index("--")) + 1] == ($h + "/.local/share/ws-kit/npm/chrome-devtools-mcp/node_modules/.bin/chrome-devtools-mcp"))' \
     "$H/.claude.json"
 else skip "npm server install (registry unreachable)"; fi
 printf '#!/bin/sh\n# changed\n' > "$LOC"
@@ -117,13 +118,19 @@ inst > "$T/i2.log"
 check "a changed local executable is skipped with a warning" bash -c "! jq -e '.mcpServers.loc' '$H/.claude.json' && grep -q 'changed since it was pinned' '$T/i2.log'"
 inst --mcp-accept loc > "$T/i3.log"
 check "--mcp-accept re-pins it after review" reg loc
+check "a local server is registered through ws-mcp-keepalive (ADR-025)" \
+  jq -e --arg h "$H" --arg c "$LOC" '.mcpServers.loc | .command == ($h + "/.local/bin/ws-mcp-keepalive") and .args == ["--name", "loc", "--", $c]' "$H/.claude.json"
+jq --arg c "$LOC" '.mcpServers.loc = {type: "stdio", command: $c, args: [], env: {}}' "$H/.claude.json" > "$H/c" && mv "$H/c" "$H/.claude.json"
+inst > "$T/i3b.log"
+check "a registration of the same server without the wrappers is re-registered by itself (no --mcp-refresh)" \
+  bash -c "grep -q 'changed loc (same server' '$T/i3b.log' && jq -e '.mcpServers.loc.command | endswith(\"/ws-mcp-keepalive\")' '$H/.claude.json'"
 jq '.mcpServers["microsoft-learn"] = {type: "stdio", command: "npx", args: ["-y", "something@1.0.0-beta.2"]}' "$H/.claude.json" > "$H/c" && mv "$H/c" "$H/.claude.json"
 jq '.mcpServers.loc.args = ["--mine"]' "$H/.claude.json" > "$H/c" && mv "$H/c" "$H/.claude.json"
 inst > "$T/i4.log"
 check "an old npx registration is replaced by the kit's" bash -c "[[ \$(jq -r '.mcpServers[\"microsoft-learn\"].type' '$H/.claude.json') == http ]]"
 check "a hand-made difference is reported, not overwritten" bash -c "grep -q 'differs loc' '$T/i4.log' && jq -e '.mcpServers.loc.args == [\"--mine\"]' '$H/.claude.json'"
 inst --mcp-refresh > "$T/i5.log"
-check "--mcp-refresh re-registers it" jq -e '.mcpServers.loc.args == []' "$H/.claude.json"
+check "--mcp-refresh re-registers it" jq -e --arg c "$LOC" '.mcpServers.loc.args == ["--name", "loc", "--", $c]' "$H/.claude.json"
 jq '.servers["microsoft-learn"].url = "https://elsewhere.invalid/mcp"' "$K/files/mcp-servers.lock.json" > "$T/l" && mv "$T/l" "$K/files/mcp-servers.lock.json"
 jq 'del(.mcpServers["microsoft-learn"])' "$H/.claude.json" > "$H/c" && mv "$H/c" "$H/.claude.json"
 inst > "$T/i6.log"
@@ -138,13 +145,15 @@ for c in claude sudo ws-sandbox-repos ws-check; do printf '#!/bin/sh\nexit 0\n' 
 printf '#!/bin/sh\nexit 0\n' > "$U/.tmux/plugins/tpm/bin/update_plugins"; chmod 755 "$T/ufb"/* "$U/.tmux/plugins/tpm/bin/update_plugins"
 printf '#!/bin/sh\nexit 0\n' > "$T/ufb/npm"; chmod 755 "$T/ufb/npm"   # npm view answers nothing: no network needed
 cp "$PIN" "$U/.local/bin/ws-pinned"; printf 'x' > "$T/u-exe"
-jq -n --arg c "$T/u-exe" '{mcpServers: {azure: {type: "stdio", command: "npx", args: ["-y", "@azure/mcp@4.0.0-beta.7", "server", "start"]},
-     mine: {type: "stdio", command: $c}}}' > "$U/.claude.json"
-WS_MCP_TRUST="$U/trust.tsv" bash "$PIN" local-pin mine "$T/u-exe" >/dev/null; printf 'y' > "$T/u-exe"
+jq -n --arg c "$T/u-exe" --arg k "$U/.local/bin/ws-mcp-keepalive" '{mcpServers: {azure: {type: "stdio", command: "npx", args: ["-y", "@azure/mcp@4.0.0-beta.7", "server", "start"]},
+     mine: {type: "stdio", command: $c}, kept: {type: "stdio", command: $k, args: ["--name", "kept", "--", $c]}}}' > "$U/.claude.json"
+WS_MCP_TRUST="$U/trust.tsv" bash "$PIN" local-pin mine "$T/u-exe" >/dev/null
+WS_MCP_TRUST="$U/trust.tsv" bash "$PIN" local-pin kept "$T/u-exe" >/dev/null; printf 'y' > "$T/u-exe"
 out="$(HOME="$U" PATH="$T/ufb:$PATH" WS_MCP_TRUST="$U/trust.tsv" WS_PINNED_ROOT="$U/npm" bash "$ROOT/files/home/.local/bin/ws-update" 2>&1)"
 check "the prerelease suffix of an npx registration is kept (4.0.0-beta.7, not 4.0.0)" grep -q '@azure/mcp@4.0.0-beta.7' <<<"$out"
 check "an npx registration is flagged as unpinned" grep -q 'azure runs through npx' <<<"$out"
 check "a changed local executable is flagged" grep -q 'mine changed since it was pinned' <<<"$out"
+check "  also behind ws-mcp-keepalive: the real binary is checked, not the wrapper" grep -q "kept changed since it was pinned ($T/u-exe)" <<<"$out"
 
 printf '\n%d ok, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 (( FAIL == 0 ))

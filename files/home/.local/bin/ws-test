@@ -1244,6 +1244,27 @@ test_level() {
     r="$(E ws-mcp-jail --name fake -- "$TH/.local/share/ws-kit/npm/fake/node_modules/.bin/fake" </dev/null 2>&1)"
     [[ "$r" == end ]] && ok "ws-mcp-jail: a jailed MCP server reads neither ~/.ssh nor another profile's logins" || fail "ws-mcp-jail: $r"
   else warn "ws-mcp-jail: bubblewrap cannot create namespaces here (the jailed MCP servers would not start)"; fi
+  # ADR-025: a local MCP server that exits mid-session is started again; the request it had gets an error.
+  if have ws-mcp-keepalive; then
+    cat > "$T/ka-srv" <<'EOF'
+#!/bin/sh
+# A stdio MCP server in miniature: answers every request with its pid, exits on «crash».
+while read -r l; do
+  case "$l" in *crash*) exit 7 ;; esac
+  id="$(printf '%s' "$l" | sed -n 's/.*"id":\("[^"]*"\|[0-9][0-9]*\).*/\1/p')"
+  [ -n "$id" ] && printf '{"jsonrpc":"2.0","id":%s,"result":{"capabilities":{"tools":{}},"pid":%s}}\n' "$id" "$$"
+done
+EOF
+    chmod +x "$T/ka-srv"
+    r="$( { echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'; sleep 0.3
+            echo '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+            echo '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"crash"}}'; sleep 1.5
+            echo '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'; sleep 0.5; } \
+          | E env WS_MCP_KEEPALIVE_BACKOFF_MIN=0.2 ws-mcp-keepalive --name ka -- "$T/ka-srv" 2>/dev/null)"
+    grep -q '"id":9,"error"' <<<"$r" && grep -q 'tools/list_changed' <<<"$r" && grep -q '"id":2,"result"' <<<"$r" \
+      && ok "ws-mcp-keepalive: a server that exits is restarted; the lost request gets an error, the next one an answer" \
+      || fail "ws-mcp-keepalive: $r"
+  fi
   jq -e '.sandbox | has("excludedCommands") | not' "$RH/.claude/settings.json" >/dev/null \
     && ok "the user settings exclude no command from the sandbox (strict base; normal adds them)" || fail "settings.json still has sandbox.excludedCommands"
   r="$(printf '%s' '{"permissions":{"allow":["Bash(ls:*)"],"deny":["Read(~/.aws/**)"],"disableBypassPermissionsMode":"disable"}}' > "$T/s-bp.json"; E tmux-level --profile bare "$T/s-bp.json")"

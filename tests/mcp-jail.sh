@@ -100,11 +100,12 @@ echo "4) registration (install.sh)"
 want() { bash -c 'source "$1/lib.sh"; mcp_want "$2" "$3" "$4"' _ "$ROOT" "$ROOT/files/mcp-servers.json" "$1" "$HOME"; }
 check "lib.sh has mcp_want" grep -q '^mcp_want()' "$ROOT/lib.sh"
 w="$(want azure)"
-check "azure is registered through ws-mcp-jail with the network and its Azure config" \
-  jq -e --arg h "$HOME" '.command == ($h + "/.local/bin/ws-mcp-jail") and (.args | index("--net")) and (.args | index("--azure-config")) and (.args[(.args | index("--")) + 1] | endswith("azmcp"))' <<<"$w"
+check "azure is registered through ws-mcp-jail with the network and its Azure config (inside ws-mcp-keepalive, ADR-025)" \
+  jq -e --arg h "$HOME" '.command == ($h + "/.local/bin/ws-mcp-keepalive") and .args[3] == ($h + "/.local/bin/ws-mcp-jail")
+    and (.args[3:] as $j | ($j | index("--net")) and ($j | index("--azure-config")) and ($j[($j | index("--")) + 1] | endswith("azmcp")))' <<<"$w"
 check "  and the jail keys are not passed to claude mcp add-json" jq -e 'has("jail") or has("jailOptOut") | not' <<<"$w"
-check "mempalace stays unwrapped: a Windows executable, opted out with a reason" \
-  bash -c "jq -e '.command | endswith(\"mempalace-mcp.exe\")' <<<'$(want mempalace)' && jq -e '.mempalace.jail == false and (.mempalace.jailOptOut | length > 20)' '$ROOT/files/mcp-servers.json'"
+check "mempalace is not jailed: a Windows executable, opted out with a reason (only the keepalive wraps it)" \
+  bash -c "jq -e '.args[3] | endswith(\"mempalace-mcp.exe\")' <<<'$(want mempalace)' && jq -e '.mempalace.jail == false and (.mempalace.jailOptOut | length > 20)' '$ROOT/files/mcp-servers.json'"
 check "every stdio server is jailed or opted out with a reason" \
   jq -e '[to_entries[] | select((.value.type // "stdio") == "stdio") | select((.value.jail | type) != "object" and ((.value.jail == false and (.value.jailOptOut // "" | length) > 0) | not))] | length == 0' "$ROOT/files/mcp-servers.json"
 jq -n --argjson a "$(want azure)" '{mcpServers: {azure: $a}}' > "$T/claude.json"
