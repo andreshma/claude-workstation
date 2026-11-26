@@ -3,7 +3,8 @@
 # tmux-background — maintains the status bar and runs the background tasks. tmux-watch calls it on every bar refresh.
 #   Always (cheap, tmux options only):
 #     · each tab's Claude state with its time (tmux-status --all)
-#     · tab label, recording ⏺, CI/PR and the custom profile (⬢label, ws-profile) in the tab formats
+#     · tab label, recording ⏺, CI/PR, the custom profile (⬢label, ws-profile) and the CPU glyph (tmux-res) in the
+#       tab formats; starts the per-tab resource sampler (tmux-res) if it is not running
 #     · your personal segments in status-right, each one ONCE: ~/.config/ws-local/bar-extra.conf
 #       (one line per segment, e.g. #(~/.local/bin/ws-cache 30 ~/path/my-segment.sh); «# » = comment).
 #       That file is personal: it does not go into the team kit. It survives theme changes and config reloads.
@@ -20,6 +21,20 @@ set -uo pipefail
 B="$HOME/.local/bin"
 EXTRA="${WS_BAR_EXTRA:-$HOME/.config/ws-local/bar-extra.conf}"
 
+# res_ensure — the per-tab resource sampler (tmux-res) runs once per tmux server; starts it when it is not running.
+# Only a PID check here (this runs on every bar refresh): Python starts only when the sampler has to.
+res_ensure() {
+  [[ -x "$B/tmux-res" ]] || return 0
+  [[ "$(tmux show -gqv @ws_res_mode 2>/dev/null)" == off ]] && return 0
+  grep -qs '^res_mode=off' "${XDG_CONFIG_HOME:-$HOME/.config}/tmux-claude/settings" && return 0
+  local sock="${TMUX%%,*}" pid
+  [[ -n "$sock" ]] || sock="$(tmux display -p '#{socket_path}' 2>/dev/null)"
+  [[ -n "$sock" ]] || return 0
+  pid="$(cat "${XDG_RUNTIME_DIR:-/tmp}/tmux-res-$(id -u)/${sock//\//_}/pid" 2>/dev/null)"
+  [[ -n "$pid" ]] && grep -qas tmux-res "/proc/$pid/cmdline" && return 0
+  "$B/tmux-res" ensure >/dev/null 2>&1
+}
+
 bar() {
   [[ -x "$B/tmux-status" ]] && "$B/tmux-status" --all   # Claude state with its time (patch 56)
   [[ -x "$B/tmux-label" ]] && "$B/tmux-label" --bar
@@ -35,6 +50,10 @@ bar() {
     [[ "$(tmux show -gv "$o" 2>/dev/null)" == *"@cprofile_label"* ]] \
       || tmux set -ag "$o" '#{?@cprofile_label, #[fg=#{?@cprofile_colour,#{@cprofile_colour},colour214}]⬢#{@cprofile_label}#[fg=default],}'
   done
+  for o in window-status-format window-status-current-format; do   # the tab's CPU glyph (tmux-res tabs on)
+    [[ "$(tmux show -gv "$o" 2>/dev/null)" == *"@res_t"* ]] || tmux set -ag "$o" '#{?#{==:#{@ws_res_tabs},on}, #{E:@res_t},}'
+  done
+  res_ensure
   # In focus mode the bar is minimal on purpose; on leaving, the previous one is restored (with your segments).
   [[ -f "$EXTRA" && -z "$(tmux show -gqv @focus_end 2>/dev/null)" ]] || return 0
   current="$(tmux show -gv status-right 2>/dev/null)"

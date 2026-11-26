@@ -31,10 +31,12 @@ display-menu -O -T "#[align=centre] ⚙  Settings " -x C -y C -- \
   "Production subscriptions and contexts: #{?@ws_set_production,#{@ws_set_production},0} (edit)" P "display-popup -E -w 92% -h 85% -T ' Production ' \"~/.local/bin/tmux-popup-run ~/.local/bin/ws-settings production\"" \
   "Claude may edit CLAUDE.md, commands, agents, skills: #{?@ws_set_window,#{@ws_set_window},closed}" W "#{?#{==:#{@ws_set_window},closed},confirm-before -p \"Let Claude edit CLAUDE.md and its commands/agents/skills for 30 min (each write audited)? (y/n)\" \"run-shell -b '~/.local/bin/ws-settings window open'\",run-shell -b '~/.local/bin/ws-settings window close'}" \
   "Secret rotation periods (edit)" R "display-popup -E -w 92% -h 85% -T ' Secret rotation ' \"~/.local/bin/tmux-popup-run ~/.local/bin/ws-settings rotation\"" \
-  "-#[nodim]── Notifications and appearance ──" "" "" \
+  "-#[nodim]── Notifications, appearance and status bar ──" "" "" \
   "Windows notifications: #{?#{==:#{@cnotify},off},off,on} (switch)" n "run-shell -b '~/.local/bin/ws-settings notify #{?#{==:#{@cnotify},off},on,off}'" \
   "Telegram: on/off, what is sent, digest, quiet hours, PIN ›" g "source-file ~/.config/tmux-claude/menu-telegram.tmux" \
   "Theme and screensaver ›" v "source-file ~/.config/tmux-claude/menu-appearance.tmux" \
+  "Tab resources in the status bar: #{?@ws_set_resmode,#{@ws_set_resmode},full} (full → compact → off)" u "run-shell -b '~/.local/bin/ws-settings res-mode #{?#{==:#{@ws_set_resmode},compact},off,#{?#{==:#{@ws_set_resmode},off},full,compact}}'" \
+  "CPU glyph after each tab: #{?@ws_set_restabs,#{@ws_set_restabs},off} (switch)" i "run-shell -b '~/.local/bin/ws-settings res-tabs #{?#{==:#{@ws_set_restabs},on},off,on}'" \
   "-#[nodim]── Kit and checks ──" "" "" \
   "Update the kit (signed release)" U "display-popup -E -w 92% -h 85% -T ' Update ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-pause 'ws-kit-update'\"" \
   "Audit the workstation (ws-audit)" A "display-popup -E -w 95% -h 90% -T ' Audit ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-pause 'ws-audit'\"" \

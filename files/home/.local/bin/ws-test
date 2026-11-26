@@ -1078,6 +1078,37 @@ test_ux() {
   tm kill-server 2>/dev/null
 }
 
+test_tab_resources() {
+  use_socket res
+  section "Tab resources and fixed-width bar (tmux-res, ADR 0029)"
+  have tmux-res && have tmux-fit || { warn "tmux-res is not installed"; return; }
+  tm -f /dev/null new-session -d -s res -n idle "exec sleep 600"
+  tm new-window -d -t res -n busy "exec timeout 30 sh -c 'while :; do :; done'"
+  local sock; sock="$(ls -d "$T/s/$SOCK"/tmux-*/default)"
+  rs() { E env TMUX="$sock,1,0" XDG_RUNTIME_DIR="$T/res-run" WS_RES_NVIDIA_SMI=none tmux-res "$@"; }
+  mkdir -p "$T/res-run"; rs sample >/dev/null; sleep 2
+  local r busy idle; r="$(rs sample)"
+  busy="$(awk -F'\t' -v w="$(tm display -p -t res:busy '#{window_id}')" '$1 == w { print int($2) }' <<<"$r")"
+  idle="$(awk -F'\t' -v w="$(tm display -p -t res:idle '#{window_id}')" '$1 == w { print int($2) }' <<<"$r")"
+  (( ${busy:-0} >= 50 && ${idle:-100} < 20 )) && ok "per-tab CPU: the busy tab ~100 %, the idle one ~0 % ($busy / $idle)" \
+    || fail "tmux-res sample: busy=$busy idle=$idle · $r"
+  local w1 w2; w1="$(cut -f11 <<<"$r" | while IFS= read -r l; do printf '%s' "$l" | E tmux-fit --width; done | sort -u)"
+  [[ "$w1" == 61 ]] && ok "the tab panel is 61 columns for every tab" || fail "panel widths: $w1"
+  rs mode compact >/dev/null 2>&1
+  [[ "$(tm show -gv @ws_res_mode)" == compact ]] && grep -qx 'res_mode=compact' "$TH/.config/tmux-claude/settings" \
+    && ok "tmux-res mode: saved in settings and set on the server" || fail "tmux-res mode compact"
+  rs mode off >/dev/null 2>&1; [[ "$(tm show -gv @ws_res_mode)" == off ]] && ok "tmux-res mode off" || fail "tmux-res mode off"
+  E env TMUX="$sock,1,0" tmux-ux >/dev/null 2>&1
+  [[ "$(tm show -gv 'status-format[1]')" == *'#{E:@res_p}'*'tmux-hud'* ]] && ok "monitor line: the tab panel, then the machine" \
+    || fail "status-format[1]: $(tm show -gv 'status-format[1]')"
+  r="$(E env XDG_RUNTIME_DIR="$T/res-run" tmux-hud | E tmux-fit --width)"; w2="$(E env XDG_RUNTIME_DIR="$T/res-run" tmux-hud | E tmux-fit --width)"
+  [[ -n "$r" && "$r" == "$w2" ]] && ok "monitor: same width on consecutive refreshes ($r columns)" || fail "tmux-hud widths: $r vs $w2"
+  r="$(E env TMUX="$sock,1,0" WS_WATCH_STATE="$T/res-watch" WS_WATCH_BURN="$T/res-burn" tmux-watch | E tmux-fit --width)"
+  [[ "$r" == 24 ]] && ok "traffic light: always 24 columns" || fail "tmux-watch width: $r"
+  [[ "$(grep -c 'p14:#{=14:window_name}' "$TH/.tmux.conf")" -ge 1 ]] && ok "tab names cut and padded" || fail "window-status-format"
+  tm kill-server 2>/dev/null
+}
+
 test_find() {
   use_socket find
   section "Finder: tabs, active, favorites and recent conversations in one list (tmux-find)"
@@ -1740,6 +1771,7 @@ test_report
 test_otel
 test_level
 test_ux
+test_tab_resources
 test_find
 test_state
 test_personal

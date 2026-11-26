@@ -11,7 +11,7 @@
 # It also sends Windows reminders (via win-notify.sh alert), with a pause between them.
 # Thresholds (tmux options, with their default value):
 #   @cwatch_remind 3 (min)   @cwatch_stall 10 (min)   @cburn_warn 5   @cburn_crit 15 (USD/h)
-#   @canomaly_n 5 (blocks)   @canomaly_min 10 (min)
+#   @canomaly_n 5 (blocks)   @canomaly_min 10 (min)   @ws_watch_width 24 (columns the segment always takes)
 # Solo mode expiry (WS-AI-004): a tab whose @csolo_until has passed is returned to normal mode (tmux-solo normal).
 # WS_WATCH_STATE and WS_WATCH_BURN override the state folders in /tmp (tests).
 # Usage: tmux-watch          output for the bar
@@ -135,4 +135,7 @@ if [[ "$(tmux show -gqv @theme_mode)" == auto ]]; then
 fi
 # Patch 53: background tasks (CI/PR of each tab, searchable history), at most once a minute.
 ( "$HOME/.local/bin/tmux-background" >/dev/null 2>&1 & )
-printf '%s' "$out"
+# Fixed width (@ws_watch_width columns, 24): the traffic light comes and goes and its numbers change; padded and cut
+# to one width it never moves the tab list (tmux-fit counts the columns tmux draws).
+w="$(opt @ws_watch_width 24)"; [[ "$w" =~ ^[0-9]+$ ]] || w=24
+if [[ -x "$HOME/.local/bin/tmux-fit" ]]; then printf '%s' "$out" | "$HOME/.local/bin/tmux-fit" -r "$w"; else printf '%s' "$out"; fi

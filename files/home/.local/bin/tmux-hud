@@ -4,11 +4,14 @@
 # steal focus). Ctrl+b v shows or hides it.
 #   CPU ▁▂▅▇ 43%  RAM ▃▄▄▅ 61% 9.8/16G  NET ↓1.2M ↑180K  C: 38% free  $4.2/h  Claude 🧠2 ✋1 ✔5
 # CPU, RAM and network come from /proc (WSL); sparklines with the last 16 samples (one per status bar refresh).
+# The whole MACHINE: the active tab's own panel (tmux-res) is drawn before it, labelled «tab» and «host».
+# Every field has a fixed width (%3d%%, 4-column byte rates, counts in 2 columns): the line never shifts.
 # $/h: API equivalent of the last 10 min (ws-telemetry rate, every 60 s). Claude: tabs working, waiting for
 # you and done (tmux-status).
 # Usage: tmux-hud              (called by the status bar with #(…))
 #        tmux-hud --toggle   shows or hides the second line
 set -uo pipefail
+export LC_ALL=C.UTF-8   # ${#s} and printf widths count characters, not bytes
 ST="${XDG_RUNTIME_DIR:-/tmp}/tmux-hud-$(id -u)"; mkdir -p "$ST" 2>/dev/null && chmod 700 "$ST"
 BARS="▁▂▃▄▅▆▇█"
 
@@ -25,7 +28,14 @@ spark() {   # file value(0-100) → sparkline of the last 16 samples
   while read -r n; do s+="${BARS:$(( n * 7 / 100 )):1}"; done < "$f"
   printf '%s' "$s"
 }
-human() { awk -v b="$1" 'BEGIN { if (b >= 1048576) printf "%.1fM", b / 1048576; else if (b >= 1024) printf "%.0fK", b / 1024; else printf "%dB", b }'; }
+# human <bytes> → always 4 columns: "  0B" "999B" "1.2K" " 12K" "999K" "1.0M" … (binary units)
+human() {
+  awk -v b="$1" 'BEGIN { split("B K M G T", u, " "); i = 1; v = b + 0; if (v < 0) v = 0
+    if (v < 999.5) { printf "%3d%s", v + 0.5, u[1]; exit }
+    for (i = 2; i <= 5; i++) { v /= 1024; if (v < 9.95) { printf "%3.1f%s", v, u[i]; exit }
+      if (v < 999.5) { printf "%3d%s", v + 0.5, u[i]; exit } }
+    printf "999T" }'
+}
 color() {   # percentage → color (ok, warning, alert)
   if (( $1 >= 85 )); then tc alert colour196; elif (( $1 >= 65 )); then tc tool colour214; else tc ok colour82; fi
 }
@@ -39,7 +49,7 @@ dt=$(( tot - t0 )); cpu=0; (( dt > 0 )) && cpu=$(( 100 * (dt - (idle - o0)) / dt
 # RAM
 tm=$(awk '/^MemTotal/ {print $2}' /proc/meminfo); avail=$(awk '/^MemAvailable/ {print $2}' /proc/meminfo)
 ram=$(( 100 * (tm - avail) / tm ))
-ramtxt="$(awk -v u=$(( tm - avail )) -v t="$tm" 'BEGIN { printf "%.1f/%.0fG", u / 1048576, t / 1048576 }')"
+ramtxt="$(awk -v u=$(( tm - avail )) -v t="$tm" 'BEGIN { printf "%5.1f/%.0fG", u / 1048576, t / 1048576 }')"
 # Network: bytes per second since the previous sample (every interface except lo).
 read -r rx tx < <(awk -F'[: ]+' 'NR > 2 && $2 != "lo" { r += $3; t += $11 } END { print r + 0, t + 0 }' /proc/net/dev)
 now=$(date +%s)
@@ -61,10 +71,12 @@ read -r working waiting finished < <(tmux list-windows -a -F '#{@cphase}' 2>/dev
   END { print t + 0, e + 0, l + 0 }')
 
 D="$(tc dim colour244)"
-printf '#[fg=%s]CPU #[fg=%s]%s %s%%  #[fg=%s]RAM #[fg=%s]%s %s%% #[fg=%s]%s  NET #[default]↓%s ↑%s' \
-  "$D" "$(color "$cpu")" "$(spark cpu.h "$cpu")" "$cpu" "$D" "$(color "$ram")" "$(spark ram.h "$ram")" "$ram" "$D" "$ramtxt" \
-  "$(human "$down")" "$(human "$up")"
-[[ -n "$disk" ]] && printf '  #[fg=%s]C: #[fg=%s]%s%% free' "$D" "$(color $(( 100 - disk )))" "$disk"
-[[ -n "${usd:-}" ]] && printf '  #[fg=%s]$#[default]%s/h' "$D" "$usd"
-printf '  #[fg=%s]Claude #[fg=%s]🧠%s #[fg=%s]✋%s #[fg=%s]✔%s#[default]' "$D" "$(tc think colour39)" "$working" \
+spark_fixed() { local s; s="$(spark "$@")"; while (( ${#s} < 16 )); do s=" $s"; done; printf '%s' "$s"; }
+printf '#[fg=%s]CPU #[fg=%s]%s %3d%%  #[fg=%s]RAM #[fg=%s]%s %3d%% #[fg=%s]%s  NET #[default]↓%s ↑%s' \
+  "$D" "$(color "$cpu")" "$(spark_fixed cpu.h "$cpu")" "$cpu" "$D" "$(color "$ram")" "$(spark_fixed ram.h "$ram")" "$ram" \
+  "$D" "$ramtxt" "$(human "$down")" "$(human "$up")"
+[[ -n "$disk" ]] && printf '  #[fg=%s]C: #[fg=%s]%3d%% free' "$D" "$(color $(( 100 - disk )))" "$disk"
+# $/h: the slot stays when there is no value yet, so the counts after it do not move.
+command -v ws-telemetry >/dev/null && printf '  #[fg=%s]$#[default]%5s/h' "$D" "${usd:---}"
+printf '  #[fg=%s]Claude #[fg=%s]🧠%2d #[fg=%s]✋%2d #[fg=%s]✔%2d#[default]' "$D" "$(tc think colour39)" "$working" \
   "$(tc alert colour196)" "$waiting" "$(tc ok colour82)" "$finished"

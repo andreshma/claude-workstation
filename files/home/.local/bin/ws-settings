@@ -28,6 +28,8 @@
 #   ws-settings window open|close          the 30-minute window in which Claude may edit CLAUDE.md, commands,
 #                                          agents and skills (guard.sh; every write audited)
 #   ws-settings notify on|off              Windows notifications (@cnotify)
+#   ws-settings res-mode full|compact|off  each tab's CPU, RAM, I/O, network and GPU in the status bar (tmux-res mode)
+#   ws-settings res-tabs on|off            a CPU glyph after every tab in the tab list (tmux-res tabs)
 # Exit: 0 done · 1 failed or not confirmed · 2 usage or refused (inside Claude)
 set -uo pipefail
 PATH="$HOME/.local/bin:$PATH"   # tmux menus start it with a minimal PATH
@@ -103,6 +105,8 @@ values() {
   if [[ "$until" =~ ^[0-9]+$ ]] && (( until > now )); then left="$(( (until - now + 59) / 60 )) min left"; else left=closed; fi
   printf 'window\t%s\n' "$left"
   printf 'notify\t%s\n' "$([[ "$(tmux show -gqv @cnotify 2>/dev/null)" == off ]] && echo off || echo on)"
+  n="$(sed -n 's/^res_mode=//p' "$C/tmux-claude/settings" 2>/dev/null | tail -1)"; printf 'resmode\t%s\n' "${n:-full}"
+  n="$(sed -n 's/^res_tabs=//p' "$C/tmux-claude/settings" 2>/dev/null | tail -1)"; printf 'restabs\t%s\n' "${n:-off}"
 }
 # egress_mode NAME — the effective egress mode of a jailed server (the owner's file wins).
 egress_mode() {
@@ -240,5 +244,14 @@ case "$cmd" in
       on|off) tmux set -g @cnotify "$1" 2>/dev/null || die "not inside tmux"; msg "Windows notifications $1" ;;
       *) die "usage: ws-settings notify on|off" 2 ;;
     esac ;;
+  res-mode)
+    [[ "${1:-}" =~ ^(full|compact|off)$ ]] || die "usage: ws-settings res-mode full|compact|off" 2
+    tmux-res mode "$1" >/dev/null || die "tmux-res could not save it"
+    audit "tab resources $1"
+    msg "Tab resources: $1$([[ $1 == full ]] && echo ' (monitor line; Ctrl+b v shows it)')" ;;
+  res-tabs)
+    [[ "${1:-}" == on || "${1:-}" == off ]] || die "usage: ws-settings res-tabs on|off" 2
+    tmux-res tabs "$1" >/dev/null || die "tmux-res could not save it"
+    audit "tab CPU glyph $1"; msg "CPU glyph after each tab: $1" ;;
   *) die "unknown setting: $cmd (ws-settings help)" 2 ;;
 esac
