@@ -139,6 +139,9 @@ flowchart TB
 | Supply chain | `files/mcp-servers.lock.json`, `.local/lib/ws-npm/`, `ws-pinned`, `ws-kit-update`, `.config/ws-kit/allowed_signers`, `agent-browser` | Pinned MCP servers and agent tools; signed kit releases; the browser wrapper's safe defaults. |
 | MCP confinement | `ws-mcp-jail`, the `jail` keys of `files/mcp-servers.json`, `lib.sh` (`mcp_want`, `mcp_allowlist`) | Local Linux MCP servers run in bubblewrap with only their state dir writable; the managed `allowedMcpServers` drop-in ([ADR 0024](adr/0024-mcp-server-confinement-and-allow-list.md)). |
 | MCP keepalive | `ws-mcp-keepalive`, the `keepalive` keys of `files/mcp-servers.json`, `lib.sh` (`mcp_want`, `mcp_unwrap`) | Every local MCP server (outside its jail, if any) behind a stdio proxy that restarts it when it exits mid-session, replays the handshake and answers lost requests with an error; logs and audits each restart ([ADR 0025](adr/0025-mcp-server-keepalive.md)). |
+| MCP policy filter and pins | `ws-mcp-filter`, `ws-mcp-tools`, `files/home/.local/lib/ws_mcp_policy.py`, `~/.config/ws-mcp/filter.json` (+ `filter.local.json`), `mcp-pin-gate.sh` | Between the keepalive and the jail: tools per level and profile, caps, redaction, provenance of memory writes; tool definitions pinned in `~/.local/share/ws-kit/mcp-tools.lock.json`, a change withheld until the owner approves it ([ADR 0027](adr/0027-mcp-stdio-policy-filter-and-tool-pinning.md)). |
+| MCP egress | `ws-egress-proxy`, `ws-mcp-jail --egress`, `~/.config/ws-mcp/egress.json` (+ `egress.local.json`) | A jailed server without a network of its own reaches only its listed hosts through a proxy outside the jail; audit or enforce ([ADR 0028](adr/0028-network-per-level-mcp-egress-and-settings-menu.md)). |
+| Settings | `ws-settings`, `menu-settings.tmux` | Every owner setting with its current value, from Menu → Settings; refused inside Claude and blocked by the guard ([ADR 0028](adr/0028-network-per-level-mcp-egress-and-settings-menu.md)). |
 | Managed policy | `files/etc/claude-code/managed-settings.json` (installed by `install.sh --managed`) | The deny floor and the guard as a root-owned drop-in. |
 | Compliance | `.local/lib/ws_compliance.py` (`ws-audit --compliance`), `docs/compliance/`, `tests/compliance.sh`, `tests/ai-bom.sh` | Run the catalogue's machine-checkable checks; keep the catalogue, the assessment and the AI-BOM in step with the code. |
 | Routing | `.claude/hooks/ws-routing.sh`, `intent-route.sh`, `.local/lib/ws-routing.sh`, `cr`, `ws-routing-confirm` | Suggest a model per task and ask before switching. |
@@ -260,11 +263,11 @@ The permission rules and the sandbox apply after the PreToolUse hooks.
 | Event | Hooks (matcher) |
 |---|---|
 | UserPromptSubmit | `prompt-screen.sh`, `tmux-state.sh prompt`, `audit.sh prompt`, `intent-route.sh`, recall through `memory-filter.sh` and `win-hook.sh`, `win-notify.sh prompt`, `ws-routing.sh`, `ws-traces.sh`, `ws-runtime-gate.sh`, `memory-gate.sh` |
-| PreToolUse | `tmux-state.sh tool`; `audit.sh tool` and `guard.sh` (`onFailure: block`); `read-convert.sh` (Read); `ws-traces.sh`; `ws-runtime-gate.sh`; `memory-gate.sh` (`mcp__.*mempalace.*`) |
+| PreToolUse | `tmux-state.sh tool`; `audit.sh tool` and `guard.sh` (`onFailure: block`); `read-convert.sh` and `read-screen.sh` (Read); `ws-traces.sh`; `ws-runtime-gate.sh`; `memory-gate.sh` (`mcp__.*mempalace.*`); `mcp-pin-gate.sh` (`mcp__.*`) |
 | PostToolUse | `ws-sandbox-notice.sh` (Bash), `tmux-state.sh posttool`, `lint-on-edit.sh` (Edit, Write, MultiEdit), `ws-traces.sh`, `untrusted-content.sh` (`^(WebFetch\|WebSearch\|mcp__.*)$`, and Bash through nine `if` rules) |
 | PostToolUseFailure | `ws-sandbox-notice.sh` (Bash), `tmux-state.sh posttool`, `ws-traces.sh` |
 | PermissionDenied | `audit.sh denied`, `ws-traces.sh` |
-| SessionStart | `tmux-state.sh start`, `audit.sh start`, the MemPalace health check (`ws-cache`), MemPalace through `memory-filter.sh`, recall start (`ws-cache`), `ws-traces.sh` |
+| SessionStart | `tmux-state.sh start`, `mcp-pin-gate.sh start` (remote tool definitions, in the background), `audit.sh start`, the MemPalace health check (`ws-cache`), MemPalace through `memory-filter.sh`, recall start (`ws-cache`), `ws-traces.sh` |
 | Stop | `tmux-state.sh done`, MemPalace through `memory-filter.sh`, `win-notify.sh done`, `ws-traces.sh` |
 | PreCompact | MemPalace through `memory-filter.sh`, `ws-traces.sh`, `tmux-state.sh compact` |
 | SessionEnd | `tmux-state.sh end`, `audit.sh end` (writes the anchor), MemPalace through `memory-filter.sh`, `ws-traces.sh` |
@@ -322,7 +325,7 @@ flowchart LR
     shell --> cr["claude-resume<br/>(normal level, --fenced settings)"]
     prefix --> cr
     cr --> claude["claude with CLAUDE_CONFIG_DIR,<br/>AZURE_CONFIG_DIR, GH_CONFIG_DIR,<br/>KUBECONFIG, WS_PROFILE, WS_MEMORY"]
-    claude --> mcp["Azure MCP server: ws-mcp-keepalive → ws-mcp-jail<br/>(inherits the env; only its state dir<br/>and AZURE_CONFIG_DIR in view;<br/>AZURE_TOKEN_CREDENTIALS=AzureCliCredential)"]
+    claude --> mcp["Azure MCP server: ws-mcp-keepalive → ws-mcp-filter → ws-mcp-jail --egress<br/>(inherits the env; only its state dir<br/>and AZURE_CONFIG_DIR in view;<br/>AZURE_TOKEN_CREDENTIALS=AzureCliCredential)"]
     claude --> hooks["memory-filter.sh, memory-gate.sh<br/>(WS_MEMORY: off, on, wing:W)"]
 ```
 

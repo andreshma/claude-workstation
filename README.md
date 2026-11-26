@@ -340,6 +340,13 @@ against the AI and security frameworks is in [docs/compliance/assessment.md](doc
   blocks every server the kit does not list. Every local server also runs behind `ws-mcp-keepalive`
   ([ADR 0025](docs/adr/0025-mcp-server-keepalive.md)), which starts it again when it exits mid-session (Claude Code
   only does that for remote servers) and records each restart.
+- **MCP policy filter and tool pinning** ([ADR 0027](docs/adr/0027-mcp-stdio-policy-filter-and-tool-pinning.md)):
+  every local server runs behind `ws-mcp-filter`, which shows each tab only the tools its protection level and profile
+  allow, caps and redacts the traffic, stamps memory writes and pins every tool definition; a changed definition is
+  withheld until you approve it with `ws-mcp-tools approve` (remote servers are checked at session start).
+- **Network per level** ([ADR 0028](docs/adr/0028-network-per-level-mcp-egress-and-settings-menu.md)): full and solo
+  refuse hosts outside the allow list and deny GitHub's write endpoints; the Azure MCP server reaches only its listed
+  hosts through `ws-egress-proxy`. **Menu → Settings** reaches every setting that used to need a command.
 - **Containment and evidence.** `ws-stop-all` blocks every prompt and tool call in every Claude, closes them and turns
   Telegram off; `ws-anomaly` flags sessions with repeated blocks or denials; the audit log is a hash chain with
   anchors on the Windows side (`ws-audit --verify-log`), kept 395 days. Agent identities (`--agent`) give a tab its
@@ -375,7 +382,7 @@ Details in [docs/TESTING.md](docs/TESTING.md).
 |---|---|
 | `bash tests/run.sh` | Installer and exporter in temporary homes (templates, secret blocking, backups, idempotence, migration of the names used before 3.0), JSON and shellcheck of the payload, and the guard tests |
 | `bash tests/guard.sh` | The PreToolUse guard: bypass variants, protected configuration, credential paths, production list, agent identity and profiles, false positives and fail-closed behavior |
-| `bash tests/<area>.sh` | The other standalone suites (twenty-nine with the two above): hooks, audit chain and anomalies, host checks, memory gate, spend and stop gate, solo sandbox, per-tab profiles, supply chain and signed updates, Telegram approvals, backup encryption, gate secret scan and commit message, MCP jail, the telemetry collector, Windows interop, and the compliance catalogue and AI-BOM checks |
+| `bash tests/<area>.sh` | The other standalone suites (forty with the two above): hooks, audit chain and anomalies, host checks, memory gate, spend and stop gate, solo sandbox, per-tab profiles, supply chain and signed updates, Telegram approvals, backup encryption, gate secret scan and commit message, MCP jail, keepalive, filter and egress, network per level, the Settings menu and menu escaping, the telemetry collector, Windows interop, the hook chain budget, and the compliance catalogue and AI-BOM checks |
 | `ws-test` | Behavior of the **installed** workstation, with an isolated home, isolated tmux sockets and a simulated Claude; costs no usage |
 | `ws-test --ai` | The same plus non-deterministic checks against the real Claude |
 | `ws-verify` | Read-only verification before pushing: scripts, tmux (also the running server: `--live`), Claude Code settings, the kit and the tests |

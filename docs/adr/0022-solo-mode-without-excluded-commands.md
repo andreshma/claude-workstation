@@ -1,6 +1,6 @@
 # 0022. Solo mode keeps every command in the sandbox; network tools are an audited, time-boxed opt-in that asks
 
-- Status: Accepted
+- Status: Accepted, amended by [0028](0028-network-per-level-mcp-egress-and-settings-menu.md) (strict network allow list in solo)
 - Date: 2026-11-25
 
 ## Context and problem statement

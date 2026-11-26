@@ -1,6 +1,6 @@
 # 0019. Strict base settings with level profiles and an optional managed drop-in
 
-- Status: Accepted
+- Status: Accepted, amended by [0028](0028-network-per-level-mcp-egress-and-settings-menu.md) (network per level)
 - Date: 2026-11-25
 
 ## Context and problem statement

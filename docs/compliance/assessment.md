@@ -17,6 +17,7 @@ differ from the catalogue.
   - [Phase 2: technical controls in the kit](#phase-2-technical-controls-in-the-kit)
   - [Status after phase 2](#status-after-phase-2)
   - [Round 3: hardening follow-ups and gap sweep](#round-3-hardening-follow-ups-and-gap-sweep)
+  - [Round 4: every open control, and a Settings menu](#round-4-every-open-control-and-a-settings-menu)
   - [Phase 3: governance documents](#phase-3-governance-documents)
   - [Phase 4: continuous evidence](#phase-4-continuous-evidence)
 - [Traceability](#traceability)
@@ -40,33 +41,37 @@ differ from the catalogue.
 
 ## Summary
 
-**After round 3** (branch `feat/hardening-round-3`), 44 of 74 controls are implemented, 28 partial, 1 missing and 1
-not applicable (after phase 2 and its follow-ups: 38, 29, 2 and 1 of 70). Round 3 keeps every solo command inside the
-sandbox and makes the credentialed network tools ask, confines the Linux MCP servers in bubblewrap (`ws-mcp-jail`),
-generates a managed MCP allow list, marks agent commits with an `Agent-Session` trailer, stops the git gate tripping on
-throwaway test repositories, adds the Microsoft cloud security benchmark v2 and five OWASP GenAI documents, re-checks
-every framework edition, and closes the small host gaps (patching, permissions, listeners, clock, logging, a bounded
-gzip in the collector, a predictable temp file). What stays open is the network egress of excluded commands and of
-the MCP servers that need the network, the two Windows MCP servers that bubblewrap cannot confine, MemPalace's own
-behaviour, MCP tool-definition pinning (WS-AI-031, new) and owner steps (the release key, production.conf, the managed
-drop-in and allow list). The status of each item is in [Status after phase 2](#status-after-phase-2) and
-[Round 3](#round-3-hardening-follow-ups-and-gap-sweep).
+**After round 4** (branch `feat/hardening-round-4`), 57 of 75 controls are implemented, 17 partial, none missing
+and 1 not applicable (before it: 45, 28, 1 and 1; after round 3: 44, 28, 1, 1 of 74). Round 4 puts a policy filter in
+the stdio path of every local MCP server (`ws-mcp-filter`: tools per protection level and profile, argument and result
+caps, redaction, provenance of memory writes) and pins every server's tool definitions, withholding a changed one
+until the owner approves it (WS-AI-031, the last missing control); gives each protection level its own network rules
+(`deniedDomains`, `strictAllowlist`) and the Azure MCP server a real egress boundary through a proxy; screens files
+before Claude reads them, validates swarm subtasks, redacts recordings and Windows notifications, escapes every name the
+menus pass to tmux, measures the whole hook chain, adds a per-session spend cap, a branch-protection report, secret
+ages and a timed restore drill; and adds Menu → Settings, from which every setting that needed a command is reached.
+What stays open is upstream (MemPalace's own miners and expiry, Linux builds of MemPalace and recall, a stable
+`@azure/mcp` 4.x, signatures from five tool projects, egress for Claude Code's excluded commands) or the owner's
+(enforcing the Azure egress list, the managed MCP allow list as root, the restore drill, a live check of the prompt
+screen, reduced-scope identities, the anchor store, the organisation's Hyper-V firewall). The status of each item is in
+[Status after phase 2](#status-after-phase-2), [Round 3](#round-3-hardening-follow-ups-and-gap-sweep) and
+[Round 4](#round-4-every-open-control-and-a-settings-menu).
 
 <!-- compliance:begin summary -->
 | Family | Controls | Implemented | Partial | Missing | Not applicable |
 |---|---|---|---|---|---|
-| `WS-AI` (AI and agent) | 31 | 14 | 16 | 1 | 0 |
-| `WS-SEC` (general security) | 29 | 20 | 8 | 0 | 1 |
-| `WS-GOV` (governance) | 15 | 11 | 4 | 0 | 0 |
-| **Total** | **75** | **45** | **28** | **1** | **1** |
+| `WS-AI` (AI and agent) | 31 | 21 | 10 | 0 | 0 |
+| `WS-SEC` (general security) | 29 | 22 | 6 | 0 | 1 |
+| `WS-GOV` (governance) | 15 | 14 | 1 | 0 | 0 |
+| **Total** | **75** | **57** | **17** | **0** | **1** |
 
 | Risk | All controls | Open gaps (partial or missing) |
 |---|---|---|
 | High | 6 | 3 |
-| Medium | 34 | 16 |
-| Low | 35 | 10 |
+| Medium | 34 | 10 |
+| Low | 35 | 4 |
 
-Open gaps by effort: 17 small, 11 medium, 1 large. Open high-risk gaps: WS-AI-009 (partial, M), WS-AI-012 (partial,
+Open gaps by effort: 9 small, 7 medium, 1 large. Open high-risk gaps: WS-AI-009 (partial, M), WS-AI-012 (partial,
 S), WS-SEC-003 (partial, M).
 <!-- compliance:end summary -->
 
@@ -85,38 +90,38 @@ Control-level: of the controls that cite each framework, how many are in each st
 <!-- compliance:begin frameworks -->
 | Framework | Controls | Implemented | Partial | Missing | N/A |
 |---|---|---|---|---|---|
-| OWASP-LLM25 | 33 | 15 (45 %) | 18 (55 %) | 0 (0 %) | 0 (0 %) |
-| OWASP-LLM26 | 33 | 15 (45 %) | 18 (55 %) | 0 (0 %) | 0 (0 %) |
-| OWASP-ASI | 41 | 23 (56 %) | 17 (41 %) | 1 (2 %) | 0 (0 %) |
-| OWASP-NHI | 15 | 11 (73 %) | 4 (27 %) | 0 (0 %) | 0 (0 %) |
-| OWASP-MCP3P | 8 | 3 (38 %) | 4 (50 %) | 1 (12 %) | 0 (0 %) |
-| OWASP-AITM | 24 | 12 (50 %) | 12 (50 %) | 0 (0 %) | 0 (0 %) |
-| OWASP-MCP10 | 9 | 4 (44 %) | 4 (44 %) | 1 (11 %) | 0 (0 %) |
-| OWASP-RTM | 8 | 4 (50 %) | 3 (38 %) | 1 (12 %) | 0 (0 %) |
+| OWASP-LLM25 | 33 | 21 (64 %) | 12 (36 %) | 0 (0 %) | 0 (0 %) |
+| OWASP-LLM26 | 33 | 21 (64 %) | 12 (36 %) | 0 (0 %) | 0 (0 %) |
+| OWASP-ASI | 41 | 29 (71 %) | 12 (29 %) | 0 (0 %) | 0 (0 %) |
+| OWASP-NHI | 15 | 12 (80 %) | 3 (20 %) | 0 (0 %) | 0 (0 %) |
+| OWASP-MCP3P | 8 | 4 (50 %) | 4 (50 %) | 0 (0 %) | 0 (0 %) |
+| OWASP-AITM | 24 | 17 (71 %) | 7 (29 %) | 0 (0 %) | 0 (0 %) |
+| OWASP-MCP10 | 9 | 5 (56 %) | 4 (44 %) | 0 (0 %) | 0 (0 %) |
+| OWASP-RTM | 8 | 5 (62 %) | 3 (38 %) | 0 (0 %) | 0 (0 %) |
 | OWASP-SAA | 4 | 1 (25 %) | 3 (75 %) | 0 (0 %) | 0 (0 %) |
-| NIST-AI-RMF | 33 | 20 (61 %) | 13 (39 %) | 0 (0 %) | 0 (0 %) |
-| NIST-600-1 | 25 | 12 (48 %) | 13 (52 %) | 0 (0 %) | 0 (0 %) |
-| SSDF | 25 | 19 (76 %) | 6 (24 %) | 0 (0 %) | 0 (0 %) |
+| NIST-AI-RMF | 33 | 26 (79 %) | 7 (21 %) | 0 (0 %) | 0 (0 %) |
+| NIST-600-1 | 25 | 17 (68 %) | 8 (32 %) | 0 (0 %) | 0 (0 %) |
+| SSDF | 25 | 22 (88 %) | 3 (12 %) | 0 (0 %) | 0 (0 %) |
 | SSDF-1.2-IPD | 2 | 2 (100 %) | 0 (0 %) | 0 (0 %) | 0 (0 %) |
 | SSDF-218A | 2 | 0 (0 %) | 2 (100 %) | 0 (0 %) | 0 (0 %) |
-| CSF | 64 | 42 (66 %) | 21 (33 %) | 0 (0 %) | 1 (2 %) |
-| CIS-v8 | 50 | 31 (62 %) | 19 (38 %) | 0 (0 %) | 0 (0 %) |
+| CSF | 64 | 49 (77 %) | 14 (22 %) | 0 (0 %) | 1 (2 %) |
+| CIS-v8 | 50 | 37 (74 %) | 13 (26 %) | 0 (0 %) | 0 (0 %) |
 | CIS-Ubuntu | 5 | 3 (60 %) | 2 (40 %) | 0 (0 %) | 0 (0 %) |
-| NSA-DAISS | 23 | 15 (65 %) | 8 (35 %) | 0 (0 %) | 0 (0 %) |
-| NSA-AIDATA | 13 | 5 (38 %) | 8 (62 %) | 0 (0 %) | 0 (0 %) |
-| NSA-AGENTIC | 8 | 5 (62 %) | 3 (38 %) | 0 (0 %) | 0 (0 %) |
-| WAF-SEC | 51 | 33 (65 %) | 18 (35 %) | 0 (0 %) | 0 (0 %) |
-| WAF-AI | 7 | 2 (29 %) | 5 (71 %) | 0 (0 %) | 0 (0 %) |
-| MCSB | 44 | 30 (68 %) | 13 (30 %) | 0 (0 %) | 1 (2 %) |
+| NSA-DAISS | 23 | 16 (70 %) | 7 (30 %) | 0 (0 %) | 0 (0 %) |
+| NSA-AIDATA | 13 | 6 (46 %) | 7 (54 %) | 0 (0 %) | 0 (0 %) |
+| NSA-AGENTIC | 8 | 6 (75 %) | 2 (25 %) | 0 (0 %) | 0 (0 %) |
+| WAF-SEC | 51 | 38 (75 %) | 13 (25 %) | 0 (0 %) | 0 (0 %) |
+| WAF-AI | 7 | 5 (71 %) | 2 (29 %) | 0 (0 %) | 0 (0 %) |
+| MCSB | 44 | 34 (77 %) | 9 (20 %) | 0 (0 %) | 1 (2 %) |
 | WAF-REL | 6 | 5 (83 %) | 1 (17 %) | 0 (0 %) | 0 (0 %) |
-| WAF-CO | 1 | 0 (0 %) | 1 (100 %) | 0 (0 %) | 0 (0 %) |
+| WAF-CO | 1 | 1 (100 %) | 0 (0 %) | 0 (0 %) | 0 (0 %) |
 | WAF-OE | 5 | 4 (80 %) | 1 (20 %) | 0 (0 %) | 0 (0 %) |
-| WAF-PE | 1 | 0 (0 %) | 1 (100 %) | 0 (0 %) | 0 (0 %) |
-| CAF | 16 | 11 (69 %) | 5 (31 %) | 0 (0 %) | 0 (0 %) |
-| MS-RAI | 16 | 13 (81 %) | 3 (19 %) | 0 (0 %) | 0 (0 %) |
-| ISO42001 | 33 | 21 (64 %) | 12 (36 %) | 0 (0 %) | 0 (0 %) |
-| ISO25010 | 15 | 11 (73 %) | 4 (27 %) | 0 (0 %) | 0 (0 %) |
-| ATLAS | 10 | 4 (40 %) | 5 (50 %) | 1 (10 %) | 0 (0 %) |
+| WAF-PE | 1 | 1 (100 %) | 0 (0 %) | 0 (0 %) | 0 (0 %) |
+| CAF | 16 | 12 (75 %) | 4 (25 %) | 0 (0 %) | 0 (0 %) |
+| MS-RAI | 16 | 14 (88 %) | 2 (12 %) | 0 (0 %) | 0 (0 %) |
+| ISO42001 | 33 | 25 (76 %) | 8 (24 %) | 0 (0 %) | 0 (0 %) |
+| ISO25010 | 15 | 13 (87 %) | 2 (13 %) | 0 (0 %) | 0 (0 %) |
+| ATLAS | 10 | 6 (60 %) | 4 (40 %) | 0 (0 %) | 0 (0 %) |
 <!-- compliance:end frameworks -->
 
 Item-level: each framework item rated from the controls that cite it. "Not mapped" counts items of a closed list (a
@@ -127,38 +132,38 @@ cited selectively (only applicable items).
 <!-- compliance:begin items -->
 | Framework | Items mapped | Implemented | Partial | Missing | N/A | Not mapped | Controls |
 |---|---|---|---|---|---|---|---|
-| OWASP-LLM25 | 10 | 0 (0 %) | 10 (100 %) | 0 (0 %) | 0 (0 %) | 0 | 33 |
-| OWASP-LLM26 | 10 | 0 (0 %) | 10 (100 %) | 0 (0 %) | 0 (0 %) | 0 | 33 |
-| OWASP-ASI | 10 | 0 (0 %) | 10 (100 %) | 0 (0 %) | 0 (0 %) | 0 | 41 |
-| OWASP-NHI | 9 | 1 (11 %) | 8 (89 %) | 0 (0 %) | 0 (0 %) | 1 | 15 |
+| OWASP-LLM25 | 10 | 3 (30 %) | 7 (70 %) | 0 (0 %) | 0 (0 %) | 0 | 33 |
+| OWASP-LLM26 | 10 | 3 (30 %) | 7 (70 %) | 0 (0 %) | 0 (0 %) | 0 | 33 |
+| OWASP-ASI | 10 | 3 (30 %) | 7 (70 %) | 0 (0 %) | 0 (0 %) | 0 | 41 |
+| OWASP-NHI | 9 | 3 (33 %) | 6 (67 %) | 0 (0 %) | 0 (0 %) | 1 | 15 |
 | OWASP-MCP3P | 4 | 0 (0 %) | 4 (100 %) | 0 (0 %) | 0 (0 %) | - | 8 |
-| OWASP-AITM | 17 | 5 (29 %) | 12 (71 %) | 0 (0 %) | 0 (0 %) | 0 | 24 |
-| OWASP-MCP10 | 10 | 3 (30 %) | 7 (70 %) | 0 (0 %) | 0 (0 %) | 0 | 9 |
+| OWASP-AITM | 17 | 10 (59 %) | 7 (41 %) | 0 (0 %) | 0 (0 %) | 0 | 24 |
+| OWASP-MCP10 | 10 | 4 (40 %) | 6 (60 %) | 0 (0 %) | 0 (0 %) | 0 | 9 |
 | OWASP-RTM | 6 | 2 (33 %) | 4 (67 %) | 0 (0 %) | 0 (0 %) | - | 8 |
 | OWASP-SAA | 4 | 1 (25 %) | 3 (75 %) | 0 (0 %) | 0 (0 %) | - | 4 |
-| NIST-AI-RMF | 48 | 34 (71 %) | 14 (29 %) | 0 (0 %) | 0 (0 %) | 24 | 33 |
-| NIST-600-1 | 7 | 0 (0 %) | 7 (100 %) | 0 (0 %) | 0 (0 %) | 5 | 25 |
-| SSDF | 18 | 13 (72 %) | 5 (28 %) | 0 (0 %) | 0 (0 %) | 1 | 25 |
+| NIST-AI-RMF | 48 | 39 (81 %) | 9 (19 %) | 0 (0 %) | 0 (0 %) | 24 | 33 |
+| NIST-600-1 | 7 | 2 (29 %) | 5 (71 %) | 0 (0 %) | 0 (0 %) | 5 | 25 |
+| SSDF | 18 | 15 (83 %) | 3 (17 %) | 0 (0 %) | 0 (0 %) | 1 | 25 |
 | SSDF-1.2-IPD | 2 | 2 (100 %) | 0 (0 %) | 0 (0 %) | 0 (0 %) | - | 2 |
 | SSDF-218A | 2 | 0 (0 %) | 2 (100 %) | 0 (0 %) | 0 (0 %) | - | 2 |
-| CSF | 37 | 19 (51 %) | 18 (49 %) | 0 (0 %) | 0 (0 %) | - | 64 |
-| CIS-v8 | 52 | 25 (48 %) | 27 (52 %) | 0 (0 %) | 0 (0 %) | - | 50 |
+| CSF | 37 | 25 (68 %) | 12 (32 %) | 0 (0 %) | 0 (0 %) | - | 64 |
+| CIS-v8 | 52 | 29 (56 %) | 23 (44 %) | 0 (0 %) | 0 (0 %) | - | 50 |
 | CIS-Ubuntu | 8 | 4 (50 %) | 4 (50 %) | 0 (0 %) | 0 (0 %) | - | 5 |
-| NSA-DAISS | 14 | 7 (50 %) | 7 (50 %) | 0 (0 %) | 0 (0 %) | 1 | 23 |
+| NSA-DAISS | 14 | 8 (57 %) | 6 (43 %) | 0 (0 %) | 0 (0 %) | 1 | 23 |
 | NSA-AIDATA | 10 | 2 (20 %) | 8 (80 %) | 0 (0 %) | 0 (0 %) | 0 | 13 |
 | NSA-AGENTIC | 3 | 1 (33 %) | 2 (67 %) | 0 (0 %) | 0 (0 %) | - | 8 |
-| WAF-SEC | 12 | 2 (17 %) | 10 (83 %) | 0 (0 %) | 0 (0 %) | 0 | 51 |
-| WAF-AI | 4 | 1 (25 %) | 3 (75 %) | 0 (0 %) | 0 (0 %) | - | 7 |
-| MCSB | 49 | 27 (55 %) | 19 (39 %) | 0 (0 %) | 3 (6 %) | 32 | 44 |
+| WAF-SEC | 12 | 3 (25 %) | 9 (75 %) | 0 (0 %) | 0 (0 %) | 0 | 51 |
+| WAF-AI | 4 | 3 (75 %) | 1 (25 %) | 0 (0 %) | 0 (0 %) | - | 7 |
+| MCSB | 49 | 31 (63 %) | 15 (31 %) | 0 (0 %) | 3 (6 %) | 32 | 44 |
 | WAF-REL | 4 | 2 (50 %) | 2 (50 %) | 0 (0 %) | 0 (0 %) | 6 | 6 |
-| WAF-CO | 2 | 0 (0 %) | 2 (100 %) | 0 (0 %) | 0 (0 %) | 12 | 1 |
+| WAF-CO | 2 | 2 (100 %) | 0 (0 %) | 0 (0 %) | 0 (0 %) | 12 | 1 |
 | WAF-OE | 6 | 5 (83 %) | 1 (17 %) | 0 (0 %) | 0 (0 %) | 5 | 5 |
-| WAF-PE | 3 | 0 (0 %) | 3 (100 %) | 0 (0 %) | 0 (0 %) | 9 | 1 |
-| CAF | 11 | 6 (55 %) | 5 (45 %) | 0 (0 %) | 0 (0 %) | - | 16 |
-| MS-RAI | 4 | 2 (50 %) | 2 (50 %) | 0 (0 %) | 0 (0 %) | 2 | 16 |
-| ISO42001 | 16 | 11 (69 %) | 5 (31 %) | 0 (0 %) | 0 (0 %) | 0 | 33 |
-| ISO25010 | 9 | 5 (56 %) | 4 (44 %) | 0 (0 %) | 0 (0 %) | 0 | 15 |
-| ATLAS | 9 | 2 (22 %) | 7 (78 %) | 0 (0 %) | 0 (0 %) | - | 10 |
+| WAF-PE | 3 | 3 (100 %) | 0 (0 %) | 0 (0 %) | 0 (0 %) | 9 | 1 |
+| CAF | 11 | 7 (64 %) | 4 (36 %) | 0 (0 %) | 0 (0 %) | - | 16 |
+| MS-RAI | 4 | 3 (75 %) | 1 (25 %) | 0 (0 %) | 0 (0 %) | 2 | 16 |
+| ISO42001 | 16 | 12 (75 %) | 4 (25 %) | 0 (0 %) | 0 (0 %) | 0 | 33 |
+| ISO25010 | 9 | 7 (78 %) | 2 (22 %) | 0 (0 %) | 0 (0 %) | 0 | 15 |
+| ATLAS | 9 | 3 (33 %) | 6 (67 %) | 0 (0 %) | 0 (0 %) | - | 10 |
 <!-- compliance:end items -->
 
 Reading the item-level table: an item is implemented only when every control that cites it is, so a list item that
@@ -168,41 +173,29 @@ containment rather than detection: each risk is reduced, few are closed end to e
 
 ## Gaps by risk
 
-The open gaps after phase 2, ordered by risk, then effort. The full text of each gap, its evidence and its
+The open gaps after round 4, ordered by risk, then effort. The full text of each gap, its evidence and its
 remediation are in [controls.yaml](controls.yaml).
 
 <!-- compliance:begin gaps -->
 | Control | Title | Status | Risk | Effort | Gap |
 |---|---|---|---|---|---|
-| WS-AI-012 | Memory write gate for MemPalace | partial | high | S | MemPalace's own lifecycle hooks still store transcript content without a per-item approval (the kit removes only the private spans), a paraphrase of private text is not recognised, and whether Claude Code honours updatedInput together with ask has not been verified at runtime. |
-| WS-AI-009 | MCP server supply chain: pinning and integrity | partial | high | M | azure stays on a 4.0.0 prerelease (4.0.0-beta.9; npm had no stable 4.x on 2026-11-25 and the only stable, 3.0.0, is an older line; the reason is in the lock); mempalace and recall are pinned by trust on first use on each machine, so a binary that was already malicious at first registration is accepted. |
-| WS-SEC-003 | Network egress control per protection level | partial | high | M | At the normal level the excluded commands still have unrestricted egress, as do jailed MCP servers registered with --net (azure, chrome-devtools), the unconfined Windows servers (mempalace, recall), hooks and bare or solo --unsandboxed; github.com and *.githubusercontent.com in the allow list remain possible exfiltration endpoints. Solo no longer lets an excluded command out without asking (ADR-022). |
-| WS-AI-010 | MCP server registration control | partial | medium | S | The managed allow list is opt-in (sudo, install.sh --managed --mcp-allowlist) because Claude Code also applies it to the claude.ai connectors and plugin servers, whose URLs the owner must add to ~/.config/ws-mcp/allow-extra.json; it has not been verified as root on a live machine. |
-| WS-AI-017 | Validation of model output consumed by kit scripts | partial | medium | S | Subtask text from tmux-swarm is still written verbatim into each agent's task file. |
-| WS-AI-021 | Verification of generated changes before they leave the machine | partial | medium | S | Review on the remote is assumed, not checked: the kit does not verify branch protection or required reviews on the repositories agents push to. |
-| WS-AI-022 | Secret and sensitive data screening of prompts | partial | medium | S | Files the agent reads and text reused from tmux panes are not screened; detection is pattern-based and covers secrets, not personal data; exit 2 and suppressOriginalPrompt on UserPromptSubmit have not been verified at runtime. |
-| WS-AI-023 | Minimisation and retention of prompt and transcript content | partial | medium | S | Content capture is on by default and kept 13 months in clear text, and transcripts 12 months; there is no encryption at rest beyond the disk. |
-| WS-GOV-008 | Third-party AI services register | partial | medium | S | Retention and terms of each external service are still 'to fill'. |
-| WS-SEC-022 | WSL interop and Windows drive exposure | partial | medium | S | Whether interop works from inside bubblewrap has not been probed on a live machine, and at the normal level the Windows profile outside the denied folders is readable. |
-| WS-AI-006 | Approval fatigue monitoring | partial | medium | M | The dashboard template does not render the prompts block yet, and the metrics need the OpenTelemetry collector on. |
-| WS-AI-011 | MCP tool scoping and egress | partial | medium | M | MemPalace and recall are Windows executables started through WSL interop and cannot be confined by bubblewrap (opted out, reported); jailed servers registered with --net reach any host; the agent-browser wrapper is a set of defaults, not a boundary; chrome-devtools under the jail was not verified with a real Chrome. |
-| WS-AI-013 | Memory provenance, expiry and review | partial | medium | M | MemPalace has no expiry of its own; the review covers only facts saved through ws-learn (other writes are listed by hash with ws-memory log); provenance lives in a field the server does not protect. |
-| WS-AI-019 | Spend and consumption limits | partial | medium | M | The hard limit is opt-in (hard=1); there is no per-session cap; the flag is refreshed about once a minute and a stale flag fails open; the per-swarm budget works only while the dashboard runs. |
+| WS-AI-012 | Memory write gate for MemPalace | partial | high | S | MemPalace's own lifecycle hooks (session start and end, stop, pre-compact; run by Claude Code through memory-filter.sh) still mine the transcript without a per-item approval; the kit removes only the private spans, and a paraphrase of private text is not recognised. Every MCP write is asked (memory-gate.sh), and refused with <private> content and stamped by ws-mcp-filter whether or not Claude Code honours updatedInput. |
+| WS-AI-009 | MCP server supply chain: pinning and integrity | partial | high | M | azure stays on 4.0.0-beta.9: on 2026-11-26 npm's newest is 4.0.0-beta.10 (2026-11-23, inside the 7-day cool-down) and there is still no stable 4.x; mempalace and recall are pinned by trust on first use, so a binary that was already malicious at first registration is accepted (their tool definitions are now pinned too). |
+| WS-SEC-003 | Network egress control per protection level | partial | high | M | At the normal level the excluded commands (az, gh, git push, kubectl…) still leave the sandbox with full egress, as Claude Code's excludedCommands are designed to; github.com stays allowed for sandboxed commands at the normal level; azure's egress list is in audit mode until the owner enforces it; chrome-devtools, the Windows MCP servers, hooks and bare or solo --unsandboxed have no egress control. |
+| WS-AI-010 | MCP server registration control | partial | medium | S | Owner step: the managed allow list is opt-in (sudo) because Claude Code also applies it to the claude.ai connectors and plugin servers, whose URLs the owner lists in ~/.config/ws-mcp/allow-extra.json first; it has not been installed as root and checked in /mcp on a live machine. |
+| WS-AI-022 | Secret and sensitive data screening of prompts | partial | medium | S | Detection is pattern-based (secrets, not personal data); whether exit 2 and suppressOriginalPrompt on UserPromptSubmit block a typed prompt has not been verified in a live session. Pane text is already redacted by tmux-pane and tmux-ask. |
+| WS-AI-023 | Minimisation and retention of prompt and transcript content | partial | medium | S | Owner decision pending: content capture is on by default and kept 13 months in clear text, and transcripts 12 months; there is no encryption at rest beyond the disk. Changing the shipped defaults supersedes the owner's ADR 0014, so the kit does not change them on its own. |
+| WS-SEC-022 | WSL interop and Windows drive exposure | partial | medium | S | Owner step: whether interop works from inside bubblewrap has not been probed on a live machine (tests/interop-adversarial.sh --live), and at the normal level the Windows profile outside the denied folders is readable. |
+| WS-AI-011 | MCP tool scoping and egress | partial | medium | M | MemPalace and recall are Windows executables: no Linux namespace confines them (their MCP traffic is now filtered, capped and redacted by ws-mcp-filter, but the processes keep the user's Windows files and network); azure's egress list is in audit mode until the owner enforces it; chrome-devtools (opt-in) shares the network and has not been verified in the jail with a real Chrome. |
+| WS-AI-013 | Memory provenance, expiry and review | partial | medium | M | MemPalace has no expiry of its own and does not protect the provenance field on its side; the review covers facts saved through ws-learn (other writes are listed by hash with ws-memory log). |
 | WS-AI-027 | Adversarial tests of the agent controls | partial | medium | M | The new ws-audit --ai cases (planted injection, grant modification, unsandboxed retry) have not been run on the live machine yet; the bubblewrap interop probe for Claude's own sandbox has not run live; the planted-injection case is a single sample. |
-| WS-AI-031 | MCP tool definition integrity (rug-pull detection) | missing | medium | M | Local servers are pinned by code (WS-AI-009) but the remote servers (microsoft-learn, ms-release-comms) and the tool lists themselves are not pinned: a server can change a tool's description or schema at any time, and the kit does not record or compare them. |
-| WS-SEC-011 | Audit log integrity and retention | partial | medium | M | An agent in bare or solo --unsandboxed can still edit the anchor file on the Windows side (deny rules and the guard stop the usual forms); the off-box copy is only as recent as the last light backup; the Telegram delivery log (notifications, alerts) stays a separate, unchained log; only decisions and runs are chained. |
-| WS-SEC-016 | Third-party tool and plugin pinning | partial | medium | M | osv-scanner, k9s, hadolint, starship and agg publish no signature the kit checks (they are pinned by sha256 in the kit; osv-scanner's SLSA provenance is not verified); the az, azd, fnm and rustup install scripts and the apt and pipx packages come from their vendors without a kit pin; TPM's Ctrl+b I and U can still move a plugin (ws-audit reports it). |
-| WS-AI-026 | Agent identity separation and least-privilege credentials | partial | medium | L | The reduced-scope identities themselves are created by the owner; tabs at the built-in profiles (work, personal) still use the user's own sessions through excluded commands; git over SSH uses the owner's keys in every profile; the Agent-Session trailer is attribution, not a boundary (a process can unset the variables Claude Code sets). |
-| WS-AI-016 | Subagent least privilege | partial | low | S | debugger and sql-quick inherit every tool of the parent session; sql-quick's 'wait for confirmation' rule is prompt-only. |
-| WS-AI-024 | Retrieval corpus integrity (recall and MemPalace search) | partial | low | S | The hook and corpora live outside this repository, so the kit cannot show how passages are labelled or what the corpora contain. |
-| WS-AI-029 | Inter-agent and agent-to-human message integrity | partial | low | S | The kit adds no channel between agents beyond the task file; agent-team messaging is Claude Code's and outside the kit's control. |
-| WS-GOV-010 | Secret rotation and offboarding | partial | low | S | The rotation periods are still to be confirmed by the owner, and nothing warns when a secret is older than its period (no ws-audit age check). |
-| WS-GOV-013 | Recovery objectives for the workstation | partial | low | S | The recovery times are targets, not measurements: no restore drill has been timed yet. |
-| WS-SEC-009 | Redaction of text leaving the terminal | partial | low | S | Windows notifications from win-notify.sh are not redacted and tmux-record .cast files keep the raw screen. |
-| WS-SEC-021 | Listening services and host firewall in WSL | partial | low | S | The kit reports listeners, sshd and the networking mode; it does not configure a host firewall (the Windows Hyper-V firewall is the organisation's) and does not apply the .wslconfig it exports. |
-| WS-SEC-023 | Host audit logging (auditd and journald) | partial | low | S | auditd is not installed or configured by the kit (accepted risk: the hash-chained audit log covers agent actions); journald persistence is reported, not enforced. |
-| WS-SEC-028 | Escaping of untrusted names in tmux commands | partial | low | S | Escaping is done for the status bar only; menus still interpolate the tab path. |
-| WS-GOV-014 | Performance budgets of the interactive path | partial | low | M | Only the guard has a budget; the other PreToolUse and PostToolUse hooks (audit, memory gate, runtime gate, traces, untrusted-content) are not measured together. |
+| WS-SEC-011 | Audit log integrity and retention | partial | medium | M | Owner step: an agent in bare or solo --unsandboxed can still edit the anchor file on the Windows side (deny rules and the guard stop the usual forms); the off-box copy is only as recent as the last light backup; the Telegram delivery log stays a separate, unchained log (decisions and runs are chained). |
+| WS-SEC-016 | Third-party tool and plugin pinning | partial | medium | M | Upstream: osv-scanner, k9s, hadolint, starship and agg publish no signature the kit checks (pinned by sha256; osv-scanner's SLSA provenance needs slsa-verifier, which the kit does not ship); the az, azd, fnm and rustup install scripts and the apt and pipx packages come from their vendors without a kit pin; TPM's Ctrl+b I and U can still move a plugin (ws-audit reports it). |
+| WS-AI-026 | Agent identity separation and least-privilege credentials | partial | medium | L | The reduced-scope identities and their SSH keys are created by the owner; tabs at the built-in profiles (work, personal) still use the owner's own sessions through excluded commands; the Agent-Session trailer is attribution, not a boundary. |
+| WS-AI-024 | Retrieval corpus integrity (recall and MemPalace search) | partial | low | S | The recall hook and both corpora live outside this repository, so the kit cannot show how passages are labelled or what the corpora contain; it labels recall's output as untrusted, caps and redacts it. |
+| WS-GOV-013 | Recovery objectives for the workstation | partial | low | S | Owner step: the recovery times are still targets: no drill has been timed on the workstation yet. |
+| WS-SEC-021 | Listening services and host firewall in WSL | partial | low | S | Organisation: the host firewall of WSL is the Windows Hyper-V firewall, which belongs to the organisation's baseline; the kit reports listeners, sshd and the networking mode and does not apply the .wslconfig it exports. |
+| WS-SEC-023 | Host audit logging (auditd and journald) | partial | low | S | Accepted risk (owner): auditd is not installed by the kit (the hash-chained audit log covers agent actions); journald persistence is reported, not enforced. |
 <!-- compliance:end gaps -->
 
 ## Implementation plan
@@ -499,7 +492,7 @@ Branch `feat/hardening-round-3` (on `fix/hardening-followups-2`). Coverage befor
 | 6 | `allowedMcpServers` | Verified in Claude Code's docs (any settings file, merged unless `allowManagedMcpServersOnly`; a name entry "is not a security control"); generated from `mcp-servers.json` by exact command and URL; installed with `install.sh --managed --mcp-allowlist`; `ws-audit` checks it | WS-AI-010 partial | Owner step: list the claude.ai connectors in use, install it as root, verify in `/mcp` |
 | 7 | ws-gate in throwaway repositories | Under `/tmp` or `/var/tmp` and without any remote: Conventional Commits and lint skipped, said once; a push from a repository under the temp dir re-checks every message; `WS_GATE_TEMP_ROOTS` can only narrow | WS-SEC-004 implemented | None |
 
-**Framework currency.** Every edition in [frameworks.md](frameworks.md) was re-checked on its official source on
+**Framework currency (round 3).** Every edition in [frameworks.md](frameworks.md) was re-checked on its official source on
 2026-11-25 (the list of what changed and what did not is in its Version notes): MCSB added; CIS Windows 11 now 5.1.1;
 MITRE ATLAS release 2026.10 (six agent techniques added to the catalogue); the Well-Architected Operational
 Excellence checklist renumbered to eleven items; SSDF 1.2 still the initial public draft; NIST AI RMF still 1.0 with a
@@ -529,6 +522,33 @@ Policy and Defender), multi-user server features (central identity, MFA, session
 fleets), endpoint protection and device encryption (the organisation's Windows baseline), awareness programmes and
 model training or hosting stay out. They are listed in
 [Framework items deliberately not mapped](#framework-items-deliberately-not-mapped) and in frameworks.md.
+
+### Round 4: every open control, and a Settings menu
+
+Branch `feat/hardening-round-4` (on `feat/mcp-keepalive-b`). Coverage before: 45 implemented, 28 partial, 1 missing,
+1 not applicable (75 controls); after: 57, 17, 0, 1. The owner's brief: attack everything that is missing, improve what
+is partial, adopt the most up-to-date, in every pillar within the project's scope. Claude Code's sandbox, hook and MCP
+settings used here were verified in its documentation on 2026-11-26 (ADR 0027, ADR 0028).
+
+| # | Item | Result | Controls now | What remains, and whose |
+|---|---|---|---|---|
+| 1 | MCP policy filter and tool pinning (`ws-mcp-filter`, `ws-mcp-tools`, `mcp-pin-gate.sh`; [ADR 0027](../adr/0027-mcp-stdio-policy-filter-and-tool-pinning.md)) | Every local server behind a filter: tools per level and profile, caps, redaction both ways, `<private>` refused and provenance stamped on memory writes by the filter itself; MemPalace's `hook_settings`, `mine` and bulk deletes never pass, read-only at full and solo; tool definitions pinned per code identity, a change withheld and audited until `ws-mcp-tools approve` in a terminal; remote servers checked at session start, their changed tools denied | WS-AI-031 implemented; WS-AI-012, WS-AI-011, WS-AI-013 partial (stronger) | Upstream (MemPalace): `<private>` in its miners, proposals until confirmed, server-side provenance and expiry; Linux builds of MemPalace and recall. Anthropic: tool pinning in Claude Code for mid-session remote changes |
+| 2 | Network per level and MCP egress ([ADR 0028](../adr/0028-network-per-level-mcp-egress-and-settings-menu.md)) | Base `deniedDomains` (gist, uploads); full and solo `strictAllowlist` with `github.com` and the GitHub API denied, passed with `--settings` so a repository cannot lift them; `ws-mcp-jail --egress`: azure has no network of its own, only `ws-egress-proxy` and its host list (audit mode) | WS-SEC-003 partial (stronger) | Owner: enforce azure's list after `ws-egress-proxy report`. Upstream (Anthropic): egress for excluded commands. chrome-devtools, Windows servers, hooks, bare stay without egress control |
+| 3 | Small-effort partials | Read screening (`read-screen.sh`), swarm subtask validation, recordings and toasts redacted, menu escaping (a hostile tab or folder name tested live on a private tmux server), subagent tool lists, branch-protection report, secret ages (`ws-secret ages`, `rotation.conf`), AI-BOM retention and terms from the providers' pages, a timed restore drill (`ws-restore-lite --drill`) | WS-AI-016, WS-AI-017, WS-AI-021, WS-AI-029, WS-SEC-009, WS-SEC-028, WS-GOV-008, WS-GOV-010 implemented | WS-AI-022: owner checks the prompt block live. WS-GOV-013: owner runs the drill. WS-AI-010, WS-SEC-022: owner's live steps. WS-SEC-021: the organisation's firewall. WS-SEC-023: accepted risk. WS-AI-024: recall's maintainer documents the corpora |
+| 4 | Medium and large partials | Dashboard prompts block; per-session spend cap (`per-session=USD`); the whole hook chain under 400 ms (`tests/hook-chain-budget.sh`); a per-identity SSH key (`ssh/id_ed25519`, guarded) | WS-AI-006, WS-AI-019, WS-GOV-014 implemented; WS-AI-026 partial | WS-AI-026: owner creates the reduced-scope identities and keys. WS-AI-027: owner runs `ws-audit --ai` live. WS-SEC-011: owner provides a write-once anchor store. WS-SEC-016, WS-AI-009: upstream signatures and a stable `@azure/mcp` |
+| 5 | Settings menu (Menu → Settings, `ws-settings`) | New-tab level, profile, language, MCP servers (chrome-devtools, keepalive per server, Azure egress, tool-definition review, managed allow list, the owner's filter rules), backups (key, copy expiry, cloud copy), budgets and the hard stop, production targets, the config-write window, secret rotation, notifications, Telegram, appearance, the kit update and the audits; every changing entry blocked from Claude by the guard; owner choices kept in files `install.sh` never overwrites | - | - |
+
+**Framework currency.** Every edition in [frameworks.md](frameworks.md) was re-checked on its official source on
+2026-11-26: nothing was superseded and nothing moved from draft to final; the NSA and partners' agentic guidance now
+reads five risk categories (recorded), ITSM.00.125 was verified, the AIVSS 1.0 calculator is live (document still
+v0.8), the Red Teaming Guide date is 2025-01-22, and NIST SP 2400-102e2026 (initial public draft, comments until
+2026-12-18) and the OWASP GenAI Data Security Best Practices v2 were added to the watch list. ISO, the NSA's PDF host
+and cyber.gov.au could not be fetched (HTTP 403 or timeout); their rows keep the 2026-11-25 reading.
+
+**Pillar sweep.** Within the scope of round 3: Security (egress, MCP integrity, redaction, escaping, read screening),
+Reliability (the restore drill, egress in audit before enforcing so nothing breaks), Cost (per-session cap),
+Operational Excellence (every setting from one menu, owner layers that survive updates), Performance (the whole hook
+chain under budget). No new in-scope gap became a control.
 
 ### Phase 3: governance documents
 
@@ -595,7 +615,8 @@ The original design:
 - The 2026 OWASP LLM references are derived from the 2025 ones through the crosswalk in
   [frameworks.md](frameworks.md#owasp-llm-top-10-2025-to-2026).
 - References without a verified identifier are cited by name and marked "(id unverified)" in `frameworks.md`: the CIS
-  Ubuntu recommendations and the three risk categories of the agentic AI guidance.
+  Ubuntu recommendations. The risk categories of the agentic AI guidance are cited by their headings, read on
+  2026-11-26 (the guidance numbers no categories).
 
 ## Framework items deliberately not mapped
 
