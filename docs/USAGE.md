@@ -1178,8 +1178,8 @@ copied to `~/.local/share/ws-kit/backup.<date>/` first) and `ws-test`. If the te
 commit and reinstalls. It does nothing when the kit folder has uncommitted changes or commits the release does not
 contain. `--check` exits 10 when a signed release is waiting and 11 when a newer release fails its signature (Telegram
 raises a security alert); `--allow-unsigned` accepts an unsigned tag for forks, logged in
-`~/.local/state/ws-kit-update.log`. Until the kit ships a maintainer key every release is refused with 11
-([runbook](runbook.md#signing-a-release)).
+`~/.local/state/ws-kit-update.log`. Releases from 4.0.0 on are signed with the maintainer key shipped in
+`allowed_signers` ([runbook](runbook.md#signing-a-release)).
 
 `ws-update` also verifies the pinned MCP servers and tools (`ws-pinned verify --online`) and the sha256 of the local
 ones, and reports newer versions (`ws-pinned outdated`) without installing them.

@@ -325,7 +325,7 @@ stay in clear and `ws-audit` fails; the first run with a key seals the clear cop
 
 `ws-kit-update` installs only a `vX.Y.Z` tag signed by a key in the **installed** `~/.config/ws-kit/allowed_signers`
 (plus `allowed_signers.local`), never the branch tip ([ADR 0018](adr/0018-supply-chain-pinning-and-signed-releases.md)).
-Until the kit ships a maintainer key, it refuses every release with exit 11.
+The kit ships the maintainer's key since 4.0.0, the first signed release; a tag signed by any other key exits 11.
 
 1. Create the signing key once, on the maintainer's machine (keep the private key out of the kit and of any backup
    the agent can read):
