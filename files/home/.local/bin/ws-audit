@@ -932,7 +932,9 @@ def level_network() -> None:
             net = json.loads(full).get("sandbox", {}).get("network", {}) if rc == 0 else {}
         except ValueError:
             net = {}
-        res("ok" if net.get("strictAllowlist") is True and "api.github.com" in (net.get("deniedDomains") or []) else "warn",
+        full_denied = net.get("deniedDomains")
+        full_denied = set(full_denied) if isinstance(full_denied, list) else set()   # a list of hosts, never a URL
+        res("ok" if net.get("strictAllowlist") is True and "api.github.com" in full_denied else "warn",
             "full level: strict network allow list and the GitHub API denied",
             "" if net else "tmux-level --profile full did not produce a profile",
             "Check ~/.config/claude-levels/network.json (bash install.sh restores it).")
