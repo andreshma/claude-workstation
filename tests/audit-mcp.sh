@@ -7,6 +7,8 @@
 #   managed       no policy warns with the owner step; the kit's drop-in 50-ws-kit.json is read next to
 #                 managed-settings.json; a drop-in without its floor, invalid JSON or a file not owned by root fails
 #   mirrors       a Windows-side mirror last written in clear fails (WS-SEC-013)
+#   confinement   local servers jailed by ws-mcp-jail or opted out (Windows ones named), and the managed
+#                 allowedMcpServers list: present, not widenable, every registered server in it (ADR-024)
 #
 # Usage: bash tests/audit-mcp.sh      (exit 0 = all OK)
 set -uo pipefail
@@ -78,6 +80,35 @@ printf '2026-01-01T00:00:00 /w/.claude-wsl-backup encrypted\n2026-01-01T00:00:00
 check "encrypted mirrors pass" bash -c "$(declare -f run); ROOT='$ROOT'; run mirror_state | grep -q '^ok.*mirrors are encrypted'"
 echo "2026-01-02T00:00:00 /w/.tmux-resurrect-backup UNENCRYPTED: no recipient" >> "$HOME/.local/state/ws-backup-mirror.state"
 check "a mirror last written in clear fails" bash -c "$(declare -f run); ROOT='$ROOT'; run mirror_state | grep -q '^fail.*tmux-resurrect-backup: UNENCRYPTED'"
+
+echo "4) MCP confinement and the managed allow list (ADR-024)"
+rm -f "$T/etc/managed-settings.json" "$T/etc/managed-settings.d/"*.json "$HOME/.claude-personal/.claude.json"
+J="$HOME/.local/bin/ws-mcp-jail"
+cj "{\"mcpServers\": {\"azure\": {\"type\": \"stdio\", \"command\": \"$J\", \"args\": [\"--name\", \"azure\", \"--\", \"/x/azmcp\"]},
+     \"mempalace\": {\"type\": \"stdio\", \"command\": \"/mnt/c/Users/t/.local/bin/mempalace-mcp.exe\", \"args\": []},
+     \"microsoft-learn\": {\"type\": \"http\", \"url\": \"https://learn.microsoft.com/api/mcp\"}}}"
+run mcp_registration > "$T/out"
+check "a jailed server counts as confined; an opted-out Windows one is named as such" \
+  grep -q '^ok.*confined by ws-mcp-jail: 1, not confined: 1.*mempalace (Windows process, cannot be confined)' "$T/out"
+cj "{\"mcpServers\": {\"azure\": {\"type\": \"stdio\", \"command\": \"/x/azmcp\", \"args\": []}}}"
+check "a kit server registered without its jail warns with the refresh command" \
+  bash -c "$(declare -f run); ROOT='$ROOT'; run mcp_registration | grep -q '^warn.*not confined: 1.*azure.*install.sh --mcp-refresh'"
+check "no managed allow list warns with the owner step" \
+  bash -c "$(declare -f run); ROOT='$ROOT'; run mcp_registration | grep -q '^warn.*allowedMcpServers.*install.sh --managed --mcp-allowlist'"
+cj "{\"mcpServers\": {\"azure\": {\"type\": \"stdio\", \"command\": \"$J\", \"args\": [\"--name\", \"azure\", \"--\", \"/x/azmcp\"]},
+     \"microsoft-learn\": {\"type\": \"http\", \"url\": \"https://learn.microsoft.com/api/mcp\"}}}"
+jq -n --arg j "$J" '{allowManagedMcpServersOnly: true, allowedMcpServers: [{serverCommand: [$j, "--name", "azure", "--", "/x/azmcp"]}]}' \
+  > "$T/etc/managed-settings.d/55-ws-mcp-allow.json"
+run mcp_registration > "$T/out"
+check "the managed allow list is read and cannot be widened" grep -q '^ok.*cannot be widened' "$T/out"
+check "a registered server missing from it is reported as blocked" grep -q '^warn.*allow list blocks: 1.*microsoft-learn' "$T/out"
+jq '.allowedMcpServers += [{serverUrl: "https://learn.microsoft.com/*"}] | del(.allowManagedMcpServersOnly)' \
+  "$T/etc/managed-settings.d/55-ws-mcp-allow.json" > "$T/x" && cat "$T/x" > "$T/etc/managed-settings.d/55-ws-mcp-allow.json"
+run mcp_registration > "$T/out"
+check "a serverUrl pattern allows the HTTP server" grep -q '^ok.*allow list blocks: 0' "$T/out"
+check "without allowManagedMcpServersOnly it warns" grep -q '^warn.*cannot be widened' "$T/out"
+check "lib.sh generates the drop-in from mcp-servers.json, by command and URL, never by name" \
+  bash -c "source '$ROOT/lib.sh'; mcp_allowlist '$ROOT/files/mcp-servers.json' /home/u | jq -e '.allowManagedMcpServersOnly and (.allowedMcpServers | length) == 6 and all(.allowedMcpServers[]; has(\"serverName\") | not) and any(.allowedMcpServers[]; .serverCommand[0] == \"/home/u/.local/bin/ws-mcp-jail\")'"
 
 printf '\n%d ok, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

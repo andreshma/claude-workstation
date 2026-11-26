@@ -6,7 +6,9 @@
     "env": {
       "HF_HUB_OFFLINE": "1",
       "WSLENV": "HF_HUB_OFFLINE"
-    }
+    },
+    "jail": false,
+    "jailOptOut": "Windows executable reached through WSL interop: it runs in Windows, outside every Linux namespace, so bubblewrap cannot confine it (ws-mcp-jail refuses it). Residual risk accepted until MemPalace ships a Linux build; ws-audit reports it."
   },
   "recall": {
     "type": "stdio",
@@ -21,7 +23,9 @@
       "HF_HUB_OFFLINE": "1",
       "WSLENV": "HF_HUB_OFFLINE"
     },
-    "alwaysLoad": true
+    "alwaysLoad": true,
+    "jail": false,
+    "jailOptOut": "Windows Python (.venv/Scripts/python.exe) reached through WSL interop: bubblewrap cannot confine a Windows process. Residual risk accepted until recall runs from a Linux venv; ws-audit reports it."
   },
   "microsoft-learn": {
     "type": "http",
@@ -34,7 +38,11 @@
       "server",
       "start"
     ],
-    "env": {}
+    "env": {},
+    "jail": {
+      "net": true,
+      "azureConfig": true
+    }
   },
   "ms-release-comms": {
     "type": "http",
@@ -52,6 +60,9 @@
     "env": {
       "CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS": "1",
       "CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS": "1"
+    },
+    "jail": {
+      "net": true
     }
   }
 }

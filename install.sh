@@ -6,7 +6,7 @@
 #
 # Usage: bash install.sh [--dry-run] [--no-plugins] [--no-mcp] [--no-git-hooks] [--win-user USER] [--repos PATH]
 #                        [--mcp-opt-in NAME]... [--mcp-accept NAME]... [--mcp-refresh]
-#        bash install.sh --managed [--dry-run] [--win-user USER]   the managed policy, as root (see below)
+#        bash install.sh --managed [--mcp-allowlist] [--dry-run] [--win-user USER]   the managed policy, as root
 #        bash install.sh --remove-shims   deletes the wrappers left under the names used before 3.0
 #        bash install.sh --prune-backups [--dry-run]   moves the <file>.bak.<date> copies that earlier versions left
 #                           next to each file into ~/.local/share/ws-kit/backup.legacy/
@@ -22,6 +22,13 @@
 #                      /etc/claude-code/managed-settings.d/50-ws-kit.json (deny floor, guard failing closed, bypass
 #                      mode off), a root-owned copy of guard.sh in /etc/claude-code/hooks/ and the credential list;
 #                      it prints every command first and asks; with --dry-run it only prints them. Never automatic.
+#   --mcp-allowlist    with --managed, also the drop-in 55-ws-mcp-allow.json (ADR-024, WS-AI-010): allowedMcpServers
+#                      generated from mcp-servers.json (each server by its exact command or URL) and
+#                      allowManagedMcpServersOnly. It BLOCKS every other server, the claude.ai connectors and plugin
+#                      servers included, unless they are listed in ~/.config/ws-mcp/allow-extra.json (a JSON array of
+#                      {"serverUrl": …} or {"serverCommand": […]} entries). The file is printed before sudo asks.
+# Every stdio MCP server with a "jail" object in mcp-servers.json is registered through ws-mcp-jail (bubblewrap);
+# "jail": false needs a "jailOptOut" reason (Windows executables cannot be confined). --mcp-refresh re-registers.
 # MCP servers are checked against files/mcp-servers.lock.json first: npm ones are installed with ws-pinned from a
 # committed package-lock.json, local executables are pinned by sha256 on first use; a mismatch skips that server.
 # The kit's files are templates: @WINHOME@, @WIN_USER@, @HOME@ and @LINUX_USER@ are
@@ -30,7 +37,7 @@ set -euo pipefail
 source "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 source "$(dirname -- "${BASH_SOURCE[0]}")/migrate.sh"
 
-DRY=0 PLUGINS=1 MCP=1 GITHOOKS=1 SHIMS=0 PRUNE=0 REPOS_DIR="" MCP_REFRESH=0 MANAGED=0
+DRY=0 PLUGINS=1 MCP=1 GITHOOKS=1 SHIMS=0 PRUNE=0 REPOS_DIR="" MCP_REFRESH=0 MANAGED=0 MCP_ALLOW=0
 MCP_OPT_IN=() MCP_ACCEPT=()
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_ROOT="$HOME/.local/share/ws-kit"   # also holds pre-english.<date> (migrate.sh), which is never pruned
@@ -47,7 +54,8 @@ while (( $# )); do
     --mcp-accept) MCP_ACCEPT+=("${2:?missing server name}"); shift ;;
     --mcp-refresh) MCP_REFRESH=1 ;;
     --managed) MANAGED=1 ;;
-    -h|--help) sed -n '3,28p' "${BASH_SOURCE[0]}"; exit 0 ;;
+    --mcp-allowlist) MCP_ALLOW=1 ;;
+    -h|--help) sed -n '3,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d'; exit 0 ;;
     *) die "unknown option: $1" ;;
   esac
   shift
@@ -231,6 +239,7 @@ managed_steps() {   # managed_steps <runner> — the commands, each passed to <r
   "$1" install -o root -g root -m 644 "$src" "$d/managed-settings.d/50-ws-kit.json"
   "$1" install -o root -g root -m 755 "$FILES/.claude/hooks/guard.sh" "$d/hooks/guard.sh"
   "$1" install -o root -g root -m 644 "$FILES/.local/lib/ws-credential-paths.txt" "$d/ws-credential-paths.txt"
+  if (( MCP_ALLOW )); then "$1" install -o root -g root -m 644 "$RENDER/55-ws-mcp-allow.json" "$d/managed-settings.d/55-ws-mcp-allow.json"; fi
 }
 install_managed() {
   local r
@@ -239,6 +248,13 @@ install_managed() {
   jq -e 'type == "object"' "$RENDER/etc/claude-code/managed-settings.json" >/dev/null 2>&1 \
     || die "files/etc/claude-code/managed-settings.json is missing or not valid JSON"
   log "Managed policy (root, $MANAGED_DIR)"
+  if (( MCP_ALLOW )); then
+    mcp_allowlist "$MCP_FILE" "$HOME" "$HOME/.config/ws-mcp/allow-extra.json" > "$RENDER/55-ws-mcp-allow.json" \
+      || die "could not generate the MCP allow list"
+    printf '  MCP allow list (55-ws-mcp-allow.json): every other MCP server will be blocked, the claude.ai connectors\n'
+    printf '  and plugin servers included, unless ~/.config/ws-mcp/allow-extra.json lists them:\n'
+    jq -c '.allowedMcpServers[]' "$RENDER/55-ws-mcp-allow.json" | sed 's/^/    /'
+  fi
   [[ -f "$MANAGED_DIR/managed-settings.json" ]] \
     && printf '  kept    %s (not the kit'"'"'s: Claude Code merges the drop-in after it)\n' "$MANAGED_DIR/managed-settings.json"
   printf '  These commands will run:\n'; managed_steps show_cmd
@@ -291,7 +307,13 @@ if (( MCP )) && [[ -s "$MCP_FILE" ]]; then
   while IFS= read -r name; do
     # Lock first: anything the lock does not vouch for is skipped, never registered on trust.
     if ! mcp_verify "$name"; then continue; fi
-    want="$(jq -c --arg n "$name" '.[$n]' "$MCP_FILE")"
+    # A server with a "jail" object is registered through ws-mcp-jail (ADR-024); "jail": false keeps its reason.
+    want="$(mcp_want "$MCP_FILE" "$name" "$HOME")"
+    if [[ "$(jq -r --arg n "$name" '.[$n].jail | type' "$MCP_FILE")" == object ]] && ! command -v bwrap >/dev/null; then
+      warn "MCP $name runs in ws-mcp-jail, which needs bubblewrap (sudo apt-get install bubblewrap): it will not start"
+    elif [[ "$(jq -r --arg n "$name" '.[$n].jail' "$MCP_FILE")" == false ]]; then
+      printf '  note    %s is not jailed: %s\n' "$name" "$(jq -r --arg n "$name" '.[$n].jailOptOut // "no reason given"' "$MCP_FILE" | cut -c1-90)"
+    fi
     have="$(mcp_registered "$name")"
     if [[ -n "$have" ]]; then
       if mcp_same "$have" "$want"; then printf '  same    %s\n' "$name"; continue; fi

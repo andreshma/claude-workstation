@@ -213,6 +213,11 @@ echo x >> ~/.local/lib/ws-tools.lock
 sed -i s/a/b/ ~/.config/tmux-claude/plugins.lock
 rm -rf ~/.tmux/plugins/tmux-resurrect
 echo x > ~/.local/lib/ws-mirror.sh
+echo 'exec "$@"' > ~/.local/bin/ws-mcp-jail
+sed -i 's/--unshare-all//' ~/.local/bin/ws-mcp-jail
+cp /tmp/x ~/.local/bin/ws-gate
+echo '[{"serverUrl": "*"}]' > ~/.config/ws-mcp/allow-extra.json
+git config ws.gate.agentTrailer false
 WS_TOOLS_ALLOW_UNVERIFIED=1 ws-tools install gate
 export WS_PLUGINS_ALLOW_UNPINNED=1
 EOF

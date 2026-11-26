@@ -145,6 +145,7 @@
 .local/bin/ws-anomaly
 .local/bin/ws-memory
 .local/bin/ws-pinned
+.local/bin/ws-mcp-jail
 .local/bin/agent-browser
 .local/lib/ws-npm/azure-mcp/
 .local/lib/ws-npm/chrome-devtools-mcp/

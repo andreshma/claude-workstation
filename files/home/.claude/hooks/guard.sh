@@ -77,7 +77,8 @@ cfg_hard+=("$H/.claude.json" "$H/.config/git/hooks" "$H/.config/claude-levels" "
   "$H/.config/ws-kit" "$H/.local/share/ws-kit" "$H/.local/lib/ws-npm" "$H/.config/agent-browser" "$H/.config/ws-telegram"
   "$H/.claude/audit" "$H/.local/state/ws-stop-all" "$H/.local/state/ws-budget-over" "$H/.local/state/ws-budget-override"
   "$H/.local/state/ws-gate" "$H/.local/lib/ws-tools.lock" "$H/.local/lib/ws-mirror.sh" "$H/.config/tmux-claude/plugins.lock"
-  "$H/.tmux/plugins" "$H/.local/state/ws-tools" "$H/.local/state/ws-plugins" "$H/.local/state/ws-backup-mirror.state")
+  "$H/.tmux/plugins" "$H/.local/state/ws-tools" "$H/.local/state/ws-plugins" "$H/.local/state/ws-backup-mirror.state"
+  "$H/.local/bin/ws-mcp-jail" "$H/.local/bin/ws-gate" "$H/.config/ws-mcp")   # ADR-024: the MCP jail and its allow list
 cred=()
 for f in /etc/claude-code/ws-credential-paths.txt "$H/.local/lib/ws-credential-paths.txt"; do
   [[ -r "$f" ]] || continue

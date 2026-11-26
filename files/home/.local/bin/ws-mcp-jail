@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+#
+# ws-mcp-jail — runs a local stdio MCP server inside bubblewrap (WS-AI-011, WS-AI-009, ADR-024). Claude Code starts
+# MCP servers outside its sandbox, with the user's whole filesystem and credentials; this wrapper gives each one a
+# view built from nothing:
+#   · read-only: the system (/usr, /etc, /opt and the /bin, /lib… links), the kit (~/.local/bin, ~/.local/lib,
+#     ~/.local/share/ws-kit, where the pinned npm servers live), the Linux directories of PATH and the server's own
+#     directory; a private /tmp, /dev and /proc
+#   · writable: only its state dir ~/.local/state/ws-mcp/<name> (its HOME-like XDG dirs point there); the HOME seen
+#     inside is an empty tmpfs
+#   · never: ~/.ssh and every credential store of ws-credential-paths.txt, ~/.claude* (conversations, logins), the
+#     audit log, ~/.config/ws-agent (other profiles' logins), the Windows drives (/mnt/c…), /run (the WSL interop
+#     socket, the tmux and SSH agent sockets); tokens in the environment (*TOKEN*, *SECRET*, *PASSWORD*, *API_KEY*,
+#     *ACCESS_KEY*) are removed unless --keep-env names them
+#   · --azure-config (the Azure MCP server): AZURE_CONFIG_DIR of the tab (its own profile's
+#     ~/.config/ws-agent/<name>/azure, or ~/.azure) is bound read-write, and nothing else of ws-agent
+#   · network: shared with --net (what the server needs to reach its API), none with --no-net (the default)
+# A Windows executable (a .exe reached through WSL interop, such as mempalace-mcp.exe) runs in Windows, outside every
+# Linux namespace: bubblewrap cannot confine it, so the wrapper refuses it (exit 126) instead of pretending. Register
+# such a server with "jail": false and a reason in files/mcp-servers.json; ws-audit reports it.
+# Fails closed: without a working bubblewrap the server does not start (exit 125) and says why.
+#
+# Usage:
+#   ws-mcp-jail [--name NAME] [--net|--no-net] [--azure-config] [--ro PATH]... [--rw PATH]... [--keep-env VAR]...
+#               -- COMMAND [ARG]...
+#   ws-mcp-jail --print …same arguments…     prints the bubblewrap command instead of running it (tests, ws-audit)
+#   ws-mcp-jail --probe                       exit 0 if bubblewrap can create its namespaces on this machine
+# install.sh builds these arguments from the "jail" object of each server in files/mcp-servers.json.
+set -uo pipefail
+H="$HOME"
+die() { printf 'ws-mcp-jail: %s\n' "$1" >&2; exit "${2:-2}"; }
+
+probe() { command -v bwrap >/dev/null 2>&1 && bwrap --unshare-all --ro-bind / / true >/dev/null 2>&1; }
+[[ "${1:-}" == --probe ]] && { probe; exit $?; }
+
+name="" net=0 azure=0 print=0 ro=() rw=() keep=()
+while (( $# )); do
+  case "$1" in
+    --name) name="${2:-}"; shift 2 || die "--name needs a value" ;;
+    --net) net=1; shift ;;
+    --no-net) net=0; shift ;;
+    --azure-config) azure=1; shift ;;
+    --ro) ro+=("${2:?--ro needs a path}"); shift 2 ;;
+    --rw) rw+=("${2:?--rw needs a path}"); shift 2 ;;
+    --keep-env) keep+=("${2:?--keep-env needs a name}"); shift 2 ;;
+    --print) print=1; shift ;;
+    --) shift; break ;;
+    *) die "unknown option $1 (the server command goes after --)" ;;
+  esac
+done
+(( $# )) || die "no server command (usage: ws-mcp-jail [options] -- COMMAND [ARG]...)"
+cmd="$1"; shift
+[[ "$cmd" == */* ]] || cmd="$(command -v -- "$cmd" 2>/dev/null)" || die "$1: command not found" 127
+[[ -e "$cmd" ]] || die "$cmd does not exist" 127
+real="$(realpath -e -- "$cmd")"
+[[ -n "$name" ]] || name="$(basename "$cmd")"; name="${name,,}"
+[[ "$name" =~ ^[a-z0-9][a-z0-9_.-]{0,31}$ ]] || die "invalid server name: $name"
+
+# A Windows executable: by extension or by its PE header («MZ»).
+if [[ "${real,,}" == *.exe || "$(head -c 2 -- "$real" 2>/dev/null)" == MZ ]]; then
+  die "$cmd is a Windows executable (WSL interop): bubblewrap cannot confine a Windows process. Register $name with \"jail\": false and a reason in files/mcp-servers.json (ws-audit reports it)." 126
+fi
+
+# Paths no bind may reach: the credential stores, Claude's own folders, the audit log, the agent logins, Windows.
+denied=()
+deny_list() {
+  local line p f="$H/.local/lib/ws-credential-paths.txt"
+  if [[ -r "$f" ]]; then
+    while IFS= read -r line; do
+      line="${line%$'\r'}"; [[ -z "$line" || "$line" == \#* ]] && continue
+      line="${line/#\~/$H}"; [[ "$line" == /@WINHOME@* || "$line" == /mnt/* ]] && continue   # the Windows side: /mnt/? below
+      if [[ "$line" == *'*'* ]]; then for p in $line; do denied+=("$p"); done; else denied+=("$line"); fi
+    done < "$f"
+  fi
+  denied+=("$H/.ssh" "$H/.gnupg" "$H/.azure" "$H/.claude" "$H/.claude-personal" "$H/.claude-profiles" "$H/.claude.json"
+           "${CLAUDE_AUDIT_DIR:-$H/.claude/audit}" "$H/.config/ws-agent" "$H/.config/ws-telegram" "$H/.config/ws-guard"
+           "$H/.local/share/ws-telemetry" "$H/.local/state/ws-gate" /run /proc /sys /root)
+  for p in /mnt/?; do [[ -e "$p" ]] && denied+=("$p"); done
+}
+# is_denied <path> [literal] — the path (resolved, or as written with «literal»), is inside, or contains a denied path.
+is_denied() {
+  local p d; if [[ "${2:-}" == literal ]]; then p="$(realpath -ms -- "$1")"; else p="$(realpath -m -- "$1")"; fi
+  [[ "$p" == / || "$p" == "$H" || "$p" == "${H%/*}" ]] && return 0
+  for d in "${denied[@]}"; do
+    [[ "$p" == "$d" || "$p/" == "$d"/* || "$d/" == "$p"/* ]] && return 0
+  done
+  return 1
+}
+deny_list
+for i in "${!denied[@]}"; do denied[i]="$(realpath -m -- "${denied[i]}")"; done
+
+state="${XDG_STATE_HOME:-$H/.local/state}/ws-mcp/$name"
+a=(bwrap --unshare-all --die-with-parent --new-session --cap-drop ALL)
+(( net )) && a+=(--share-net)
+a+=(--proc /proc --dev /dev --tmpfs /tmp --tmpfs /dev/shm --tmpfs /run --tmpfs /mnt --tmpfs "${H%/*}" --tmpfs "$H")
+# The system, read-only, as the host lays it out (a merged /usr has /bin, /lib… as links).
+for p in /usr /etc /opt /bin /sbin /lib /lib32 /lib64 /libx32; do
+  if [[ -L "$p" && -e "$p" ]]; then a+=(--symlink "$(readlink "$p")" "$p")
+  elif [[ -d "$p" ]]; then a+=(--ro-bind "$p" "$p"); fi
+done
+# DNS: on WSL /etc/resolv.conf is a link to /mnt/wsl/resolv.conf, outside /etc.
+r="$(realpath -e /etc/resolv.conf 2>/dev/null)" && [[ "$r" != /etc/* && "$r" != /usr/* ]] && a+=(--ro-bind "$r" "$r")
+seen=" "
+# robind <path> — read-only bind of a path and of its real target, once each, never a denied one. A path under a
+# denied place whose target is allowed (fnm's /run/user/… links to ~/.local/share/fnm) becomes a link to the target.
+robind() {
+  local p="$1" t x
+  [[ -e "$p" ]] || return 0
+  t="$(realpath -e -- "$p")"
+  is_denied "$t" && return 0
+  for x in "$t" "$p"; do
+    [[ "$seen" == *" $x "* ]] && continue
+    seen+="$x "
+    case "$x" in /usr|/usr/*|/etc|/etc/*|/opt|/opt/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib/*|/lib64|/lib64/*) continue ;; esac
+    if [[ "$x" != "$t" ]] && is_denied "$x" literal; then a+=(--symlink "$t" "$x"); else a+=(--ro-bind "$x" "$x"); fi
+  done
+}
+for p in "$H/.local/bin" "$H/.local/lib" "$H/.local/share/ws-kit"; do robind "$p"; done
+IFS=: read -r -a path_dirs <<<"${PATH:-}"
+for p in "${path_dirs[@]}"; do [[ "$p" == /* && "$p" != /mnt/[a-z]/* ]] && robind "$p"; done   # Windows PATH entries: never
+# The server's package: the nearest node_modules (npm) or .venv (Python) above its real path.
+pkg="$real"
+while [[ "$pkg" != / && "$pkg" != "$H" ]]; do
+  pkg="$(dirname -- "$pkg")"
+  [[ "$(basename -- "$pkg")" == node_modules || "$(basename -- "$pkg")" == .venv ]] && { robind "$(dirname -- "$pkg")"; break; }
+done
+for p in "${ro[@]}"; do
+  is_denied "$p" && die "--ro $p: that path is denied to MCP servers"
+  robind "$p"
+done
+for p in "${rw[@]}"; do
+  is_denied "$p" && die "--rw $p: that path is denied to MCP servers"
+  [[ -e "$p" ]] && a+=(--bind "$(realpath -e -- "$p")" "$(realpath -e -- "$p")")
+done
+if (( azure )); then
+  az="${AZURE_CONFIG_DIR:-$H/.azure}"; az="$(realpath -m -- "$az")"
+  [[ "$az" == "$H/.azure" || "$az" =~ ^"$H"/\.config/ws-agent/[a-z0-9][a-z0-9_-]{0,31}/azure$ ]] \
+    || die "--azure-config: AZURE_CONFIG_DIR=$az is neither ~/.azure nor a profile's ~/.config/ws-agent/<name>/azure"
+  (( print )) || { mkdir -p "$az" && chmod 700 "$az"; }
+  a+=(--bind "$az" "$az" --setenv AZURE_CONFIG_DIR "$az")
+fi
+(( print )) || { mkdir -p "$state" && chmod 700 "$state"; } || die "cannot create $state"
+a+=(--bind "$state" "$state" --chdir "$state"
+    --setenv HOME "$H" --setenv TMPDIR /tmp
+    --setenv XDG_CONFIG_HOME "$state/config" --setenv XDG_CACHE_HOME "$state/cache"
+    --setenv XDG_DATA_HOME "$state/data" --setenv XDG_STATE_HOME "$state/state"
+    --unsetenv SSH_AUTH_SOCK --unsetenv WSL_INTEROP --unsetenv TMUX --unsetenv TMUX_PANE --unsetenv DBUS_SESSION_BUS_ADDRESS)
+while IFS='=' read -r k _; do
+  [[ "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && "$k" =~ (TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|CREDENTIAL) ]] || continue
+  [[ " ${keep[*]} " == *" $k "* ]] || a+=(--unsetenv "$k")
+done < <(env)
+a+=(-- "$real" "$@")
+
+if (( print )); then printf '%q ' "${a[@]}"; printf '\n'; exit 0; fi
+probe || die "bubblewrap cannot create its namespaces here (sudo apt-get install bubblewrap; on Ubuntu 24.04 the AppArmor profile for unprivileged user namespaces). $name was NOT started: fail closed." 125
+mkdir -p "$state/config" "$state/cache" "$state/data" "$state/state" 2>/dev/null
+printf '%s\t%s\tnet=%s\tazure=%s\t%s\n' "$(date -Is)" "$name" "$net" "$azure" "$real" >> "${state%/*}/jail.log" 2>/dev/null || true
+exec "${a[@]}"

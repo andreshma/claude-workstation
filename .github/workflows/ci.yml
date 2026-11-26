@@ -149,9 +149,10 @@ jobs:
         with:
           persist-credentials: false
       # age and zstd for the encrypted backups; npm (already on the runner) for the pinned packages; tmux for the
-      # tests/run.sh cases that tests/compliance.sh runs as control checks.
+      # tests/run.sh cases that tests/compliance.sh runs as control checks; bubblewrap for the live part of
+      # tests/mcp-jail.sh (skipped, not failed, where the runner forbids unprivileged user namespaces).
       - name: Dependencies
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq tmux age zstd >/dev/null
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq tmux age zstd bubblewrap >/dev/null
       # Every standalone suite except run.sh (the test job runs it); all of them run, the job fails if one does.
       # tests/compliance.sh is the continuous compliance evidence (WS-GOV-005) and tests/ai-bom.sh keeps the AI-BOM
       # in step with the kit (WS-GOV-002).
