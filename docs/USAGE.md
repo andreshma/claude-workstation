@@ -645,7 +645,7 @@ machine: the machine numbers are always after `host`.
 | Panel on the monitor line (default) / compact on the right / off | Menu → Settings → `u`, or `tmux-res mode full\|compact\|off` |
 | CPU glyph after each tab (off by default: with ~40 tabs the list is already wider than the terminal) | Menu → Settings → `i`, or `tmux-res tabs on\|off` |
 | Thresholds | `tmux set -g @ws_res_cpu_warn 80`, `@ws_res_cpu_crit 150` (% of one core), `@ws_res_ram_warn 4`, `@ws_res_ram_crit 8` (GiB) |
-| Sampling | `@ws_res_interval` (2 s), `@ws_res_pss_every` (60 s), `@ws_res_gpu off` (no GPU queries) |
+| Sampling | Menu → Settings → `j` or `ws-settings res-interval 2\|3\|4\|5` (saved; 2 s by default), `@ws_res_pss_every` (60 s), `@ws_res_gpu off` (no GPU queries) |
 | All tabs in a table, the sampler and its cost | `tmux-res show`, `tmux-res status` |
 
 ## 8. Finding the tab that needs you

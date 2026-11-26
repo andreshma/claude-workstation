@@ -37,6 +37,7 @@ display-menu -O -T "#[align=centre] ⚙  Settings " -x C -y C -- \
   "Theme and screensaver ›" v "source-file ~/.config/tmux-claude/menu-appearance.tmux" \
   "Tab resources in the status bar: #{?@ws_set_resmode,#{@ws_set_resmode},full} (full → compact → off)" u "run-shell -b '~/.local/bin/ws-settings res-mode #{?#{==:#{@ws_set_resmode},compact},off,#{?#{==:#{@ws_set_resmode},off},full,compact}}'" \
   "CPU glyph after each tab: #{?@ws_set_restabs,#{@ws_set_restabs},off} (switch)" i "run-shell -b '~/.local/bin/ws-settings res-tabs #{?#{==:#{@ws_set_restabs},on},off,on}'" \
+  "Tab resources sampled every #{?@ws_set_resinterval,#{@ws_set_resinterval},2} s (2 → 3 → 4 → 5)" j "run-shell -b '~/.local/bin/ws-settings res-interval #{?#{==:#{@ws_set_resinterval},2},3,#{?#{==:#{@ws_set_resinterval},3},4,#{?#{==:#{@ws_set_resinterval},4},5,2}}}'" \
   "-#[nodim]── Kit and checks ──" "" "" \
   "Update the kit (signed release)" U "display-popup -E -w 92% -h 85% -T ' Update ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-pause 'ws-kit-update'\"" \
   "Audit the workstation (ws-audit)" A "display-popup -E -w 95% -h 90% -T ' Audit ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-pause 'ws-audit'\"" \

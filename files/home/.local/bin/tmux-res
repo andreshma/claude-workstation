@@ -785,7 +785,7 @@ def config(g):
     return {"mode": g[0] or settings_get("res_mode") or "full", "tabs": g[1] or settings_get("res_tabs") or "off",
             "interval_status": g[2], "cpu_warn": fnum(g[3], 80.0), "cpu_crit": fnum(g[4], 150.0),
             "ram_warn": fnum(g[5], 4.0), "ram_crit": fnum(g[6], 8.0), "gpu": g[7] or "on",
-            "interval": max(0.2, fnum(os.environ.get("WS_RES_INTERVAL") or g[8], 2.0)),
+            "interval": max(0.2, fnum(os.environ.get("WS_RES_INTERVAL") or g[8] or settings_get("res_interval"), 2.0)),
             "pss_every": max(5.0, fnum(g[9], 60.0)), "status": g[10]}
 
 
@@ -1006,6 +1006,17 @@ def cmd_mode(m):
     return 0
 
 
+def cmd_interval(v):
+    """Saves the sampling period (2-5 s) so it survives a tmux restart; the running sampler picks it up next cycle."""
+    if v not in ("2", "3", "4", "5"):
+        print("usage: tmux-res interval 2|3|4|5", file=sys.stderr)
+        return 2
+    settings_put("res_interval", v)
+    tmux("set", "-g", "@ws_res_interval", v)
+    tmux("display", "Tab resources: every %s s" % v)
+    return 0
+
+
 def cmd_tabs(v):
     if v not in ("on", "off"):
         print("usage: tmux-res tabs on|off", file=sys.stderr)
@@ -1113,6 +1124,8 @@ def main(argv):
         return cmd_mode(argv[2])
     if cmd == "tabs" and len(argv) > 2:
         return cmd_tabs(argv[2])
+    if cmd == "interval" and len(argv) > 2:
+        return cmd_interval(argv[2])
     if cmd == "status":
         return cmd_status()
     if cmd == "show":

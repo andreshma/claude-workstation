@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- The tab resources sampling period is a saved setting: Menu → Settings → `j`, `ws-settings res-interval 2|3|4|5`
+  or `tmux-res interval N`; it survives a tmux restart.
 - `ws.gate.skip=yaml`: skips only yamllint in a repository whose YAML is a dialect validated by its own CI (a
   stricter subset parser); shellcheck, ruff and the other linters still run.
 - Each tab's own resources in the status bar (ADR 0029): the monitor line (`Ctrl+b v`) starts with `tab N` and the
