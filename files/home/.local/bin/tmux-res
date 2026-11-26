@@ -40,6 +40,7 @@ import resource
 import shutil
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -715,9 +716,16 @@ def server_socket():
 def state_dir(sock):
     d = os.environ.get("WS_RES_DIR")
     if not d:
-        base = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+        # Never a predictable name in the shared /tmp (CWE-377): the per-user runtime dir, else the user's cache.
+        base = os.environ.get("XDG_RUNTIME_DIR") or os.path.join(
+            os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "tmux-res")
         d = os.path.join(base, "tmux-res-%d" % os.getuid(), (sock or "fixture").replace("/", "_"))
     os.makedirs(d, mode=0o700, exist_ok=True)
+    st = os.lstat(d)
+    if st.st_uid != os.getuid() or not stat.S_ISDIR(st.st_mode):
+        raise SystemExit("tmux-res: %s is not a directory owned by you; refusing to use it" % d)
+    if stat.S_IMODE(st.st_mode) & 0o077:
+        os.chmod(d, 0o700)
     return d
 
 
