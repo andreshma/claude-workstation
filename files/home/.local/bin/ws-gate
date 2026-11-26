@@ -4,7 +4,8 @@
 # (_chain) and by Claude Code; also used by hand to review a whole repo.
 #
 #   ws-gate pre-commit            secrets, forbidden or large files, lint of what you commit
-#   ws-gate commit-msg <file>     Conventional Commits and no Co-authored-by
+#   ws-gate commit-msg <file>     Conventional Commits and no Co-authored-by; from a Claude Code session it adds
+#                                 the Agent-Session (and Agent) trailers (ADR-020)
 #   ws-gate pre-push <remote>     push to main/master, dependencies (osv-scanner), IaC (checkov),
 #                                 tflint and clippy on what changed (stdin = git refs)
 #   ws-gate file <file>           lint of a single file (Claude uses it after editing)
@@ -22,7 +23,10 @@
 #   ws.gate.allowNoOsv       the same for osv-scanner on a push that changes a lock file or manifest
 #   ws.gate.allowNoCheckov   the same for checkov on a push that changes Terraform, Bicep, a Dockerfile, a
 #                      Kubernetes manifest or a CI workflow
+#   ws.gate.agentTrailer     false to leave out the Agent-Session trailer in this repository (logged)
 # If the repo has a .pre-commit-config.yaml, its lint rules and only secrets and size are checked here.
+# Throwaway repositories (under /tmp or /var/tmp AND without any remote) skip Conventional Commits and lint at commit
+# time, saying so once; see throwaway() below (ADR-023).
 # The secret scan is mandatory (ADR 0013): gitleaks missing = commit blocked. osv-scanner and checkov are mandatory
 # only when the push has files they apply to (WS-SEC-004): missing = push blocked, unless the opt-out above. The other
 # tools that are not installed are skipped with a warning. ws-tools install gate installs the three, pinned.
@@ -36,6 +40,87 @@ note() { printf '%s· %s%s\n' "$DIM" "$*" "$RST" >&2; }
 has()  { command -v "$1" >/dev/null 2>&1; }
 skip() { [[ ",$(git config --get ws.gate.skip 2>/dev/null)," == *",$1,"* ]]; }
 root() { git rev-parse --show-toplevel 2>/dev/null; }
+
+#######################################
+# Throwaway repositories (tests, scratch work): a repository whose working tree AND git directory both live under
+# the system temp dir (/tmp, /var/tmp) and that has no remote at all. There, and only there, the commit-time quality
+# checks that make no sense (Conventional Commits, lint) are skipped, with the reason printed once per repository.
+# Secrets, forbidden files, size and the Co-authored-by rule still apply, and a push from a repository under the
+# temp dir re-checks the message of every pushed commit. A repository with any remote, or outside the temp dir, is
+# never a throwaway. WS_GATE_TEMP_ROOTS (colon-separated, for tests) can only narrow the roots: an entry that is not
+# itself under /tmp or /var/tmp is ignored, so it cannot turn a real repository into a throwaway.
+#######################################
+temp_roots() {
+  local r IFS=:
+  for r in ${WS_GATE_TEMP_ROOTS:-/tmp:/var/tmp}; do
+    r="$(realpath -m -- "$r" 2>/dev/null)" || continue
+    case "$r/" in /tmp/*|/var/tmp/*) printf '%s\n' "$r" ;; esac
+  done
+}
+# under_temp <path> — 0 if the path (resolved) is inside one of the temp roots.
+under_temp() {
+  local p t; p="$(realpath -e -- "$1" 2>/dev/null)" || return 1
+  while IFS= read -r t; do [[ "$p/" == "$t"/* ]] && return 0; done < <(temp_roots)
+  return 1
+}
+# in_temp — the working tree and the (common) git directory of this repository are both under the temp dir.
+in_temp() {
+  local top common
+  top="$(root)" || return 1; common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  under_temp "$top" && under_temp "$common"
+}
+throwaway() {
+  in_temp || return 1
+  [[ -z "$(git remote 2>/dev/null)" ]] || return 1
+  local mark; mark="$(git rev-parse --path-format=absolute --git-dir 2>/dev/null)/ws-gate-throwaway"
+  if [[ ! -e "$mark" ]]; then
+    note "throwaway repository (under the temp dir, no remote): Conventional Commits and lint are skipped here;"
+    note "secrets, forbidden files, size and Co-authored-by still apply, and a push re-checks every message"
+    : > "$mark" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# msg_problem <first line> — prints why a commit subject breaks Conventional Commits (nothing when it is fine).
+TYPES='feat|fix|chore|docs|refactor|test|ci|perf|style|build'
+msg_problem() {
+  case "$1" in Merge\ *|Revert\ *|fixup!\ *|squash!\ *|amend!\ *) return 0 ;; esac
+  grep -qE "^($TYPES)(\([a-z0-9._/-]+\))?!?: [^ ].*" <<<"$1" || printf 'message does not follow Conventional Commits: "%s"\n' "$1"
+}
+
+#######################################
+# Agent attribution (ADR-020, WS-AI-026): a commit made from a Claude Code session gets the trailers
+# «Agent-Session: <profile>/<session id>» and, when the tab runs under an agent identity, «Agent: <WS_AGENT>»; never
+# Co-authored-by. Claude Code sets CLAUDE_CODE_CHILD_SESSION=1 (and CLAUDE_CODE_SESSION_ID) only in the commands it
+# starts, so a commit from a plain shell carries nothing. A trailer already in the message is replaced, so the agent
+# cannot write a false one. This is attribution, not a boundary: a process can unset the variables.
+# ws.gate.agentTrailer=false turns it off in a repository (logged as an opt-out).
+#######################################
+agent_trailer() {
+  local file="$1" sid prof agent
+  [[ "${CLAUDE_CODE_CHILD_SESSION:-}" == 1 || -n "${CLAUDE_CODE_SESSION_ID:-}" ]] || return 0
+  if [[ "$(git config --type=bool --get ws.gate.agentTrailer 2>/dev/null)" == false ]]; then
+    opt_out agentTrailer "$(root)"; return 0
+  fi
+  sid="${CLAUDE_CODE_SESSION_ID:-unknown}"; [[ "$sid" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || sid=unknown
+  prof="${WS_PROFILE:-}"
+  if ! [[ "$prof" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]]; then
+    case "${CLAUDE_CONFIG_DIR:-}" in
+      ""|"$HOME/.claude"|"$HOME/.claude/") prof=work ;; "$HOME/.claude-personal"|"$HOME/.claude-personal/") prof=personal ;;
+      "$HOME/.claude-profiles/"*) prof="${CLAUDE_CONFIG_DIR#"$HOME/.claude-profiles/"}"; prof="${prof%/}" ;;
+      *) prof=other ;;
+    esac
+    [[ "$prof" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]] || prof=other
+  fi
+  # git interpret-trailers matches keys by prefix («Agent» and «Agent-Session» collide under --if-exists replace),
+  # so any existing Agent or Agent-Session line (a forged one included) is removed first and both are then added.
+  local args=(--trailer "Agent-Session: $prof/$sid")
+  agent="${WS_AGENT:-}"
+  [[ "$agent" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]] && args+=(--trailer "Agent: $agent")
+  sed -i -E '/^(agent-session|agent)[[:space:]]*:/Id' "$file" 2>/dev/null
+  git interpret-trailers --in-place --if-exists add "${args[@]}" "$file" 2>/dev/null \
+    || wrn "could not add the Agent-Session trailer"
+}
 
 # opt_out <what> <repo> — records a use of an opt-out of the gate (date, repo, what) for ws-audit and reviews.
 opt_out() {
@@ -153,7 +238,7 @@ pre_commit() {
   done
 
   if (( own_cfg )); then note "the repo has a .pre-commit-config.yaml: its lint rules"
-  elif ! skip lint; then
+  elif ! skip lint && ! throwaway; then
     for f in "${files[@]}"; do
       if ! lint_file "$r/$f" >&2; then err "lint: $f"; fi
     done
@@ -161,15 +246,29 @@ pre_commit() {
 }
 
 commit_msg() {
-  local file="${1:?message file}" first types='feat|fix|chore|docs|refactor|test|ci|perf|style|build'
+  local file="${1:?message file}" first why
   first="$(grep -v '^#' "$file" | grep -m1 .)"
   if grep -qiE '^co-authored-by:' "$file"; then err "the message has Co-authored-by (not allowed)"; fi
-  skip msg && return 0
-  case "$first" in Merge\ *|Revert\ *|fixup!\ *|squash!\ *|amend!\ *) return 0 ;; esac
-  if ! grep -qE "^($types)(\([a-z0-9._/-]+\))?!?: [^ ].*" <<<"$first"; then
-    err "message does not follow Conventional Commits: \"$first\""
-    note "format: type(scope): description in the imperative · types: ${types//|/ }"
-  elif (( ${#first} > 100 )); then wrn "first line is ${#first} characters long (recommended ≤ 100)"; fi
+  if ! skip msg && ! throwaway; then
+    why="$(msg_problem "$first")"
+    if [[ -n "$why" ]]; then
+      err "$why"; note "format: type(scope): description in the imperative · types: ${TYPES//|/ }"
+    elif (( ${#first} > 100 )); then wrn "first line is ${#first} characters long (recommended ≤ 100)"; fi
+  fi
+  (( fail )) || agent_trailer "$file"
+}
+
+# push_msgs <range…> — in a repository under the temp dir (where commit-msg may have skipped the format check),
+# every pushed commit must follow Conventional Commits and carry no Co-authored-by.
+push_msgs() {
+  local c why
+  in_temp || return 0
+  while IFS= read -r c; do
+    if git log -1 --format=%B "$c" | grep -qiE '^co-authored-by:'; then err "commit ${c:0:9} has Co-authored-by (not allowed)"; fi
+    skip msg && continue
+    why="$(msg_problem "$(git log -1 --format=%s "$c")")"
+    [[ -n "$why" ]] && err "commit ${c:0:9}: $why (repository under the temp dir: every pushed message is checked)"
+  done < <(git rev-list --no-merges "$@" 2>/dev/null)
 }
 
 pre_push() {
@@ -182,7 +281,8 @@ pre_push() {
     fi
     if [[ "$rsha" == "$zero" ]]; then
       range="$(git merge-base "$lsha" origin/HEAD 2>/dev/null || git rev-list --max-parents=0 "$lsha" | tail -1)..$lsha"
-    else range="$rsha..$lsha"; fi
+      push_msgs "$lsha" --not --remotes
+    else range="$rsha..$lsha"; push_msgs "$range"; fi
     mapfile -t -O "${#changed[@]}" changed < <(git diff --name-only "$range" 2>/dev/null)
   done
   (( ${#changed[@]} )) || return 0
@@ -273,7 +373,7 @@ case "${1:-}" in
   bypasses)   shift; bypasses "$@"; exit $? ;;
   repo-view)  echo "Reviewing $(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")…"
               f="$(repo_report "${2:-}")" || { read -rsn1; exit 1; }; less -R "$f"; exit 0 ;;
-  *) sed -n '3,28p' "$0"; exit 2 ;;
+  *) sed -n '3,/^set -uo/p' "$0" | sed '$d'; exit 2 ;;
 esac
 if (( fail )); then printf '%sGate: blocked. Fix what is marked with ✖ (or git config ws.gate.skip …).%s\n' "$RED" "$RST" >&2; exit 1; fi
 (( warn )) && printf '%sGate: passes with warnings.%s\n' "$YEL" "$RST" >&2
