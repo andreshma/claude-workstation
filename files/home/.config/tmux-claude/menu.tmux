@@ -10,19 +10,20 @@ display-menu -O -T "#[align=centre] ☰  #S › #W · #{?#{@cs},#{@cs},no Claude
   "Tab dashboard (Ctrl+b D)" D "display-popup -E -w 92% -h 70% -T ' Tab dashboard ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-dash\"" \
   "Open a folder or repo (Ctrl+b o)" o "display-popup -E -w 80% -h 70% -T ' Open folder ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-open\"" \
   "Open a folder with Opus" O "display-popup -E -w 80% -h 70% -T ' Open with Opus ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-open --opus\"" \
-  "Open a folder with a template (Claude + tests + git)" T "display-popup -E -w 80% -h 60% -T ' Open with template ' -d \"#{pane_current_path}\" \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-template\"" \
-  "New worktree of this repo" w "command-prompt -p Branch: \"run-shell -b \\\"~/.local/bin/tmux-worktree '#{pane_current_path}' '%1'\\\"\"" \
+  "Open a folder with a template (Claude + tests + git)" T "display-popup -E -w 80% -h 60% -T ' Open with template ' -d \"##{pane_current_path}\" \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-template\"" \
+  "New worktree of this repo" w "command-prompt -p Branch: \"run-shell -b \\\"~/.local/bin/tmux-worktree ##{q:pane_current_path} '%1'\\\"\"" \
   "-#[nodim]── This tab ──" "" "" \
   "#{?#{@cs},,-}Claude in this tab ›" c "source-file ~/.config/tmux-claude/menu-claude.tmux" \
   "Tabs and session ›" s "source-file ~/.config/tmux-claude/menu-session.tmux" \
   "Panes, copy and notifications ›" l "source-file ~/.config/tmux-claude/menu-panes.tmux" \
   "-#[nodim]── Tools ──" "" "" \
   "Command palette (Ctrl+b Space)" p "display-popup -E -w 80% -h 70% -T ' Command palette ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-palette #{pane_id}\"" \
-  "Quick question to Claude (Ctrl+b ?)" '?' "display-popup -E -w 80% -h 70% -T ' Quick question ' -d \"#{pane_current_path}\" \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-ask #{pane_id}\"" \
+  "Quick question to Claude (Ctrl+b ?)" '?' "display-popup -E -w 80% -h 70% -T ' Quick question ' -d \"##{pane_current_path}\" \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-ask #{pane_id}\"" \
   "Views: monitor, focus, popups, history ›" x "source-file ~/.config/tmux-claude/menu-views.tmux" \
   "Usage and reports ›" r "source-file ~/.config/tmux-claude/menu-usage.tmux" \
   "Workstation: health, backups, notifications ›" e "source-file ~/.config/tmux-claude/menu-workstation.tmux" \
   "Appearance and screensaver ›" v "source-file ~/.config/tmux-claude/menu-appearance.tmux" \
+  "Settings: protection, MCP, backups, spend, guard, kit ›" S "source-file ~/.config/tmux-claude/menu-settings.tmux" \
   "-#[nodim]── Help ──" "" "" \
   "Full manual (everything installed)" m "display-popup -E -w 92% -h 85% -T ' Manual ' ~/.local/bin/tmux-popup-run ~/.local/bin/ws-menus --show" \
   "Keyboard shortcuts" h "display-popup -E -w 92% -h 80% -T ' Shortcuts ' ~/.local/bin/tmux-popup-run ~/.local/bin/tmux-help"

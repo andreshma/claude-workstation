@@ -10,7 +10,7 @@ display-menu -O -T "#[align=centre] ◫  Views and utilities " -x C -y C -- \
   "Second monitor (same group, independent)" m "run-shell -b '~/.local/bin/tmux-monitor2'" \
   "Read-only mirror (screen sharing)" e "run-shell -b '~/.local/bin/tmux-monitor2 --mirror'" \
   "-#[nodim]── Popups ──" "" "" \
-  "Persistent floating shell (Ctrl+b g)" g "display-popup -E -w 80% -h 75% -T ' Shell ' -d \"#{pane_current_path}\" \"~/.local/bin/tmux-popup-run --persistent env WS_TAB=#{window_id} bash -l\"" \
+  "Persistent floating shell (Ctrl+b g)" g "display-popup -E -w 80% -h 75% -T ' Shell ' -d \"##{pane_current_path}\" \"~/.local/bin/tmux-popup-run --persistent env WS_TAB=#{window_id} bash -l\"" \
   "Floating PowerShell (Ctrl+b P)" P "display-popup -E -w 80% -h 75% -T ' PowerShell ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-pwsh\"" \
   "-#[nodim]── History and recording ──" "" "" \
   "Search the history of all panes" h "display-popup -E -w 85% -h 75% -T ' History ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-history\"" \

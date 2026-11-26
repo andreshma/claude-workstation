@@ -127,6 +127,7 @@ if [[ "$fn" == tw ]] && [[ "$(sed -nE 's/^(groups|grupos)=//p' "${XDG_CONFIG_HOM
     tmux new-session -d -s "$group" -n "$name" -c "$dir"; w="$(tmux list-windows -t "=$group" -F '#{window_id}' | sed -n 1p)"
   fi
   tmux send-keys -t "$w" "$cmd" Enter
+  bash -c 'source ~/.config/tmux-claude/functions.sh && _claude_mark "$1"' _ "$w"
   tmux switch-client -t "=$group"; tmux select-window -t "$w"
 else
   bash -c 'source ~/.config/tmux-claude/functions.sh && "$1" "$2"' _ "$fn" "$dir"

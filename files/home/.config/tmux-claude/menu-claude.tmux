@@ -7,7 +7,7 @@ set -g status-interval 0
 display-menu -O -T "#[align=centre] 🤖  Claude · #W · #{?#{@cs},#{@cs},no Claude} " -x C -y C -- \
   "-#[nodim]── Conversation ──" "" "" \
   "View context" c "send-keys /context Enter" \
-  "Compact conversation" k "confirm-before -p \"Compact the conversation in #W? (y/n)\" \"send-keys /compact Enter\"" \
+  "Compact conversation" k "confirm-before -p \"Compact the conversation in ##W? (y/n)\" \"send-keys /compact Enter\"" \
   "Go back to an earlier point" b "send-keys /rewind Enter" \
   "Transcript and reasoning" t "send-keys C-o" \
   "Interrupt" e "send-keys Escape" \
@@ -24,12 +24,12 @@ display-menu -O -T "#[align=centre] 🤖  Claude · #W · #{?#{@cs},#{@cs},no Cl
   "-#[nodim]── With other tabs ──" "" "" \
   "Send the neighboring pane to Claude (Ctrl+b e)" x "run-shell -b '~/.local/bin/tmux-pane #{pane_id}'" \
   "Same text to several Claude tabs" D "display-popup -E -w 85% -h 70% -T ' Broadcast ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-broadcast\"" \
-  "Swarm: several Claudes in parallel on one goal" Z "display-popup -E -w 92% -h 85% -T ' Swarm ' -d \"#{pane_current_path}\" \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-swarm new\"" \
+  "Swarm: several Claudes in parallel on one goal" Z "display-popup -E -w 92% -h 85% -T ' Swarm ' -d \"##{pane_current_path}\" \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-swarm new\"" \
   "Export my work for another Claude (handoff)" E "display-popup -E -w 92% -h 85% -T ' Handoff ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-pause 'ws-handoff #{pane_id}'\"" \
   "Emergency stop: block and close every Claude, Telegram off" X "confirm-before -p \"EMERGENCY STOP: block every Claude, close them all and turn Telegram off? (y/n)\" \"run-shell -b '~/.local/bin/ws-stop-all --yes'\"" \
   "-#[nodim]── Account and profile ──" "" "" \
   "Profile: #{?@cprofile,#{@cprofile},work} (Claude, Azure, gh, kubectl, memory) ›" P "run-shell -b '~/.local/bin/ws-profile menu #{pane_id}'" \
-  "Switch this tab to the #{?#{==:#{@caccount},personal},work,personal} account (same conversation)" a "confirm-before -p \"Switch the account of #W? (y/n)\" \"run-shell -b '~/.local/bin/claude-account tab #{pane_id}'\"" \
+  "Switch this tab to the #{?#{==:#{@caccount},personal},work,personal} account (same conversation)" a "confirm-before -p \"Switch the account of ##W? (y/n)\" \"run-shell -b '~/.local/bin/claude-account tab #{pane_id}'\"" \
   "New tabs use: #{?#{==:#{@caccount_def},personal},personal → switch to work,work → switch to personal}" n "run-shell -b '~/.local/bin/claude-account use #{?#{==:#{@caccount_def},personal},work,personal}'" \
   "Always use the account of this tab for this project (#{?#{==:#{@caccount},personal},personal,work})" f "run-shell -b '~/.local/bin/claude-account project #{?#{==:#{@caccount},personal},personal,work} --pane #{pane_id}'" \
   "Log in to the personal account" L "new-window -n login-personal \"~/.local/bin/tmux-pause 'claude-account login personal'\"" \

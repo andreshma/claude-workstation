@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+#
+# ws-settings — every workstation setting that used to need a command, in one place (ADR-028). It is the backend of
+# Menu → Settings (~/.config/tmux-claude/menu-settings.tmux): «menu-sync» publishes the current values as @ws_set_*
+# tmux options for the menu, the other subcommands change one setting each. They are YOUR actions: every one that
+# changes something refuses to run inside Claude (CLAUDECODE) and guard.sh blocks ws-settings from Claude too; the
+# ones that weaken protection or delete something ask first (the menu confirms, and the popups ask y/N). Secrets
+# (the backup key, the Telegram PIN) are only ever typed in a terminal popup, never passed in tmux options or argv.
+#
+# Usage:
+#   ws-settings show                       every setting with its current value
+#   ws-settings menu-sync                  publishes the values as @ws_set_* options (the menu runs it first)
+#   ws-settings level full|normal          protection level of NEW tabs (tmux-level default)
+#   ws-settings lang en|es                 language of prompts and reports (ws-lang)
+#   ws-settings chrome on|off              the opt-in chrome-devtools MCP server (on: install.sh --mcp-opt-in)
+#   ws-settings keepalive NAME on|off      restart that local MCP server when it exits (ws-mcp-keepalive)
+#   ws-settings menu-keepalive             the tmux menu of local MCP servers with their keepalive (Settings → k)
+#   ws-settings egress NAME enforce|audit|off   egress allow list of a jailed MCP server (ws-egress-proxy)
+#   ws-settings mcp-review                 tool-definition changes waiting for you (ws-mcp-tools diff/approve)
+#   ws-settings allowlist                  installs the managed MCP allow list (prints the sudo command, asks y/N)
+#   ws-settings backup-key                 sets up the encrypted backups (ws-backup-cloud setup, in a terminal)
+#   ws-settings copy-days N                expiry of the Windows-side backup copies in days (0: never)
+#   ws-settings budgets                    edits ~/.config/ws-telemetry/budgets.conf (project=usd_per_month)
+#   ws-settings hard on|off                holds work at 100 % of a budget (budgets.conf hard=1)
+#   ws-settings production                 edits ~/.config/ws-guard/production.conf (subscriptions and contexts)
+#   ws-settings rotation                   edits ~/.config/ws-secret/rotation.conf (secret rotation periods)
+#   ws-settings filter                     edits ~/.config/ws-mcp/filter.local.json (your MCP tool rules)
+#   ws-settings window open|close          the 30-minute window in which Claude may edit CLAUDE.md, commands,
+#                                          agents and skills (guard.sh; every write audited)
+#   ws-settings notify on|off              Windows notifications (@cnotify)
+# Exit: 0 done · 1 failed or not confirmed · 2 usage or refused (inside Claude)
+set -uo pipefail
+PATH="$HOME/.local/bin:$PATH"   # tmux menus start it with a minimal PATH
+KIT="${WS_KIT:-$HOME/code/claude-workstation}"
+C="$HOME/.config"
+WINDOW="$C/ws-guard/allow-config-writes"
+PROD="${WS_GUARD_PRODUCTION:-$C/ws-guard/production.conf}"
+BUDGETS="$C/ws-telemetry/budgets.conf"
+COPYDAYS="$C/ws-backup/copy-days"
+ROT="$C/ws-secret/rotation.conf"
+OVR="$C/ws-mcp/overrides.json"
+EGL="$C/ws-mcp/egress.local.json"
+FLOCAL="$C/ws-mcp/filter.local.json"
+MANAGED_ALLOW="${WS_MANAGED_DIR:-/etc/claude-code/managed-settings.d}/55-ws-mcp-allow.json"
+NAME_RE='^[a-z0-9][a-z0-9_.-]{0,31}$'
+
+msg() { if [[ -n "${TMUX:-}" ]]; then tmux display -d 4000 "$1" 2>/dev/null || true; fi; printf '%s\n' "$1"; }
+die() { printf '✖ %s\n' "$1" >&2; [[ -n "${TMUX:-}" ]] && tmux display -d 5000 "✖ $1" 2>/dev/null; exit "${2:-1}"; }
+audit() { "$HOME/.claude/hooks/audit.sh" settings "$1" <<<'{"cwd":"/"}' >/dev/null 2>&1 || true; }
+owner() { [[ -z "${CLAUDECODE:-}" ]] || die "ws-settings $1 is yours: run it from Menu → Settings or a terminal, not from inside Claude" 2; }
+ask() { local a; read -r -p "$1 [y/N] " a; [[ "$a" =~ ^[yY]([eE][sS])?$ ]]; }
+# atomic <file> — writes stdin to the file (0600, folder 0700) through a temp file.
+atomic() {
+  local d t; d="$(dirname -- "$1")"; mkdir -p "$d" && chmod 700 "$d" || return 1
+  t="$(mktemp "$d/.ws-settings.XXXXXX")" || return 1
+  cat > "$t" && chmod 600 "$t" && mv -f "$t" "$1"
+}
+json_set() {   # json_set <file> <jq filter with $n and $v> <name> <value>
+  local f="$1" cur='{}'
+  [[ -s "$f" ]] && cur="$(jq -c 'if type == "object" then . else {} end' "$f" 2>/dev/null || echo '{}')"
+  jq --arg n "$3" --arg v "$4" "$2" <<<"$cur" | atomic "$f"
+}
+# edit <file> <template> [validator] — opens your editor on a copy; installs it only if the validator accepts it.
+edit_file() {
+  local f="$1" tpl="$2" check="${3:-true}" t
+  t="$(mktemp)"; trap 'rm -f "$t"' RETURN
+  if [[ -s "$f" ]]; then cp -- "$f" "$t"; else printf '%s\n' "$tpl" > "$t"; fi
+  "${EDITOR:-nano}" "$t" || return 1
+  cmp -s "$t" "$f" 2>/dev/null && { echo "No change."; return 0; }
+  if ! $check "$t"; then echo "✖ Not saved: the file is not valid (see above)."; return 1; fi
+  atomic "$f" < "$t" && audit "edited ${f/#$HOME/\~}" && echo "✔ Saved ${f/#$HOME/\~}"
+}
+valid_json() { jq -e 'type == "object"' "$1" >/dev/null || { echo "not a JSON object"; return 1; }; }
+valid_prod() {   # lines «subscription <id or name>» or «context <kube context>», or comments
+  local bad; bad="$(grep -vnE '^[[:space:]]*(#.*)?$|^(subscription|context)[[:space:]]+[^[:space:]#]' "$1")"
+  [[ -z "$bad" ]] || { echo "lines that are not «subscription <id or name>» or «context <name>»: ${bad//$'\n'/; }"; return 1; }
+}
+valid_kv() {   # lines «key=value» or comments
+  local bad; bad="$(grep -vnE '^[[:space:]]*(#.*)?$|^[A-Za-z0-9_.*:/-]+[[:space:]]*=[[:space:]]*[^[:space:]]+' "$1")"
+  [[ -z "$bad" ]] || { echo "lines that are not key=value: ${bad//$'\n'/; }"; return 1; }
+}
+registered() { jq -c --arg n "$1" '.mcpServers[$n] // empty' "$HOME/.claude.json" 2>/dev/null; }
+
+#######################################
+# The current value of every setting, as «key<TAB>value» (menu-sync and show).
+#######################################
+values() {
+  local until now left n hard
+  printf 'level\t%s\n' "$(tmux-level default 2>/dev/null || echo normal)"
+  printf 'profile\t%s\n' "$(ws-profile status 2>/dev/null | sed -n 's/^New tabs: //p' | head -1)"
+  printf 'lang\t%s\n' "$(ws-lang --get 2>/dev/null || echo en)"
+  if [[ -n "$(registered chrome-devtools)" ]]; then printf 'chrome\ton\n'; else printf 'chrome\toff\n'; fi
+  printf 'keepalive\t%s\n' "$(jq -r '[.mcpServers // {} | to_entries[] | select((.value.command // "") | endswith("/ws-mcp-keepalive")) | .key] | join(" ") | if . == "" then "none" else . end' "$HOME/.claude.json" 2>/dev/null || echo none)"
+  printf 'egress\t%s\n' "$(egress_mode azure)"
+  n="$(ws-mcp-tools status 2>/dev/null | grep -c 'CHANGE PENDING')"; printf 'pending\t%s\n' "${n:-0}"
+  if [[ -s "$MANAGED_ALLOW" ]]; then printf 'allowlist\tinstalled\n'; else printf 'allowlist\tnot installed\n'; fi
+  if [[ -s "$C/ws-backup/age-recipients" || -s "$C/ws-backup/cloud-recipient" ]]; then printf 'backupkey\tset\n'; else printf 'backupkey\tnot set\n'; fi
+  n=""; { read -r n < "$COPYDAYS"; } 2>/dev/null; printf 'copydays\t%s\n' "${n:-30}"
+  n="$(grep -cvE '^[[:space:]]*(#|$)|^hard=' "$BUDGETS" 2>/dev/null)"; printf 'budgets\t%s\n' "${n:-0}"
+  hard=off; grep -qE '^hard=1' "$BUDGETS" 2>/dev/null && hard=on; printf 'hard\t%s\n' "$hard"
+  n="$(grep -cvE '^[[:space:]]*(#|$)' "$PROD" 2>/dev/null)"; printf 'production\t%s\n' "${n:-0}"
+  until=0; { read -r until < "$WINDOW"; } 2>/dev/null; printf -v now '%(%s)T' -1
+  if [[ "$until" =~ ^[0-9]+$ ]] && (( until > now )); then left="$(( (until - now + 59) / 60 )) min left"; else left=closed; fi
+  printf 'window\t%s\n' "$left"
+  printf 'notify\t%s\n' "$([[ "$(tmux show -gqv @cnotify 2>/dev/null)" == off ]] && echo off || echo on)"
+}
+# egress_mode NAME — the effective egress mode of a jailed server (the owner's file wins).
+egress_mode() {
+  local f=("$C/ws-mcp/egress.json"); [[ -s "$EGL" ]] && f+=("$EGL")
+  jq -rn --arg n "$1" '[inputs] | map(.[$n].mode // empty) | last // "off"' "${f[@]}" 2>/dev/null || echo off
+}
+
+cmd="${1:-show}"; shift || true
+case "$cmd" in
+  -h|--help|help) sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  show|get)
+    values | while IFS=$'\t' read -r k v; do printf '  %-11s %s\n' "$k" "$v"; done; exit 0 ;;
+  menu-sync)
+    command -v tmux >/dev/null && [[ -n "${TMUX:-}" ]] || exit 0
+    values | while IFS=$'\t' read -r k v; do tmux set -g "@ws_set_$k" "$v" 2>/dev/null; done
+    ws-lang --sync >/dev/null 2>&1; exit 0 ;;
+esac
+
+owner "$cmd"
+case "$cmd" in
+  level)
+    [[ "${1:-}" == full || "${1:-}" == normal ]] || die "usage: ws-settings level full|normal" 2
+    tmux-level default "$1" >/dev/null || die "tmux-level could not save it"
+    audit "new tabs at the $1 level"; msg "New tabs start at the $1 level (tabs already open keep theirs)" ;;
+  lang)
+    [[ "${1:-}" == en || "${1:-}" == es ]] || die "usage: ws-settings lang en|es" 2
+    ws-lang "$1" >/dev/null && audit "language $1" && msg "Language of prompts and reports: $1" ;;
+  chrome)
+    case "${1:-}" in
+      on) [[ -f "$KIT/install.sh" ]] || die "the kit checkout is not at $KIT (set WS_KIT)"
+          echo "chrome-devtools needs a Chrome reachable from WSL; it is registered jailed (ws-mcp-jail) and filtered."
+          ask "Register the chrome-devtools MCP server now (bash install.sh --mcp-opt-in chrome-devtools)?" || exit 1
+          bash "$KIT/install.sh" --mcp-opt-in chrome-devtools && audit "chrome-devtools on" ;;
+      off) claude mcp remove chrome-devtools --scope user </dev/null >/dev/null 2>&1 || true
+           audit "chrome-devtools off"; msg "chrome-devtools removed (Claude tabs drop it when they restart)" ;;
+      *) die "usage: ws-settings chrome on|off" 2 ;;
+    esac ;;
+  keepalive)
+    n="${1:-}" v="${2:-}"
+    [[ "$n" =~ $NAME_RE && ( "$v" == on || "$v" == off ) ]] || die "usage: ws-settings keepalive NAME on|off" 2
+    have="$(registered "$n")"; [[ -n "$have" ]] || die "$n is not registered"
+    [[ "$(jq -r '.type // "stdio"' <<<"$have")" == stdio ]] || die "$n is a remote server: Claude Code reconnects it itself"
+    if [[ "$v" == off ]]; then
+      want="$(jq -c 'if ((.command // "") | endswith("/ws-mcp-keepalive")) and ((.args // []) | index("--")) != null
+                     then (.args | index("--")) as $i | .command = .args[$i + 1] | .args = .args[($i + 2):] else . end' <<<"$have")"
+    else
+      want="$(jq -c --arg n "$n" --arg k "$HOME/.local/bin/ws-mcp-keepalive" 'if ((.command // "") | endswith("/ws-mcp-keepalive"))
+                     then . else .args = (["--name", $n, "--", .command] + (.args // [])) | .command = $k end' <<<"$have")"
+    fi
+    json_set "$OVR" '.[$n].keepalive = ($v == "on")' "$n" "$v" || die "could not save $OVR"
+    if [[ "$want" != "$have" ]]; then
+      claude mcp remove "$n" --scope user </dev/null >/dev/null 2>&1 || true
+      claude mcp add-json "$n" "$want" --scope user </dev/null >/dev/null || die "claude mcp add-json failed: run bash install.sh"
+    fi
+    audit "keepalive $n $v"
+    [[ -s "$MANAGED_ALLOW" ]] && echo "The managed MCP allow list matches each server by its exact command: reinstall it (ws-settings allowlist)."
+    msg "MCP $n: keepalive $v (applies when Claude restarts the server: /mcp → Reconnect)" ;;
+  egress)
+    n="${1:-}" v="${2:-}"
+    [[ "$n" =~ $NAME_RE && "$v" =~ ^(enforce|audit|off)$ ]] || die "usage: ws-settings egress NAME enforce|audit|off" 2
+    json_set "$EGL" '.[$n].mode = $v' "$n" "$v" || die "could not save $EGL"
+    audit "egress $n $v"; msg "MCP $n egress: $v (from its next start; what it reached: ws-egress-proxy report $n)" ;;
+  menu-keepalive)
+    items=()
+    while IFS=$'\t' read -r n on; do
+      [[ "$n" =~ $NAME_RE ]] || continue   # a name that could carry tmux syntax is never put in the menu
+      if [[ "$on" == true ]]; then
+        items+=("$n: restarted when it exits ✓ (turn off)" "" "confirm-before -p \"Stop restarting $n when it exits? (y/n)\" \"run-shell -b '$HOME/.local/bin/ws-settings keepalive $n off'\"")
+      else
+        items+=("$n: not restarted (turn on)" "" "run-shell -b '$HOME/.local/bin/ws-settings keepalive $n on'")
+      fi
+    done < <(jq -r '.mcpServers // {} | to_entries[] | select((.value.type // "stdio") == "stdio")
+                    | [.key, ((.value.command // "") | endswith("/ws-mcp-keepalive") | tostring)] | @tsv' "$HOME/.claude.json" 2>/dev/null)
+    (( ${#items[@]} )) || items=("No local MCP server registered" "" "")
+    tmux display-menu -O -T "#[align=centre] ↻  MCP keepalive " -x C -y C -- "${items[@]}" "" \
+      "‹ Back" BSpace "source-file ~/.config/tmux-claude/menu-settings.tmux" ;;
+  mcp-review)
+    ws-mcp-tools status; rc=$?
+    (( rc == 1 )) || { echo; echo "Nothing pending."; exit 0; }
+    for f in "${XDG_STATE_HOME:-$HOME/.local/state}"/ws-mcp/tools-pending/*.json; do
+      [[ -f "$f" ]] || continue; n="$(basename "$f" .json)"; echo; ws-mcp-tools approve "$n"
+    done ;;
+  allowlist)
+    [[ -f "$KIT/install.sh" ]] || die "the kit checkout is not at $KIT (set WS_KIT)"
+    echo "The managed MCP allow list blocks every MCP server that is not the kit's, the claude.ai connectors and plugin"
+    echo "servers included, unless they are listed in ~/.config/ws-mcp/allow-extra.json. It needs sudo:"
+    echo; echo "  sudo bash $KIT/install.sh --managed --mcp-allowlist"; echo
+    bash "$KIT/install.sh" --managed --mcp-allowlist --dry-run 2>&1 | tail -30
+    ask "Run it now?" || exit 1
+    sudo bash "$KIT/install.sh" --managed --mcp-allowlist && audit "managed MCP allow list installed" ;;
+  backup-key)
+    echo "Creates the backup key with age, keeps the private one in Windows Credential Manager and shows it ONCE."
+    ask "Set up the encrypted backups now (ws-backup-cloud setup)?" || exit 1
+    ws-backup-cloud setup && audit "backup key set up" ;;
+  copy-days)
+    [[ "${1:-}" =~ ^[0-9]{1,4}$ ]] || die "usage: ws-settings copy-days N (0: never expire)" 2
+    printf '%s\n' "$1" | atomic "$COPYDAYS" || die "could not save $COPYDAYS"
+    audit "backup copies expire after $1 days"; msg "Windows-side backup copies: expire after $1 days$([[ $1 == 0 ]] && echo ' (never)')" ;;
+  budgets)
+    edit_file "$BUDGETS" "# Monthly budgets in USD (API equivalent): project=usd_per_month, *=total. hard=1 holds work at 100 %.
+# Example:
+# *=200
+# my-repo=50" valid_kv ;;
+  hard)
+    case "${1:-}" in
+      on)  { grep -vE '^hard=' "$BUDGETS" 2>/dev/null; echo hard=1; } | atomic "$BUDGETS" ;;
+      off) { grep -vE '^hard=' "$BUDGETS" 2>/dev/null; } | atomic "$BUDGETS" ;;
+      *) die "usage: ws-settings hard on|off" 2 ;;
+    esac
+    audit "budget hard stop $1"; msg "Budget hard stop: $1" ;;
+  production)
+    edit_file "$PROD" "# Production targets the guard refuses to change from Claude (WS-SEC-006), one per line:
+# subscription <subscription id or name>
+# context <kube context>" valid_prod ;;
+  rotation)
+    edit_file "$ROT" "# Rotation periods: name=days (ws-audit warns when a ws/<name> secret is older)." valid_kv ;;
+  filter)
+    edit_file "$FLOCAL" '{
+  "_comment": "Your own MCP tool rules (ADR-027), applied after the kit'"'"'s ~/.config/ws-mcp/filter.json: same shape, can only narrow. Example: hide azure'"'"'s deploy tools in every tab.",
+  "servers": {
+    "azure": {"deny": ["deploy*"]}
+  }
+}' valid_json ;;
+  window)
+    case "${1:-}" in
+      open)
+        { date -d '+30 min' +%s | atomic "$WINDOW"; } || die "could not open the window"
+        audit "config-write window opened (30 min)"
+        msg "For 30 min Claude may edit CLAUDE.md, commands, agents and skills (each write audited)" ;;
+      close) rm -f "$WINDOW"; audit "config-write window closed"; msg "Config-write window closed" ;;
+      *) die "usage: ws-settings window open|close" 2 ;;
+    esac ;;
+  notify)
+    case "${1:-}" in
+      on|off) tmux set -g @cnotify "$1" 2>/dev/null || die "not inside tmux"; msg "Windows notifications $1" ;;
+      *) die "usage: ws-settings notify on|off" 2 ;;
+    esac ;;
+  *) die "unknown setting: $cmd (ws-settings help)" 2 ;;
+esac

@@ -10,8 +10,8 @@ display-menu -O -T "#[align=centre] 🗂  Tabs and session · #S › #W " -x C -
   "Summary: what, where and where it left off (double click)" i "display-popup -E -w 84% -h 70% -T ' Tab summary ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-summary\"" \
   "#{?@fav,Remove from favorites ☆,Add to favorites ★} (Ctrl+b *)" '*' "run-shell -b '~/.local/bin/tmux-favorites --toggle #{window_id}'" \
   "Tab label (Ctrl+b E)" E "run-shell -b '~/.local/bin/tmux-label --menu #{window_id}'" \
-  "Rename tab" r "command-prompt -I \"#W\" \"rename-window -- '%%'\"" \
-  "Close tab" x "confirm-before -p \"Close tab #W? (y/n)\" kill-window" \
+  "Rename tab" r "command-prompt -I \"##W\" \"rename-window -- '%%'\"" \
+  "Close tab" x "confirm-before -p \"Close tab ##W? (y/n)\" kill-window" \
   "-#[nodim]── Save and restore ──" "" "" \
   "Save session now" s "run-shell ~/.tmux/plugins/tmux-resurrect/scripts/save.sh" \
   "Restore tabs from a save…" R "display-popup -E -w 90% -h 70% -T ' Restore tabs ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-recover\"" \
