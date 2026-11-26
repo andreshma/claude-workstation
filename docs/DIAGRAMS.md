@@ -280,12 +280,15 @@ flowchart TB
 ### An MCP server starts in its jail
 
 What `ws-mcp-jail` puts in front of a local stdio MCP server
-([ADR 0024](adr/0024-mcp-server-confinement-and-allow-list.md)). Claude Code starts the registered command; for a
-server with a `jail` object in `files/mcp-servers.json` that command is the wrapper.
+([ADR 0024](adr/0024-mcp-server-confinement-and-allow-list.md)). Claude Code starts the registered command: for every
+local server that is `ws-mcp-keepalive` (next diagram), which starts `ws-mcp-jail` for a server with a `jail` object
+in `files/mcp-servers.json`, or the server itself for one with `"jail": false`.
 
 ```mermaid
 flowchart LR
-  cc["Claude Code<br/>(starts MCP servers outside its sandbox)"] --> jail{{"ws-mcp-jail --name N [--net] [--azure-config]"}}
+  cc["Claude Code<br/>(starts MCP servers outside its sandbox)"] --> ka["ws-mcp-keepalive --name N"]
+  ka --> jail{{"ws-mcp-jail --name N [--net] [--azure-config]"}}
+  ka -- "jail: false (Windows .exe)" --> win["The server itself,<br/>through WSL interop"]
   jail -- "Windows .exe (WSL interop)" --> refuse["Refused, exit 126:<br/>cannot be confined;<br/>register with jail: false + reason"]
   jail -- "bubblewrap cannot create namespaces" --> closed["Not started, exit 125<br/>(fail closed)"]
   jail -- "Linux server" --> bwrap["bwrap: new namespaces, no capabilities"]
@@ -293,6 +296,40 @@ flowchart LR
   bwrap --> rw["Read-write: ~/.local/state/ws-mcp/N<br/>(+ the tab's AZURE_CONFIG_DIR with --azure-config)"]
   bwrap --> none["Not in view: ~/.ssh and every credential store,<br/>~/.claude*, the audit log, other profiles,<br/>/mnt/c, /run (interop, agent sockets), tokens in env"]
   bwrap --> net["Network: only with --net"]
+```
+
+### A local MCP server exits and comes back
+
+What `ws-mcp-keepalive` does between Claude Code and a local server
+([ADR 0025](adr/0025-mcp-server-keepalive.md)). Claude Code reconnects remote servers by itself but leaves a stdio
+server that exits as failed until `/mcp` → Reconnect; the proxy keeps the stdio connection to Claude Code open and
+replaces the process behind it.
+
+```mermaid
+sequenceDiagram
+  participant CC as Claude Code
+  participant KA as ws-mcp-keepalive
+  participant S1 as server (1st process)
+  participant S2 as server (2nd process)
+  CC->>KA: initialize (id 1)
+  KA->>S1: initialize (id 1), recorded
+  S1-->>KA: result (capabilities)
+  KA-->>CC: result, listChanged marked
+  CC->>KA: notifications/initialized (recorded)
+  CC->>KA: tools/call (id 7)
+  KA->>S1: tools/call (id 7)
+  Note over S1: exits (crash, kill, interop drop)
+  KA-->>CC: error for id 7 (never left waiting)
+  Note over KA: log + audit mcp_restart,<br/>backoff 1 s, 2 s, 4 s … 30 s;<br/>executable unchanged?
+  KA->>S2: start; initialize (id ws-mcp-keepalive-2)
+  S2-->>KA: result (swallowed)
+  KA->>S2: notifications/initialized
+  KA-->>CC: notifications/tools/list_changed
+  CC->>KA: tools/list, tools/call (id 8)
+  KA->>S2: forwarded
+  Note over KA: 6 exits in 5 min: give up,<br/>errors for what waits, ws-notify, exit 1
+  CC->>KA: stdin closed (session ends)
+  KA->>S2: stdin closed; SIGTERM, then SIGKILL to the whole tree after 5 s
 ```
 
 ### Local data becomes the dashboard and the reports

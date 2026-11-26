@@ -337,7 +337,9 @@ against the AI and security frameworks is in [docs/compliance/assessment.md](doc
 - **MCP servers in a jail** ([ADR 0024](docs/adr/0024-mcp-server-confinement-and-allow-list.md)): the local Linux
   servers run in `ws-mcp-jail` (bubblewrap), seeing neither credentials, other profiles, Claude's conversations nor
   Windows; the two Windows servers cannot be confined and are reported; `install.sh --managed --mcp-allowlist`
-  blocks every server the kit does not list.
+  blocks every server the kit does not list. Every local server also runs behind `ws-mcp-keepalive`
+  ([ADR 0025](docs/adr/0025-mcp-server-keepalive.md)), which starts it again when it exits mid-session (Claude Code
+  only does that for remote servers) and records each restart.
 - **Containment and evidence.** `ws-stop-all` blocks every prompt and tool call in every Claude, closes them and turns
   Telegram off; `ws-anomaly` flags sessions with repeated blocks or denials; the audit log is a hash chain with
   anchors on the Windows side (`ws-audit --verify-log`), kept 395 days. Agent identities (`--agent`) give a tab its

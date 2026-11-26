@@ -19,7 +19,8 @@ if command -v ws-pinned >/dev/null; then
   # Installed tree against its committed lock and recorded hash; --online adds npm's registry signatures.
   ws-pinned verify --online \
     || echo "  ✖ A pinned package does not match its lock: reinstall from the kit (bash install.sh) and review why."
-  # Local executables (MemPalace, recall): same sha256 as when they were pinned on first registration.
+  # Local executables (MemPalace, recall): same sha256 as when they were pinned on first registration. The command
+  # checked is the server's own, behind the kit's wrappers (ws-mcp-keepalive, ws-mcp-jail; ADR-024, ADR-025).
   while IFS=$'\t' read -r name cmd; do
     [[ -n "$name" ]] || continue
     case "$cmd" in
@@ -37,8 +38,12 @@ if command -v ws-pinned >/dev/null; then
           *) echo "  ✖ $name changed since it was pinned ($cmd): review it, then bash install.sh --mcp-accept $name" ;;
         esac ;;
     esac
-  done < <(jq -r '.mcpServers // {} | to_entries[] | select(.value.command != null) | "\(.key)\t\(.value.command)"' \
-             "$HOME/.claude.json" 2>/dev/null)
+  done < <(jq -r 'def unwrap: if ((.command // "") | test("/ws-mcp-(keepalive|jail)$"))
+                      and (((.args // []) | index("--")) != null)
+                    then (.args | index("--")) as $i | .command = .args[$i + 1] | .args = .args[($i + 2):] | unwrap
+                    else . end;
+                  .mcpServers // {} | to_entries[] | select(.value.command != null)
+                  | "\(.key)\t\(.value | unwrap | .command)"' "$HOME/.claude.json" 2>/dev/null)
   ws-pinned outdated
 else
   echo "  ws-pinned is missing: reinstall the kit (bash install.sh)"

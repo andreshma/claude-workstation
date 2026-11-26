@@ -13,7 +13,7 @@ ${M}TMUX${R}  ${D}Ctrl+b and then the key · Alt+N without prefix${R}
   ${Y}'${R} go by number (e.g. 12)      ${Y},${R} rename           ${Y}&${R} close tab        ${D}mouse wheel on the status bar: switch${R}
   ${Y}z${R} zoom   ${Y}% "${R} split   ${Y}x${R} close pane   ${Y}[${R} scroll and copy (q quits)   ${Y}Tab${R} extrakto
   ${D}Status bar:${R} ${B}⚠ 2,5${R} waiting for your approval · ${B}⏳ 3(12m)${R} no activity · ${B}◉ \$4/h${R} usage (green/yellow/red)
-  In the menu (${Y}Ctrl+b m${R}): ${Y}g${R} go to the next one waiting for you · Views: ${Y}r${R} record, ${Y}V${R} recordings · Workstation: ${Y}I${R} tools, ${Y}Q${R} repo quality
+  In the menu (${Y}Ctrl+b m${R}): ${Y}g${R} go to the next one waiting for you · Views: ${Y}r${R} record, ${Y}V${R} recordings · Workstation: ${Y}I${R} tools, ${Y}Q${R} repo quality, ${Y}g${R} Telegram (mode, digest, quiet hours, PIN)
   ${Y}Ctrl+s${R} save   ${Y}Ctrl+r${R} restore   ${Y}r${R} reload config   ${Y}Ctrl+b${R} sends Ctrl+B to Claude
 
 ${M}CLAUDE CODE${R}

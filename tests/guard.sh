@@ -215,6 +215,12 @@ rm -rf ~/.tmux/plugins/tmux-resurrect
 echo x > ~/.local/lib/ws-mirror.sh
 echo 'exec "$@"' > ~/.local/bin/ws-mcp-jail
 sed -i 's/--unshare-all//' ~/.local/bin/ws-mcp-jail
+echo 'exec "$@"' > ~/.local/bin/ws-mcp-keepalive
+cp /tmp/x ~/.local/bin/ws-mcp-keepalive
+ln -sf ~/.bashrc ~/.local/state/ws-mcp/azure.log
+rm -f ~/.local/state/ws-mcp/recall.log
+: > ~/.local/state/ws-mcp/mempalace.log
+rm -rf ~/.local/state/ws-mcp
 cp /tmp/x ~/.local/bin/ws-gate
 echo '[{"serverUrl": "*"}]' > ~/.config/ws-mcp/allow-extra.json
 git config ws.gate.agentTrailer false
@@ -236,6 +242,10 @@ echo x > files/home/.claude/settings.json
 sed -i s/a/b/ files/home/.claude/hooks/guard.sh
 claude mcp list
 claude plugin list
+tail -n 50 ~/.local/state/ws-mcp/recall.log
+grep restart ~/.local/state/ws-mcp/azure.log
+ws-mcp-keepalive --help
+sed -i s/a/b/ files/home/.local/bin/ws-mcp-keepalive
 gh auth status
 kubectl config view --minify
 az vm delete -n x --subscription dev-01

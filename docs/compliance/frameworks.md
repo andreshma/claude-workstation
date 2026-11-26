@@ -192,7 +192,7 @@ checked against the catalogue when it was written (no reference outside this lis
 | `ASI05` | Unexpected Code Execution | WS-AI-004, WS-AI-017, WS-AI-027, WS-SEC-001, WS-SEC-005, WS-SEC-022, WS-SEC-027 |
 | `ASI06` | Memory and Context Poisoning | WS-AI-001, WS-AI-012, WS-AI-013, WS-AI-014, WS-AI-024 |
 | `ASI07` | Insecure Inter-Agent Communication | WS-AI-015, WS-AI-029 |
-| `ASI08` | Cascading Failures | WS-AI-015, WS-AI-019, WS-AI-025, WS-AI-028 |
+| `ASI08` | Cascading Failures | WS-AI-015, WS-AI-019, WS-AI-025, WS-AI-028, WS-GOV-015 |
 | `ASI09` | Human-Agent Trust Exploitation | WS-AI-005, WS-AI-006, WS-AI-007, WS-AI-018, WS-AI-029 |
 | `ASI10` | Rogue Agents | WS-AI-004, WS-AI-014, WS-AI-025, WS-AI-030, WS-GOV-003, WS-SEC-010, WS-SEC-011 |
 
@@ -617,9 +617,9 @@ checked against the catalogue when it was written (no reference outside this lis
 | ID | Item | Controls |
 |---|---|---|
 | `RE:04` | Define reliability and recovery targets | WS-GOV-013 |
-| `RE:07` | Strengthen the resiliency of your workload by implementing self-preservation and self-healing measures | WS-AI-028 |
+| `RE:07` | Strengthen the resiliency of your workload by implementing self-preservation and self-healing measures | WS-AI-028, WS-GOV-015 |
 | `RE:09` | Implement structured, tested, and documented disaster recovery (DR) plans | WS-GOV-003, WS-GOV-013, WS-SEC-014 |
-| `RE:10` | Continuously measure and track system health using uptime and reliability indicators | WS-SEC-026 |
+| `RE:10` | Continuously measure and track system health using uptime and reliability indicators | WS-GOV-015, WS-SEC-026 |
 
 ### `WAF-CO`
 
@@ -667,7 +667,7 @@ checked against the catalogue when it was written (no reference outside this lis
 
 | ID | Item | Controls |
 |---|---|---|
-| `Reliability and Safety` | Reliability and Safety | WS-AI-002, WS-AI-021, WS-AI-028, WS-GOV-004 |
+| `Reliability and Safety` | Reliability and Safety | WS-AI-002, WS-AI-021, WS-AI-028, WS-GOV-004, WS-GOV-015 |
 | `Privacy and Security` | Privacy and Security | WS-AI-022, WS-AI-023, WS-GOV-001 |
 | `Transparency` | Transparency | WS-GOV-006, WS-GOV-011, WS-GOV-012, WS-SEC-010 |
 | `Accountability` | Accountability | WS-AI-004, WS-AI-005, WS-AI-020, WS-AI-025, WS-GOV-001 |
@@ -703,7 +703,7 @@ checked against the catalogue when it was written (no reference outside this lis
 | `Interaction capability` | Interaction capability | WS-AI-005, WS-GOV-012 |
 | `Maintainability` | Maintainability | WS-GOV-009, WS-SEC-017 |
 | `Performance efficiency` | Performance efficiency | WS-GOV-014 |
-| `Reliability` | Reliability | WS-AI-028, WS-GOV-013, WS-SEC-014 |
+| `Reliability` | Reliability | WS-AI-028, WS-GOV-013, WS-GOV-015, WS-SEC-014 |
 | `Safety` | Safety | WS-AI-002, WS-AI-028 |
 | `Security` | Security | WS-SEC-001, WS-SEC-002, WS-SEC-011 |
 

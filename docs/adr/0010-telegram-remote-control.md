@@ -20,6 +20,8 @@ secrets leaving the machine.
   alerts with a daily summary (1.21.0).
 - [ADR 0013](0013-minimum-protection-floor.md) tightens the channel: commands are not offered or run in tabs without a
   sandbox, a second block list applies, and running a command asks for the PIN.
+- [ADR 0026](0026-telegram-notification-policy-and-pin-input.md) adds the notification policy (only what needs you at
+  once, a digest per period, quiet hours) and makes a bare PIN work for the pending request.
 
 ## Decision drivers
 

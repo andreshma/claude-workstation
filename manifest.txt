@@ -36,6 +36,7 @@
 .local/bin/ws-tomd
 .config/tmux-claude/menu-claude.tmux
 .config/tmux-claude/menu-workstation.tmux
+.config/tmux-claude/menu-telegram.tmux
 .config/tmux-claude/menu-session.tmux
 .config/tmux-claude/menu-panes.tmux
 .config/tmux-claude/wsl-bridge.sh
@@ -146,6 +147,7 @@
 .local/bin/ws-memory
 .local/bin/ws-pinned
 .local/bin/ws-mcp-jail
+.local/bin/ws-mcp-keepalive
 .local/bin/agent-browser
 .local/lib/ws-npm/azure-mcp/
 .local/lib/ws-npm/chrome-devtools-mcp/

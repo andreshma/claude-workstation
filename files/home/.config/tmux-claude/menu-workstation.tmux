@@ -18,8 +18,7 @@ display-menu -O -T "#[align=centre] ⚙  Workstation " -x C -y C -- \
   "Installed tools" I "display-popup -E -w 92% -h 85% -T ' Tools ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-pause 'ws-tools'\"" \
   "-#[nodim]── Notifications ──" "" "" \
   "Windows notifications: #{?#{==:#{@cnotify},off},off,on}" n "if -F '#{==:#{@cnotify},off}' 'set -g @cnotify on ; display \"Windows notifications on\"' 'set -g @cnotify off ; display \"Windows notifications off\"'" \
-  "Telegram: turn notifications on or off" g "run-shell -b '~/.local/bin/ws-telegram toggle'" \
-  "Telegram: text replies on/off (PIN)" G "run-shell -b '~/.local/bin/ws-telegram text toggle'" \
+  "Telegram: on/off, what is sent, digest, quiet hours, PIN ›" g "source-file ~/.config/tmux-claude/menu-telegram.tmux" \
   "-#[nodim]── Language ──" "" "" \
   "Language of prompts and reports: #{?#{==:#{@ws_lang},es},Spanish,English} (switch)" l "run-shell -b '~/.local/bin/ws-lang --toggle'" \
   '' \

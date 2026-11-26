@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# ws-health — resilience checks for the workstation: disk space, distro snapshot,
-# tmux save up to date and kit in sync. Exit 1 if anything fails.
+# ws-health — resilience checks for the workstation: disk space, distro snapshot, tmux save up to date, local MCP
+# servers kept alive (none given up in the last 24 h) and kit in sync. Exit 1 if anything fails.
+# Usage: ws-health
 set -uo pipefail
 W=@WINHOME@
 fail=0
@@ -39,6 +40,26 @@ if (( open > 0 )); then
 fi
 
 k="$HOME/code/claude-workstation"
+# MCP servers (ADR-025): Claude Code does not restart a local server that exits, ws-mcp-keepalive does; one registered
+# without it stays down, and a keepalive that gave up in the last 24 h means a server is down until /mcp → Reconnect.
+if [[ -s "$HOME/.claude.json" ]] && command -v jq >/dev/null; then
+  kitdef="$(jq -c . "$k/files/mcp-servers.json" 2>/dev/null)"
+  bare="$(jq -r --argjson k "${kitdef:-"{}"}" '.mcpServers // {} | to_entries[]
+           | select((.value.type // "stdio") == "stdio" and ((.value.command // "") | endswith("/ws-mcp-keepalive") | not)
+                    and ($k[.key].keepalive != false)) | .key' "$HOME/.claude.json" 2>/dev/null | paste -sd' ')"
+  if [[ -z "$bare" ]]; then ok "local MCP servers restart when they exit"
+  else bad "local MCP servers restart when they exit" "not through ws-mcp-keepalive: $bare (bash install.sh)"; fi
+  st="${XDG_STATE_HOME:-$HOME/.local/state}/ws-mcp" cut="$(date -d '24 hours ago' +%Y-%m-%dT%H:%M:%S%z)"
+  down=""
+  for f in "$st"/*.log; do
+    [[ -f "$f" && ! -L "$f" && "${f##*/}" != jail.log ]] || continue
+    awk -v c="$cut" '$1 >= c && ($2 == "giveup" || $2 == "refused") { found = 1 } END { exit !found }' "$f" \
+      && down+="${down:+ }$(basename "$f" .log)"
+  done
+  if [[ -z "$down" ]]; then ok "no MCP server given up (24 h)"
+  else bad "no MCP server given up (24 h)" "$down: see ~/.local/state/ws-mcp/<name>.log, then /mcp → Reconnect"; fi
+fi
+
 if [[ -d "$k/.git" && -z "$(git -C "$k" status --porcelain 2>/dev/null)" && -z "$(git -C "$k" log --oneline '@{u}..' 2>/dev/null)" ]]; then
   ok "kit has no pending changes"
 else bad "kit has no pending changes" "export.sh, commit and push"; fi

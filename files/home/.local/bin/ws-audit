@@ -359,7 +359,7 @@ def mcp_confinement(kitdef: dict) -> None:
     for n, s in servers.items():
         if not isinstance(s, dict) or (s.get("type") or "stdio") != "stdio":
             continue
-        cmd = str(s.get("command") or "")
+        cmd = unwrap_keepalive(s)[0]
         if cmd.endswith("/ws-mcp-jail"):
             jailed.append(n)
         elif isinstance(kitdef.get(n), dict) and kitdef[n].get("jail") is False and kitdef[n].get("jailOptOut"):
@@ -377,6 +377,82 @@ def mcp_confinement(kitdef: dict) -> None:
         res("ok" if rc == 0 else "fail", "bubblewrap can confine the jailed MCP servers", "" if rc == 0 else
             "ws-mcp-jail --probe failed: the jailed servers do not start (fail closed)",
             "sudo apt-get install bubblewrap; on Ubuntu 24.04 check the AppArmor userns restriction.")
+    mcp_keepalive(kitdef, servers)
+
+
+def unwrap_keepalive(s: dict) -> tuple[str, list[str]]:
+    """A registration's command and arguments without ws-mcp-keepalive (ADR-025): ws-mcp-jail, or the server itself."""
+    cmd, args = str(s.get("command") or ""), [str(a) for a in s.get("args") or []]
+    if cmd.endswith("/ws-mcp-keepalive") and "--" in args:
+        i = args.index("--")
+        cmd, args = (args[i + 1] if i + 1 < len(args) else ""), args[i + 2:]
+    return cmd, args
+
+
+KEEPALIVE_RE = re.compile(r"^(\S+) (restart|giveup|refused) (.*)$")
+
+
+def keepalive_events(hours: float = 24) -> dict[str, dict]:
+    """Restarts and give-ups per server in the last hours, from ~/.local/state/ws-mcp/<name>.log (and its rotated
+    copy). Returns {name: {"restart": n, "giveup": n, "last": "<last line's detail>"}}."""
+    d = Path(os.environ.get("XDG_STATE_HOME") or H / ".local/state") / "ws-mcp"
+    since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours)
+    out: dict[str, dict] = {}
+    for f in sorted(d.glob("*.log*")) if d.is_dir() else []:
+        name = f.name.split(".log")[0]
+        if f.name == "jail.log" or not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,31}\.log(\.1)?", f.name):
+            continue
+        try:
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            m = KEEPALIVE_RE.match(line)
+            if not m:
+                continue
+            try:
+                ts = dt.datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S%z")
+            except ValueError:
+                continue
+            if ts < since:
+                continue
+            e = out.setdefault(name, {"restart": 0, "giveup": 0, "last": ""})
+            e["giveup" if m.group(2) in ("giveup", "refused") else "restart"] += 1
+            e["last"] = m.group(3)[:100]
+    return out
+
+
+def mcp_keepalive(kitdef: dict, servers: dict) -> None:
+    """Every registered local (stdio) MCP server runs through ws-mcp-keepalive, unless files/mcp-servers.json says
+    "keepalive": false (ADR-025, WS-GOV-015): Claude Code does not restart a stdio server that exits. Restarts and
+    give-ups of the last 24 h come from the keepalive logs."""
+    kept, opted, bare = [], [], []
+    for n, s in servers.items():
+        if not isinstance(s, dict) or (s.get("type") or "stdio") != "stdio":
+            continue
+        if str(s.get("command") or "").endswith("/ws-mcp-keepalive"):
+            kept.append(n)
+        elif isinstance(kitdef.get(n), dict) and kitdef[n].get("keepalive") is False:
+            opted.append(n)
+        else:
+            bare.append(n)
+    if kept or opted or bare:
+        res("ok" if not bare else "warn", f"local MCP servers restarted when they exit (ws-mcp-keepalive): {len(kept)}, "
+            f"not: {len(bare) + len(opted)}", "; ".join(bare[:4] + [f"{n} (keepalive: false)" for n in opted[:4]])[:160],
+            ("Registered without ws-mcp-keepalive: if they exit, they stay down until /mcp → Reconnect. "
+             "bash install.sh (or --mcp-refresh) registers them through it." if bare else ""))
+    ev = keepalive_events()
+    if not ev:
+        res("ok", "MCP server restarts in the last 24 h: 0")
+        return
+    gave = {n: e for n, e in ev.items() if e["giveup"]}
+    res("warn", f"MCP server restarts in the last 24 h: {sum(e['restart'] for e in ev.values())}"
+        + (f", gave up: {', '.join(sorted(gave))}" if gave else ""),
+        "; ".join(f"{n} {e['restart']}×" + (" gave up" if e["giveup"] else "") + f" (last: {e['last']})"
+                  for n, e in sorted(ev.items()))[:200],
+        "Read ~/.local/state/ws-mcp/<name>.log (the server's stderr and each exit). "
+        + ("A server that gave up stays down: fix it, then /mcp → Reconnect." if gave else
+           "They came back by themselves; a server that keeps exiting needs a look."))
 
 
 def mcp_allowlist(d: Path = MANAGED) -> None:

@@ -112,14 +112,14 @@ user's network and files ([THREAT_MODEL.md, Sandbox](../THREAT_MODEL.md#sandbox)
 by `untrusted-content.sh` (WS-AI-001).
 
 <!-- ai-bom:begin mcp -->
-| Server | Transport | Command or URL | Pin | Opt-in | Confinement | Always-ask rules |
-|---|---|---|---|---|---|---|
-| `mempalace` | stdio | `@WINHOME@/.local/bin/mempalace-mcp.exe` | sha256 pinned on first registration (`~/.local/share/ws-kit/mcp-trust.tsv`) | No | not confined (Windows executable reached through WSL interop) | 15 |
-| `recall` | stdio | `@WINHOME@/source/repos/recall/.venv/Scripts/python.exe -I -m recall mcp` | sha256 pinned on first registration (`~/.local/share/ws-kit/mcp-trust.tsv`) | No | not confined (Windows Python (.venv/Scripts/python.exe) reached through WSL interop) | 0 |
-| `microsoft-learn` | http | `https://learn.microsoft.com/api/mcp` | URL only (server side) | No | remote (runs at the provider) | 0 |
-| `azure` | stdio | `@HOME@/.local/share/ws-kit/npm/azure-mcp/node_modules/.bin/azmcp server start` | `@azure/mcp@4.0.0-beta.9`, npm sha512 in the lock (prerelease) | No | ws-mcp-jail, network, own Azure config | 31 |
-| `ms-release-comms` | http | `https://www.microsoft.com/releasecommunications/mcp` | URL only (server side) | No | remote (runs at the provider) | 0 |
-| `chrome-devtools` | stdio | `@HOME@/.local/share/ws-kit/npm/chrome-devtools-mcp/node_modules/.bin/chrome-devtools-mcp --isolated --no-usage-statistics --no-performance-crux --redact-network-headers` | `chrome-devtools-mcp@1.14.0`, npm sha512 in the lock | Yes | ws-mcp-jail, network | 0 |
+| Server | Transport | Command or URL | Pin | Opt-in | Confinement | Restart after an exit | Always-ask rules |
+|---|---|---|---|---|---|---|---|
+| `mempalace` | stdio | `@WINHOME@/.local/bin/mempalace-mcp.exe` | sha256 pinned on first registration (`~/.local/share/ws-kit/mcp-trust.tsv`) | No | not confined (Windows executable reached through WSL interop) | ws-mcp-keepalive | 15 |
+| `recall` | stdio | `@WINHOME@/source/repos/recall/.venv/Scripts/python.exe -I -m recall mcp` | sha256 pinned on first registration (`~/.local/share/ws-kit/mcp-trust.tsv`) | No | not confined (Windows Python (.venv/Scripts/python.exe) reached through WSL interop) | ws-mcp-keepalive | 0 |
+| `microsoft-learn` | http | `https://learn.microsoft.com/api/mcp` | URL only (server side) | No | remote (runs at the provider) | Claude Code reconnects it | 0 |
+| `azure` | stdio | `@HOME@/.local/share/ws-kit/npm/azure-mcp/node_modules/.bin/azmcp server start` | `@azure/mcp@4.0.0-beta.9`, npm sha512 in the lock (prerelease) | No | ws-mcp-jail, network, own Azure config | ws-mcp-keepalive | 31 |
+| `ms-release-comms` | http | `https://www.microsoft.com/releasecommunications/mcp` | URL only (server side) | No | remote (runs at the provider) | Claude Code reconnects it | 0 |
+| `chrome-devtools` | stdio | `@HOME@/.local/share/ws-kit/npm/chrome-devtools-mcp/node_modules/.bin/chrome-devtools-mcp --isolated --no-usage-statistics --no-performance-crux --redact-network-headers` | `chrome-devtools-mcp@1.14.0`, npm sha512 in the lock | Yes | ws-mcp-jail, network | ws-mcp-keepalive | 0 |
 <!-- ai-bom:end mcp -->
 
 | Server | Upstream | Hosts it needs | Credentials reachable | Data | Risk |
@@ -132,7 +132,10 @@ by `untrusted-content.sh` (WS-AI-001).
 | `chrome-devtools` | Google (Chrome DevTools team) | The pages the agent opens, in a Chrome reachable from WSL | None with `--isolated` (its own temporary profile); a Windows Chrome attached through a debugging port exposes whatever that profile holds | Page content, network and console of the pages it drives, as untrusted text; usage statistics and update checks off | Medium (WS-AI-011) |
 
 `ws-update` and `ws-pinned verify --online` report a newer pinned package or a changed local executable but never
-apply it. Microsoft 365 tools come from a connector of the Claude account, not from this file; the kit only adds
+apply it. Every local server runs through `ws-mcp-keepalive` (ADR 0025): it restarts the server when it exits
+mid-session, but only while its executable is the one the session started (or `ws-pinned local-check` vouches for the
+new one), so a restart never runs code the lock has not seen; the command and arguments the kit's checks pin are the
+server's own, after the wrapper's `--`. Microsoft 365 tools come from a connector of the Claude account, not from this file; the kit only adds
 always-ask rules for them (see [External services](#external-services)).
 
 Maps to: WS-GOV-002, WS-AI-009, WS-AI-011 (OWASP-ASI:ASI04, OWASP-MCP3P:governance-workflows,

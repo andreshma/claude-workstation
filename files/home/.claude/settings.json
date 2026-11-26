@@ -320,7 +320,14 @@
       "Bash(*.exe*)",
       "Bash(ws-kit-update*--allow-unsigned*)",
       "Bash(ws-telegram approve*)",
-      "Bash(ws-telegram run no-pin*)"
+      "Bash(ws-telegram run no-pin*)",
+      "Bash(ws-telegram notify approvals*)",
+      "Bash(ws-telegram notify digest*)",
+      "Bash(ws-telegram notify off*)",
+      "Bash(ws-telegram quiet*)",
+      "Bash(ws-telegram digest off*)",
+      "Bash(ws-telegram off*)",
+      "Bash(ws-telegram text off*)"
     ],
     "disableBypassPermissionsMode": "disable"
   },

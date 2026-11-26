@@ -31,6 +31,8 @@ comments and the changelog refer to a record as `ADR-0NN` (for example `ADR-013`
 | [0022](0022-solo-mode-without-excluded-commands.md) | Solo mode keeps every command in the sandbox; network tools are an audited, time-boxed opt-in that asks | Accepted |
 | [0023](0023-git-gate-agent-trailer-and-throwaway-repositories.md) | Git gate: an Agent-Session trailer on agent commits, and throwaway repositories | Accepted |
 | [0024](0024-mcp-server-confinement-and-allow-list.md) | Local MCP servers in bubblewrap (ws-mcp-jail) and a managed MCP allow list | Accepted |
+| [0025](0025-mcp-server-keepalive.md) | Local MCP servers restarted by a stdio keepalive proxy (ws-mcp-keepalive) | Accepted |
+| [0026](0026-telegram-notification-policy-and-pin-input.md) | Telegram notification policy (approvals, digest, quiet hours) and PIN input that just works | Accepted |
 
 Records 0001 to 0007 are not in this repository. Its history mentions 0001 to 0006 only as part of a design
 document that was never part of it, and nothing mentions 0007; the code, the changelog and the other documents do not

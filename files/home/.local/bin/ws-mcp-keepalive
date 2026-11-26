@@ -1,0 +1,669 @@
+#!/usr/bin/env python3
+"""ws-mcp-keepalive — restarts a local stdio MCP server that exits mid-session (ADR-025, WS-GOV-015).
+
+Claude Code reconnects remote (HTTP/SSE) servers by itself, but an interactive session marks a stdio server whose
+process exits as failed and leaves it down until /mcp → Reconnect (code.claude.com/docs/en/mcp, «Stdio servers that
+exit or fail to start»). This wrapper is registered as the server's command and sits between Claude Code and the real
+server as a transparent stdio proxy (MCP stdio framing: one JSON-RPC message per line, forwarded byte for byte):
+
+  · it records the client's `initialize` request and its `notifications/initialized`
+  · when the server exits while the client is still connected, every request that was in flight is answered with a
+    JSON-RPC error (the client never waits for an answer that cannot come) and the server is started again after an
+    exponential backoff (1 s, 2 s, 4 s … capped at 30 s; reset after 60 s of uptime). The recorded `initialize` is
+    replayed under the proxy's own id (its answer is swallowed), then `notifications/initialized`, then
+    `notifications/tools/list_changed` (and prompts/resources when the server offers them) so the client refreshes;
+    what the client sent meanwhile is held and delivered once the new server is ready
+  · more than N restarts within the window (5 in 300 s) is a crash loop: it gives up, answers what is pending with
+    an error, notifies (ws-notify) and exits 1, so Claude Code shows the server as failed instead of a silent loop
+  · the server's executable must still be the one this session started (device, inode, size, mtime): if it changed,
+    it is restarted only when `ws-pinned local-check` vouches for it; otherwise it gives up (the wrapper never hides
+    what runs: the lock in files/mcp-servers.lock.json is checked by install.sh on the real command, not on this one)
+  · in the first `initialize` answer it marks the server's tools/prompts/resources capabilities as `listChanged`, so
+    that Claude Code honours the refresh it sends after a restart; nothing else in the traffic is changed
+  · the server's stderr goes, redacted (the shapes ws-redact masks) and size-capped (1 MiB plus one rotated file),
+    to ~/.local/state/ws-mcp/<name>.log and to its own stderr (Claude Code's MCP log); every start, restart and
+    give-up is a line in that log and every restart an `mcp_restart` event in the audit hash chain (audit.sh,
+    metadata only: name, exit status, uptime, delay)
+  · when the client closes stdin (or sends SIGINT/SIGTERM/SIGHUP), it closes the server's stdin (the MCP shutdown),
+    waits up to 5 s, then ends the whole process tree (the server's process group and every descendant, orphans
+    included: the wrapper is a child subreaper) and exits 0
+It runs the command as given (no shell) with the environment it was given, adding nothing. Linux servers usually come
+wrapped in ws-mcp-jail (keepalive outside, jail inside); a Windows executable reached through WSL interop is run
+directly: its Linux side is ended like any child, the Windows side exits when its stdin closes.
+
+Usage:
+  ws-mcp-keepalive --name NAME [--max-restarts N] [--window SECONDS] [--backoff-max SECONDS]
+                   [--notify giveup|all|none] -- COMMAND [ARG]...
+Exit: 0 client closed the connection · 1 gave up (crash loop, or the executable changed) · 2 usage ·
+      126 the command cannot be executed · 127 the command does not exist
+Variables (tests): WS_MCP_KEEPALIVE_BACKOFF_MIN (seconds, default 1), WS_MCP_KEEPALIVE_INIT_TIMEOUT (30),
+WS_MCP_KEEPALIVE_GRACE (5).
+"""
+from __future__ import annotations
+
+import collections
+import ctypes
+import json
+import os
+import queue
+import re
+import shutil
+import signal
+import subprocess  # nosec B404 — the server command as registered (no shell), audit.sh, ws-pinned, ws-notify
+import sys
+import threading
+import time
+from pathlib import Path
+
+H = Path.home()
+STATE = Path(os.environ.get("XDG_STATE_HOME") or H / ".local/state") / "ws-mcp"
+LOG_MAX = 1024 * 1024
+LINE_MAX = 4000
+WRAPPERS = ("ws-mcp-keepalive", "ws-mcp-jail")
+RESET_AFTER = 60.0          # seconds of uptime after which the backoff starts again at its minimum
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,31}$")
+# The shapes ws-redact masks, for the server's stderr (built in pieces so the kit's secret scanners do not mistake
+# this file for a leak). One pass per line; a key=value keeps its key.
+SECRETS = re.compile("|".join([
+    r"\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}", r"\bxox[abprs]-[A-Za-z0-9-]{10,}",
+    r"\bsk-[A-Za-z0-9_-]{20,}", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
+    r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}",
+    r"\b[A-Za-z0-9_.-]{3}[0-9]Q~[A-Za-z0-9_~.-]{30,}", r"(?i:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}",
+    r"[?&](?i:sig)=[^&\s\"]+", r"(?<=://)[^/:@\s]+:[^@\s/]+@",
+    r"-----BEGIN [A-Z ]*" + "PRIV" + r"ATE KEY-----.*",
+    r"((?i:password|passwd|pwd|secret|client_secret|token|api[_-]?key|access[_-]?key|accountkey|sharedaccesskey"
+    r"|connectionstring)[\"']?\s*[:=]\s*[\"']?)[^\"'\s;,&]+"]))
+
+
+def redact(text: str) -> str:
+    """Masks the recognisable secrets of one line (same shapes as ws-redact)."""
+    return SECRETS.sub(lambda m: (m.group(1) + "***") if m.group(1) else "***", text)
+
+
+def now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def idkey(v) -> str:
+    """A JSON-RPC id as a dict key (ids are strings or numbers; 1 and "1" stay different)."""
+    return json.dumps(v, sort_keys=True)
+
+
+def real_command(argv: list[str]) -> list[str]:
+    """The server's own command behind the kit's wrappers (ws-mcp-keepalive, ws-mcp-jail): what the lock vouches for."""
+    a = list(argv)
+    while a and os.path.basename(a[0]) in WRAPPERS and "--" in a[1:]:
+        a = a[a.index("--", 1) + 1:]
+    return a
+
+
+def signature(path: str) -> tuple | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+
+
+def descendants(root: int) -> list[int]:
+    """Every live process below root (from /proc), deepest last, root excluded."""
+    kids: dict[int, list[int]] = collections.defaultdict(list)
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            with open(f"/proc/{d}/stat", "rb") as f:
+                st = f.read().decode("ascii", "replace")
+            ppid = int(st[st.rindex(")") + 2:].split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        kids[ppid].append(int(d))
+    out, todo = [], [root]
+    while todo:
+        p = todo.pop()
+        for c in kids.get(p, []):
+            out.append(c)
+            todo.append(c)
+    return out
+
+
+def become_subreaper() -> None:
+    """Orphaned grandchildren of the server are re-parented to this process, so that they are found and ended."""
+    try:
+        ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0)   # PR_SET_CHILD_SUBREAPER
+    except (OSError, AttributeError):
+        pass
+
+
+class Log:
+    """~/.local/state/ws-mcp/<name>.log: 0600 in a 0700 folder, never through a link, 1 MiB plus one rotated copy."""
+
+    def __init__(self, name: str):
+        self.path = STATE / f"{name}.log"
+        self.lock = threading.Lock()
+        self.fd = -1
+        try:
+            STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(STATE, 0o700)
+            self._open()
+        except OSError as e:
+            self.fd = -1
+            self.err(f"ws-mcp-keepalive: log {self.path} unavailable ({e.strerror}); stderr only")
+
+    def _open(self) -> None:
+        self.fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        st = os.fstat(self.fd)
+        if not (st.st_mode & 0o170000 == 0o100000 and st.st_uid == os.getuid()):
+            os.close(self.fd)
+            self.fd = -1
+            raise OSError(1, "not a regular file of this user")
+        os.fchmod(self.fd, 0o600)
+
+    def err(self, line: str) -> None:
+        try:
+            sys.stderr.write(line + "\n")
+            sys.stderr.flush()
+        except (OSError, ValueError):
+            pass
+
+    def write(self, kind: str, text: str, echo: bool = True) -> None:
+        text = redact(text.replace("\r", "").rstrip("\n"))[:LINE_MAX]
+        with self.lock:
+            if echo:
+                self.err(text if kind == "stderr" else f"ws-mcp-keepalive: {kind} {text}")
+            if self.fd < 0:
+                return
+            try:
+                if os.fstat(self.fd).st_size > LOG_MAX:
+                    os.close(self.fd)
+                    os.replace(self.path, self.path.with_name(self.path.name + ".1"))
+                    self._open()
+                os.write(self.fd, f"{now_iso()} {kind} {text}\n".encode("utf-8", "replace"))
+            except OSError:
+                pass
+
+
+class Child:
+    """One generation of the server: the process and its reader threads."""
+
+    def __init__(self, gen: int, argv: list[str], events: queue.Queue, log: Log):
+        self.gen = gen
+        self.started = time.monotonic()
+        self.proc = subprocess.Popen(  # nosec B603 — the registered command, no shell
+            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+            close_fds=True, start_new_session=True)
+        self.out = threading.Thread(target=self._stdout, args=(events,), daemon=True)
+        self.errt = threading.Thread(target=self._stderr, args=(log,), daemon=True)
+        self.waiter = threading.Thread(target=self._wait, args=(events,), daemon=True)
+        for t in (self.out, self.errt, self.waiter):
+            t.start()
+
+    def _stdout(self, events: queue.Queue) -> None:
+        for line in iter(self.proc.stdout.readline, b""):
+            events.put(("child", self.gen, line))
+
+    def _stderr(self, log: Log) -> None:
+        for line in iter(self.proc.stderr.readline, b""):
+            log.write("stderr", line.decode("utf-8", "replace"))
+
+    def _wait(self, events: queue.Queue) -> None:
+        rc = self.proc.wait()
+        kill_tree(self.proc.pid, grace=0.5)   # leftovers of the server (they would keep its pipes and locks)
+        self.out.join(timeout=2)
+        events.put(("exit", self.gen, rc))
+
+    def send(self, data: bytes) -> bool:
+        try:
+            self.proc.stdin.write(data)
+            self.proc.stdin.flush()
+            return True
+        except (OSError, ValueError):
+            return False
+
+    def close_stdin(self) -> None:
+        try:
+            self.proc.stdin.close()
+        except OSError:
+            pass
+
+
+def kill_tree(pid: int, grace: float = 2.0, sig: int = signal.SIGTERM) -> None:
+    """Ends pid's process group and every descendant of this wrapper (the server's tree; orphans come back to us as
+    the subreaper): sig first, SIGKILL after grace seconds, and reaps what it can."""
+    def targets() -> list[int]:
+        return descendants(os.getpid())
+    for s in (sig, signal.SIGKILL):
+        try:
+            os.killpg(pid, s)
+        except OSError:
+            pass
+        for p in targets():
+            try:
+                os.kill(p, s)
+            except OSError:
+                pass
+        end = time.monotonic() + (grace if s != signal.SIGKILL else 1.0)
+        while time.monotonic() < end:
+            left = [p for p in targets() if not reap(p)]
+            if not left:
+                return
+            time.sleep(0.05)
+
+
+def reap(pid: int) -> bool:
+    """True when pid is gone: reaped now if it was our child, a zombie of someone else, or no longer in /proc."""
+    try:
+        if os.waitpid(pid, os.WNOHANG)[0]:
+            return True
+    except ChildProcessError:
+        pass
+    except OSError:
+        return True
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            st = f.read()
+    except OSError:
+        return True
+    return st[st.rindex(b")") + 2:][:1] in (b"Z", b"X")
+
+
+class Keepalive:
+    def __init__(self, name: str, argv: list[str], max_restarts: int, window: float, backoff_max: float,
+                 notify: str):
+        self.name, self.argv, self.notify = name, argv, notify
+        self.max_restarts, self.window, self.backoff_max = max_restarts, window, backoff_max
+        self.backoff_min = float(os.environ.get("WS_MCP_KEEPALIVE_BACKOFF_MIN") or 1)
+        self.init_timeout = float(os.environ.get("WS_MCP_KEEPALIVE_INIT_TIMEOUT") or 30)
+        self.grace = float(os.environ.get("WS_MCP_KEEPALIVE_GRACE") or 5)
+        self.log = Log(name)
+        self.events: queue.Queue = queue.Queue()
+        self.child: Child | None = None
+        self.gen = 0
+        self.ready = True                 # False while (re)starting: client lines wait in backlog
+        self.backlog: list[bytes] = []
+        self.pending: dict[str, tuple] = {}   # client request id → (method, raw id)
+        self.srv_pending: dict[str, int] = {}  # server → client request id → generation
+        self.init_req: dict | None = None
+        self.init_line: bytes = b""
+        self.init_answered = False
+        self.initialized: bytes = b""
+        self.caps: dict = {}
+        self.replay_id: str | None = None
+        self.init_deadline = 0.0
+        self.restart_at = 0.0
+        self.restarts: collections.deque = collections.deque()
+        self.failures = 0
+        self.total = 0
+        self.sig = 0
+        self.signals = 0
+        real = real_command(argv)
+        self.real = os.path.realpath(shutil.which(real[0]) or real[0]) if real else ""
+        self.sig0 = signature(self.real) if self.real else None
+
+    # ---------------------------------------------------------------- output to the client
+    def to_client(self, data: bytes) -> None:
+        try:
+            sys.stdout.buffer.write(data if data.endswith(b"\n") else data + b"\n")
+            sys.stdout.buffer.flush()
+        except (OSError, ValueError):
+            self.sig = self.sig or -1   # the client is gone: shut down
+
+    def to_client_msg(self, msg: dict) -> None:
+        self.to_client(json.dumps(msg, separators=(",", ":"), ensure_ascii=False).encode() + b"\n")
+
+    def error_to_client(self, raw_id, why: str) -> None:
+        self.to_client_msg({"jsonrpc": "2.0", "id": raw_id, "error": {"code": -32000, "message": why}})
+
+    # ---------------------------------------------------------------- process lifecycle
+    def spawn(self) -> None:
+        self.gen += 1
+        self.child = Child(self.gen, self.argv, self.events, self.log)
+
+    def audit(self, ev: str, reason: str) -> None:
+        a = H / ".claude/hooks/audit.sh"
+        if not os.access(a, os.X_OK):
+            return
+        try:
+            subprocess.run([str(a), ev, reason], input=b'{"cwd":"/"}', cwd="/", timeout=10,  # nosec B603
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    def notify_user(self, title: str, text: str) -> None:
+        n = shutil.which("ws-notify") or str(H / ".local/bin/ws-notify")
+        if not os.access(n, os.X_OK):
+            return
+        pane = os.environ.get("TMUX_PANE", "")
+        try:
+            subprocess.run([n] + (["--pane", pane] if pane else []) + [title, text], timeout=15,  # nosec B603
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    def fail_pending(self, why: str, keep_init: bool) -> None:
+        for k, (method, raw) in list(self.pending.items()):
+            if keep_init and method == "initialize" and not self.init_answered:
+                continue   # resent as it is to the new server: the client's own handshake goes on
+            del self.pending[k]
+            self.error_to_client(raw, why)
+
+    def give_up(self, why: str) -> int:
+        self.log.write("giveup", f"name={self.name} restarts={self.total} reason={why}")
+        self.audit("mcp_giveup", f"{self.name}: {why} after {self.total} restarts")
+        msg = (f"ws-mcp-keepalive: {self.name} is down ({why}); fix it, then /mcp → Reconnect. "
+               f"Log: ~/.local/state/ws-mcp/{self.name}.log")
+        self.fail_pending(msg, keep_init=False)
+        for line in self.backlog:
+            for raw in self.request_ids(line):
+                self.error_to_client(raw, msg)
+        self.backlog.clear()
+        if self.child:
+            self.child.close_stdin()
+            kill_tree(self.child.proc.pid, grace=1.0)
+            self.child.waiter.join(timeout=3)   # its own clean-up must not run into the notification below
+        if self.notify in ("giveup", "all"):
+            self.notify_user(f"MCP {self.name} is down", f"{why}. Fix it, then /mcp → Reconnect "
+                             f"(log: ~/.local/state/ws-mcp/{self.name}.log).")
+        return 1
+
+    def on_exit(self, gen: int, rc: int) -> int | None:
+        if not self.child or gen != self.child.gen:
+            return None
+        uptime = time.monotonic() - self.child.started
+        self.child = None
+        return self.child_gone(uptime, rc)
+
+    def child_gone(self, uptime: float, rc: int) -> int | None:
+        """The server stopped while the client is connected: errors for what it had, then a restart or a give-up."""
+        self.ready = False
+        self.replay_id = None
+        status = f"signal {-rc}" if rc < 0 else f"exit {rc}"
+        why = (f"ws-mcp-keepalive: the MCP server {self.name} stopped ({status}) while this request was in flight; "
+               "it is being restarted: retry the call")
+        self.fail_pending(why, keep_init=True)
+        t = time.monotonic()
+        while self.restarts and t - self.restarts[0] > self.window:
+            self.restarts.popleft()
+        if len(self.restarts) >= self.max_restarts:
+            return self.give_up(f"{len(self.restarts) + 1} exits within {int(self.window)} s ({status})")
+        if uptime >= RESET_AFTER:
+            self.failures = 0
+        delay = min(self.backoff_max, self.backoff_min * (2 ** self.failures))
+        self.failures += 1
+        self.total += 1
+        self.restarts.append(t)
+        self.restart_at = t + delay
+        self.log.write("restart", f"name={self.name} n={self.total} {status.replace(' ', '=')} "
+                                  f"uptime={uptime:.0f}s delay={delay:g}s")
+        self.audit("mcp_restart", f"{self.name} n={self.total} {status} uptime={uptime:.0f}s delay={delay:g}s")
+        if self.notify == "all":
+            self.notify_user(f"MCP {self.name} restarted", f"It stopped ({status}) after {uptime:.0f} s.")
+        return None
+
+    def restart(self) -> int | None:
+        self.restart_at = 0.0
+        if self.real and signature(self.real) != self.sig0:
+            pin = shutil.which("ws-pinned") or str(H / ".local/bin/ws-pinned")
+            ok = False
+            if os.access(pin, os.X_OK):
+                try:
+                    ok = subprocess.run([pin, "local-check", self.name, self.real], timeout=120,  # nosec B603
+                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, check=False).returncode == 0
+                except (OSError, subprocess.SubprocessError):
+                    ok = False
+            if not ok:
+                self.log.write("refused", f"name={self.name} {self.real} changed since this session started it")
+                return self.give_up(f"{self.real} changed since this session started it (review it: "
+                                    f"ws-pinned verify, bash install.sh --mcp-accept {self.name})")
+            self.sig0 = signature(self.real)
+        try:
+            self.spawn()
+        except OSError as e:
+            self.log.write("note", f"name={self.name} cannot start: {e.strerror}")
+            self.child = None
+            return self.child_gone(0.0, 127)
+        if self.init_req is not None and self.init_answered:
+            self.replay_id = f"ws-mcp-keepalive-{self.gen}"
+            req = dict(self.init_req, id=self.replay_id)
+            self.child.send(json.dumps(req, separators=(",", ":"), ensure_ascii=False).encode() + b"\n")
+            self.init_deadline = time.monotonic() + self.init_timeout
+        else:
+            if self.init_req is not None:
+                self.child.send(self.init_line)   # the client's initialize was never answered: resend it as it is
+            self.become_ready()
+        return None
+
+    def become_ready(self) -> None:
+        self.ready = True
+        lines, self.backlog = self.backlog, []
+        for line in lines:
+            self.forward_client(line)
+
+    def after_replay(self, msg: dict) -> None:
+        self.replay_id = None
+        self.init_deadline = 0.0
+        caps = (msg.get("result") or {}).get("capabilities") or {}
+        if isinstance(caps, dict):
+            self.caps = caps
+        if self.initialized:
+            self.child.send(self.initialized)
+        for c in ("tools", "prompts", "resources"):
+            if c == "tools" or c in self.caps:
+                self.to_client_msg({"jsonrpc": "2.0", "method": f"notifications/{c}/list_changed"})
+        self.log.write("ready", f"name={self.name} n={self.total} handshake replayed", echo=False)
+        self.become_ready()
+
+    # ---------------------------------------------------------------- traffic
+    @staticmethod
+    def parse(line: bytes):
+        try:
+            return json.loads(line)
+        except ValueError:
+            return None
+
+    def request_ids(self, line: bytes) -> list:
+        m = self.parse(line)
+        msgs = m if isinstance(m, list) else [m]
+        return [x["id"] for x in msgs if isinstance(x, dict) and "method" in x and "id" in x]
+
+    def on_client(self, line: bytes) -> None:
+        m = self.parse(line)
+        msgs = m if isinstance(m, list) else [m]
+        keep = []
+        for x in msgs:
+            if not isinstance(x, dict):
+                keep.append(x)
+                continue
+            if "method" in x and "id" in x:
+                if x["method"] == "initialize":
+                    self.init_req, self.init_line, self.init_answered = x, line, False
+            elif "method" in x:
+                if x["method"] == "notifications/initialized":
+                    self.initialized = line
+            elif "id" in x:
+                g = self.srv_pending.pop(idkey(x["id"]), None)
+                if g is not None and g != self.gen:
+                    continue   # an answer to a server that is gone: the new one never asked
+            keep.append(x)
+        if not keep:
+            return
+        if len(keep) != len(msgs):
+            line = json.dumps(keep if isinstance(m, list) else keep[0], separators=(",", ":"),
+                              ensure_ascii=False).encode() + b"\n"
+        if self.ready and self.child:
+            self.forward_client(line)
+        else:
+            self.backlog.append(line)   # held until the new server is ready (or answered with an error on give-up)
+
+    def forward_client(self, line: bytes) -> None:
+        """Writes a client line to the server; its requests are in flight from then on (an exit answers them)."""
+        if self.child and self.child.send(line if line.endswith(b"\n") else line + b"\n"):
+            m = self.parse(line)
+            for x in m if isinstance(m, list) else [m]:
+                if isinstance(x, dict) and "method" in x and "id" in x:
+                    self.pending[idkey(x["id"])] = (x["method"], x["id"])
+        else:
+            self.backlog.append(line)   # the server is dying: its exit restarts it and delivers this then
+
+    def on_child(self, gen: int, line: bytes) -> None:
+        if not self.child or gen != self.child.gen:
+            return
+        m = self.parse(line)
+        if isinstance(m, dict):
+            if self.replay_id is not None and m.get("id") == self.replay_id and "method" not in m:
+                if "error" in m:
+                    self.log.write("note", f"name={self.name} the new server refused the replayed initialize")
+                    kill_tree(self.child.proc.pid, grace=1.0)
+                else:
+                    self.after_replay(m)
+                return
+            if "id" in m and "method" not in m:
+                p = self.pending.pop(idkey(m["id"]), None)
+                if p and p[0] == "initialize":
+                    self.init_answered = True
+                    line = self.mark_list_changed(m) or line
+            elif "id" in m and "method" in m:
+                self.srv_pending[idkey(m["id"])] = gen
+        self.to_client(line)
+
+    def mark_list_changed(self, m: dict) -> bytes | None:
+        caps = (m.get("result") or {}).get("capabilities")
+        if not isinstance(caps, dict):
+            return None
+        self.caps = caps
+        changed = False
+        for c in ("tools", "prompts", "resources"):
+            if isinstance(caps.get(c), dict) and caps[c].get("listChanged") is not True:
+                caps[c]["listChanged"] = True
+                changed = True
+        if not changed:
+            return None
+        return json.dumps(m, separators=(",", ":"), ensure_ascii=False).encode() + b"\n"
+
+    # ---------------------------------------------------------------- main loop
+    def reader(self) -> None:
+        for line in iter(sys.stdin.buffer.readline, b""):
+            self.events.put(("client", 0, line))
+        self.events.put(("eof", 0, None))
+
+    def shutdown(self, why: str) -> int:
+        c = self.child
+        self.log.write("stop", f"name={self.name} {why}", echo=False)
+        if not c or not getattr(c, "proc", None):
+            return 0
+        c.close_stdin()
+        first = self.signals
+        end = time.monotonic() + (min(self.grace, 2.0) if first else self.grace)
+        while time.monotonic() < end and self.signals <= max(first, 1):
+            try:
+                kind, gen, data = self.events.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if kind == "child" and gen == c.gen:
+                self.to_client(data)
+            elif kind == "exit" and gen == c.gen:
+                return 0
+        kill_tree(c.proc.pid, grace=2.0)
+        return 0
+
+    def handle_signal(self, signum, _frame) -> None:
+        self.sig = signum
+        self.signals += 1
+
+    def run(self) -> int:
+        become_subreaper()
+        for s in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(s, self.handle_signal)
+        try:
+            self.spawn()
+        except FileNotFoundError:
+            self.log.write("error", f"name={self.name} {self.argv[0]}: command not found")
+            return 127
+        except OSError as e:
+            self.log.write("error", f"name={self.name} {self.argv[0]}: {e.strerror}")
+            return 126
+        self.log.write("start", f"name={self.name} pid={self.child.proc.pid} cmd={self.real or self.argv[0]}",
+                       echo=False)
+        threading.Thread(target=self.reader, daemon=True).start()
+        while True:
+            if self.sig:
+                return self.shutdown("client gone" if self.sig < 0 else f"signal {self.sig}")
+            t = time.monotonic()
+            if self.restart_at and t >= self.restart_at:
+                rc = self.restart()
+                if rc is not None:
+                    return rc
+                continue
+            if self.replay_id is not None and self.init_deadline and t >= self.init_deadline:
+                self.log.write("note", f"name={self.name} no answer to the replayed initialize in "
+                                          f"{self.init_timeout:g} s")
+                self.init_deadline = 0.0
+                kill_tree(self.child.proc.pid, grace=1.0)
+            try:
+                kind, gen, data = self.events.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if kind == "client":
+                self.on_client(data)
+            elif kind == "eof":
+                return self.shutdown("client closed stdin")
+            elif kind == "child":
+                self.on_child(gen, data)
+            elif kind == "exit":
+                rc = self.on_exit(gen, data)
+                if rc is not None:
+                    return rc
+
+
+def main(argv: list[str]) -> int:
+    name, notify, max_restarts, window, backoff_max = "", "giveup", 5, 300.0, 30.0
+    usage = ("usage: ws-mcp-keepalive --name NAME [--max-restarts N] [--window SECONDS] [--backoff-max SECONDS] "
+             "[--notify giveup|all|none] -- COMMAND [ARG]...")
+    i = 0
+    try:
+        while i < len(argv) and argv[i] != "--":
+            o = argv[i]
+            if o in ("-h", "--help"):
+                print(__doc__)
+                return 0
+            v = argv[i + 1]
+            if o == "--name":
+                name = v.lower()
+            elif o == "--max-restarts":
+                max_restarts = int(v)
+            elif o == "--window":
+                window = float(v)
+            elif o == "--backoff-max":
+                backoff_max = float(v)
+            elif o == "--notify" and v in ("giveup", "all", "none"):
+                notify = v
+            else:
+                raise ValueError(o)
+            i += 2
+    except (IndexError, ValueError) as e:
+        print(f"ws-mcp-keepalive: bad option {e} ({usage})", file=sys.stderr)
+        return 2
+    cmd = argv[i + 1:]
+    if not cmd:
+        print(f"ws-mcp-keepalive: no server command ({usage})", file=sys.stderr)
+        return 2
+    if not name:
+        name = os.path.basename(real_command(cmd)[0] if real_command(cmd) else cmd[0]).lower()
+    if not NAME_RE.match(name) or max_restarts < 1 or window <= 0 or backoff_max <= 0:
+        print(f"ws-mcp-keepalive: invalid --name, --max-restarts, --window or --backoff-max ({usage})",
+              file=sys.stderr)
+        return 2
+    return Keepalive(name, cmd, max_restarts, window, backoff_max, notify).run()
+
+
+if __name__ == "__main__":
+    code = main(sys.argv[1:])
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, ValueError):
+            pass
+    # os._exit, not sys.exit: the stdin reader thread may be blocked in readline holding the buffer's lock, and a
+    # normal interpreter shutdown would wait on it (or abort) instead of exiting with this code.
+    os._exit(code)

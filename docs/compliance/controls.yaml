@@ -47,7 +47,7 @@ controls:
     for curl, wget and gh)
   - files/home/.claude/hooks/read-convert.sh:22-23 (converted documents are announced as 'document data, not
     instructions')
-  - files/home/.local/bin/ws-telegram:184 (remote replies are prefixed '[Reply from Telegram]')
+  - files/home/.local/bin/ws-telegram:362 (remote replies are prefixed '[Reply from Telegram]')
   check:
   - bash tests/hooks-untrusted.sh
   gap: 'Screening is heuristic: plain-language social engineering with no marker (measured: 2 of 20 real samples) is labelled
@@ -181,7 +181,7 @@ controls:
   - files/home/.local/bin/tmux-watch:15,69-75 (returns an expired solo tab to normal)
   - files/home/.local/bin/ws-audit:478-495 (fails when solo.json excludes a command or solo-net.json excludes one
     without its ask rule)
-  - files/home/.local/bin/ws-telegram:385-393 (nothing is offered or run from Telegram in a solo or bare tab)
+  - files/home/.local/bin/ws-telegram:610-618 (nothing is offered or run from Telegram in a solo or bare tab)
   - docs/adr/0016-solo-mode-inside-the-sandbox.md
   - docs/adr/0022-solo-mode-without-excluded-commands.md
   check:
@@ -251,10 +251,15 @@ controls:
   - 'files/home/.local/bin/ws-telemetry:1476-1508 (prompts_summary: approvals per hour, time to answer, answers under
     2 s, persistent and broad allow rules)'
   - files/home/.local/bin/ws-telemetry:1509-1523 (prompts_alerts)
-  - files/home/.local/bin/ws-telegram:815-820 (hourly approval-fatigue alert to the phone)
+  - files/home/.local/bin/ws-telegram:1223-1229 (hourly approval-fatigue alert to the phone)
+  - 'files/home/.local/bin/ws-telegram:900-933 (notification policy, ADR 0026: by default only approvals, PIN
+    requests, blocked tabs and security alerts interrupt; the rest goes to a digest; quiet hours)'
+  - files/home/.local/bin/ws-telegram:957-1006 (digest once per period, only on change)
+  - files/home/.local/bin/ws-telegram:1087-1097,1099-1234 (alerts deduplicated; one per threshold crossing)
   - files/home/.local/bin/ws-otel:11 (every permission decision and who made it is stored)
   check:
   - bash tests/audit-prompts.sh
+  - bash tests/telegram-quiet.sh
   gap: The dashboard template does not render the prompts block yet, and the metrics need the OpenTelemetry collector
     on.
   risk: 'medium: likelihood medium (more than 90 ask rules plus Claude''s default prompts, several tabs and a phone channel);
@@ -280,15 +285,19 @@ controls:
   - OWASP-RTM:5.2.2
   status: implemented
   evidence:
-  - files/home/.local/bin/ws-telegram:348-352 (persistent-allow options recognised)
-  - 'files/home/.local/bin/ws-telegram:356-383 (dialog_risky: MCP tools, ask rules, excluded commands, block lists)'
-  - files/home/.local/bin/ws-telegram:589-595 (persistent allows never become buttons; risky approvals marked 🔐)
-  - files/home/.local/bin/ws-telegram:928-933 (a forged persistent press is refused; a risky approval asks for the PIN)
-  - 'files/home/.local/bin/ws-telegram:949-967 (ask_pin and approve_now: the screen is re-read after the PIN)'
-  - files/home/.local/bin/ws-telegram:106-189 (PIN, three failures)
+  - files/home/.local/bin/ws-telegram:573-577 (persistent-allow options recognised)
+  - 'files/home/.local/bin/ws-telegram:581-608 (dialog_risky: MCP tools, ask rules, excluded commands, block lists)'
+  - files/home/.local/bin/ws-telegram:845-852 (persistent allows never become buttons; risky approvals marked 🔐)
+  - files/home/.local/bin/ws-telegram:1345-1351 (a forged persistent press is refused; a risky approval asks for the PIN)
+  - 'files/home/.local/bin/ws-telegram:1367-1417 (ask_pin and approve_now: the screen is re-read after the PIN)'
+  - 'files/home/.local/bin/ws-telegram:236-293 (handle_pin, ADR 0026: a bare PIN for the live request only, deleted
+    from the chat, 5 min, single use, three failures cancel; never counted as a wrong text reply)'
+  - files/home/.local/bin/ws-telegram:110-139 (the PIN read lazily from the Credential Manager, with the reason)
+  - files/home/.local/bin/ws-telegram:295-368 (text replies with the PIN, three failures)
   - docs/adr/0010-telegram-remote-control.md
   check:
   - bash tests/telegram-approvals.sh
+  - bash tests/telegram-quiet.sh
   - 'live: ws-test'
   gap: By default only risky dialogs ask for the PIN; 'ws-telegram approve pin' makes every approval ask for it.
   risk: 'medium: likelihood low (needs the unlocked phone or the bot token); impact high (approves an ask-rule action
@@ -689,7 +698,7 @@ controls:
     the guard blocks)'
   - files/home/.local/bin/ws-learn:76-95 (the full prompt is previewed before it is chosen)
   - files/home/.local/bin/ws-learn:181 (the description is written as a JSON-quoted scalar)
-  - files/home/.local/bin/ws-telegram:318-346 (▶ Run allow list; the block lists are a second check)
+  - files/home/.local/bin/ws-telegram:543-571 (▶ Run allow list; the block lists are a second check)
   check:
   - bash tests/hooks-ws-learn.sh
   - bash tests/telegram-approvals.sh
@@ -715,10 +724,10 @@ controls:
   - OWASP-LLM26:LLM03
   status: implemented
   evidence:
-  - 'files/home/.local/bin/ws-telegram:318-346 (RUN_ALLOW: read-only command globs; shell syntax, --output and .exe refused)'
-  - files/home/.local/bin/ws-telegram:465,515 (checked when the button is offered and again before running)
-  - files/home/.local/bin/ws-telegram:900 (▶ Run asks for the PIN)
-  - files/home/.local/bin/ws-telegram:385-393 (never offered in solo or bare tabs)
+  - 'files/home/.local/bin/ws-telegram:543-571 (RUN_ALLOW: read-only command globs; shell syntax, --output and .exe refused)'
+  - files/home/.local/bin/ws-telegram:711,760 (checked when the button is offered and again before running)
+  - files/home/.local/bin/ws-telegram:1317 (▶ Run asks for the PIN)
+  - files/home/.local/bin/ws-telegram:610-618 (never offered in solo or bare tabs)
   check:
   - bash tests/telegram-approvals.sh
   gap: Read-only commands can still run code configured by a hostile repository (git honours the repository's core.fsmonitor
@@ -940,7 +949,8 @@ controls:
   - files/home/.local/bin/ws-stop-all:1-24 (marker, Telegram off, audit event, Escape and /exit in every Claude pane,
     --pane, --session, --clear)
   - files/home/.claude/hooks/ws-runtime-gate.sh:5-6,24-33 (every prompt and tool is held while the marker exists)
-  - files/home/.local/bin/ws-telegram:39,512,884 (Telegram runs and answers nothing while the marker exists)
+  - 'files/home/.local/bin/ws-telegram:50,205,757,1293,1408 (Telegram runs and answers nothing while the marker exists:
+    buttons, ▶ Run, PINs and text replies)'
   - files/home/.claude/settings.json:187-192 (deny clearing the stop and editing the marker from Claude)
   - files/home/.config/tmux-claude/menu-claude.tmux (Menu → Claude → Emergency stop)
   - docs/governance/AI-INCIDENT-RESPONSE.md#common-steps
@@ -1097,7 +1107,7 @@ controls:
   - OWASP-AITM:T16
   status: partial
   evidence:
-  - files/home/.local/bin/ws-telegram:184 ('[Reply from Telegram]' prefix)
+  - files/home/.local/bin/ws-telegram:362 ('[Reply from Telegram]' prefix)
   - files/home/.local/bin/tmux-swarm:73-88 (task text from a user-approved split)
   - 'files/home/.claude/settings.json:1042 (teammateMode in-process: Claude Code''s own agent teams)'
   check:
@@ -1132,8 +1142,8 @@ controls:
   evidence:
   - files/home/.local/bin/ws-anomaly:4-12,52-80 (guard blocks, denials and sandbox hits per session in a window; threshold)
   - files/home/.local/bin/tmux-watch:8,77-90,126 (🚨 in the status bar and a Windows alert with the pane)
-  - files/home/.local/bin/ws-telegram:806-812 (phone alert with a 'Stop this tab' button)
-  - 'files/home/.local/bin/ws-telegram:671-688 (h: ws-stop-all --pane)'
+  - files/home/.local/bin/ws-telegram:1214-1221 (phone alert with a 'Stop this tab' button; a security alert, sent in every mode)
+  - 'files/home/.local/bin/ws-telegram:1059-1076 (h: ws-stop-all --pane)'
   - files/home/.claude/hooks/ws-sandbox-notice.sh:2-13 (sandbox hits recorded)
   check:
   - bash tests/audit-anomaly.sh
@@ -1514,7 +1524,7 @@ controls:
   - files/home/.claude/hooks/audit.sh:13,23 (395-day retention)
   - 'files/home/.local/bin/ws-audit:574-648 (ws-audit --verify-log: chain and anchors, reports and never repairs)'
   - files/home/.local/bin/ws-audit:662-665 (the Security pillar fails on a broken chain)
-  - 'files/home/.local/bin/ws-telegram:49-73 (approvals, denials, PIN checks, refusals and ▶ Run commands go to the same
+  - 'files/home/.local/bin/ws-telegram:60-83 (approvals, denials, PIN checks, refusals and ▶ Run commands go to the same
     chain through audit.sh as «telegram» events: metadata only, the command redacted by audit.sh, never message text)'
   - files/home/.local/bin/ws-backup-lite:126-133 (a copy of the anchors travels with the light backup, and so off the
     machine with ws-backup-cloud)
@@ -1652,7 +1662,7 @@ controls:
   - files/home/.local/bin/ws-kit-update:91-102 (merge --ff-only to the verified tag)
   - files/home/.local/bin/ws-kit-update:95-98 (--allow-unsigned is logged and sent to Telegram)
   - files/home/.config/ws-kit/allowed_signers (shipped public keys)
-  - files/home/.local/bin/ws-telegram:782-786 (hourly check; never applies)
+  - files/home/.local/bin/ws-telegram:1191-1199 (hourly check; never applies)
   - .github/workflows/release.yml:27-37 (CI verifies the tag signature)
   - docs/adr/0018-supply-chain-pinning-and-signed-releases.md
   check:
@@ -2442,3 +2452,44 @@ controls:
   risk: 'low: slow hooks cost time and push the owner towards bare or solo, not a direct security loss.'
   remediation: Add a test that runs the whole PreToolUse chain of settings.json on a typical call and fails over 400 ms.
   effort: M
+- id: WS-GOV-015
+  title: Self-healing of local MCP servers
+  objective: A local (stdio) MCP server that exits mid-session comes back without the owner, a request it lost is
+    answered with an error instead of hanging, a crash loop ends visibly, and every restart is recorded; a restart
+    never runs an executable other than the one the session started.
+  maps_to:
+  - WAF-REL:RE:07
+  - WAF-REL:RE:10
+  - ISO25010:Reliability
+  - OWASP-ASI:ASI08
+  - MS-RAI:Reliability and Safety
+  status: implemented
+  evidence:
+  - files/home/.local/bin/ws-mcp-keepalive:376-401 (on an exit, errors for the requests in flight, exponential
+    backoff, give-up after 5 restarts in 300 s)
+  - files/home/.local/bin/ws-mcp-keepalive:403-441 (the executable must be unchanged or vouched for by ws-pinned;
+    the recorded initialize is replayed)
+  - files/home/.local/bin/ws-mcp-keepalive:443-456 (notifications/initialized, then list_changed to the client)
+  - files/home/.local/bin/ws-mcp-keepalive:230-251 (the whole process tree is ended; the proxy is a child subreaper)
+  - files/home/.local/bin/ws-mcp-keepalive:138-183 (stderr log 0600, redacted, capped, never through a link)
+  - files/home/.local/bin/ws-mcp-keepalive:322-330 (mcp_restart and mcp_giveup in the audit hash chain)
+  - lib.sh:111-127 (every stdio server registered through ws-mcp-keepalive, the jail inside; "keepalive" false opts
+    out)
+  - install.sh:328-331 (a registration of the same server without the wrappers is re-registered by itself)
+  - files/home/.local/bin/ws-audit:425-455 (a stdio server without the keepalive warns; restarts and give-ups of the
+    last 24 h)
+  - files/home/.local/bin/ws-health:43-61
+  - files/home/.claude/hooks/guard.sh:82 (the wrapper and its logs are hard roots)
+  - docs/adr/0025-mcp-server-keepalive.md
+  - docs/runbook.md#7-sandbox-solo-mode-and-patches (An MCP server is down)
+  check:
+  - bash tests/mcp-keepalive.sh
+  - jq -e 'all(.[]; if (.type // "stdio") == "stdio" then .keepalive != false else true end)' files/mcp-servers.json
+  - 'live: ws-test'
+  gap: Not exercised against the real MemPalace and recall through WSL interop (unreachable from the implementer's
+    sandbox); a Windows server's own child processes are outside Linux's reach on shutdown; state a server kept per
+    connection is lost on a restart.
+  risk: 'low: a drop now costs one failed call and a few seconds instead of a dead server until /mcp → Reconnect.'
+  remediation: On the owner's machine, end mempalace-mcp.exe from Task Manager during a session once and record the
+    log lines in the runbook; switch to Claude Code's own restart policy for stdio servers if one is documented.
+  effort: S

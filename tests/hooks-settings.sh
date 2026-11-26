@@ -45,7 +45,8 @@ for r in 'Bash(ws-memory*)' 'Bash(ws-stop-all --clear*)' 'Bash(ws-telemetry budg
          'Edit(~/.config/agent-browser/**)' 'Edit(~/.config/ws-telegram/**)'; do
   check "deny rule $r" has "$S" "$r"
 done
-for r in 'Bash(*.exe*)' 'mcp__mempalace__*add*' 'Bash(mempalace *)' 'Bash(ws-kit-update*--allow-unsigned*)' 'Bash(ws-telegram approve*)'; do
+for r in 'Bash(*.exe*)' 'mcp__mempalace__*add*' 'Bash(mempalace *)' 'Bash(ws-kit-update*--allow-unsigned*)' 'Bash(ws-telegram approve*)' \
+         'Bash(ws-telegram notify off*)' 'Bash(ws-telegram quiet*)' 'Bash(ws-telegram off*)'; do
   check "ask rule $r" jq -e --arg r "$r" '.permissions.ask | index($r) != null' "$S"
 done
 for f in ws-runtime-gate.sh memory-gate.sh memory-filter.sh; do check "$f is executable" test -x "$HK/$f"; done

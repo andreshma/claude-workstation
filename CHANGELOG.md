@@ -54,8 +54,20 @@ After installing, in this order:
     `tmux-solo this`); run `ws-audit --ai` once and `ws-audit` for the new host checks (unattended-upgrades, umask,
     listeners, clock).
 
+13. MCP keepalive: `bash install.sh` (no flag needed: it re-registers every local MCP server through
+    `ws-mcp-keepalive` by itself, the server inside unchanged), then restart Claude in every tab
+    (`tmux-claude-restart --all`); with the managed allow list, `sudo bash install.sh --managed --mcp-allowlist` too,
+    or the new form is "blocked by policy". Check with `/mcp` and `ws-audit` ("restarted when they exit"). Once, on
+    the owner's machine: end `mempalace-mcp.exe` in Task Manager during a session and see it come back in `/mcp` and
+    in `~/.local/state/ws-mcp/mempalace.log`.
+14. Telegram (ADR 0026): nothing to do for the defaults (`notify approvals`, a digest every hour, no quiet hours);
+    pick quiet hours if you want them (Menu → Workstation → Telegram, or `ws-telegram quiet 22:00-07:00`). The
+    service restarts itself with the new code within a minute; `ws-telegram status` shows «PIN in the service: yes».
+
 Breaking behaviour changes, each described below:
 
+- Telegram sends less by default (`notify approvals`): finished turns, context, usage and other information alerts
+  arrive in an hourly digest instead of one message each; `ws-telegram notify all` restores the old behaviour.
 - Solo mode no longer lets `az`, `gh`, `git push`, `kubectl` and the other excluded commands out of the sandbox, and
   they ask in every solo variant; `tmux-solo this --with-network-tools` brings them back (asking) for at most 4 h.
 - The Azure MCP server (and chrome-devtools when opted in) runs inside `ws-mcp-jail`: it sees only its own Azure
@@ -70,6 +82,29 @@ Breaking behaviour changes, each described below:
 
 ### Added
 
+- `ws-mcp-keepalive` (ADR 0025, WS-GOV-015): every local stdio MCP server runs behind a transparent stdio proxy that
+  starts it again when it exits mid-session, which Claude Code does not do for stdio servers in an interactive
+  session. The request in flight gets a JSON-RPC error, the recorded `initialize` and `notifications/initialized` are
+  replayed to the new process (the answer swallowed), `notifications/tools/list_changed` (and prompts/resources when
+  offered) tells Claude to refresh, and what was sent meanwhile is delivered then. Exponential backoff 1 s to 30 s;
+  more than 5 restarts in 300 s gives up with exit 1, errors for what waits and a `ws-notify`. A changed executable
+  is restarted only when `ws-pinned local-check` vouches for it. The server's stderr goes, redacted and capped, to
+  `~/.local/state/ws-mcp/<name>.log`; restarts and give-ups are `mcp_restart` and `mcp_giveup` audit events. On stdin
+  EOF or a signal it ends the server's whole tree (process group and descendants; it is a child subreaper).
+  Composition: keepalive outside, `ws-mcp-jail` inside; a `"keepalive"` key per stdio server in
+  `files/mcp-servers.json` (true by default, `false` opts out). Tests: `tests/mcp-keepalive.sh`.
+- `ws-audit` warns about a stdio MCP server registered without the keepalive and reports the restarts and give-ups
+  of the last 24 h; `ws-health` fails on both; the AI-BOM has a "Restart after an exit" column.
+- Telegram notification policy (ADR 0026): `ws-telegram notify approvals|digest|all|off` (default `approvals`: only
+  permission dialogs, PIN requests, routing questions, a tab that waits for you or stopped, what you asked for, and
+  the security alerts go out at once), `ws-telegram digest 30m|1h|2h|4h|off|now` (default every hour: one message per
+  period with each Claude tab's name, project, state, context, cost and last notable event, only if something changed,
+  with a 🔎 button per tab; no conversation text, redacted), `ws-telegram quiet HH:MM-HH:MM|off` (only security alerts
+  and approvals that block work). `ws-telegram status` shows the mode, the digest, the quiet hours, whether the
+  service has the PIN and the last Telegram API error. New Telegram submenu (Menu → Workstation → Telegram,
+  `menu-telegram.tmux`) with every setting and its current value: on/off, mode, digest period and "send now", quiet
+  hours (presets and custom), text replies, PIN for approvals, ▶ Run with or without the PIN, set the PIN (terminal
+  popup), test and status. `tests/telegram-quiet.sh` (83 checks, simulated API).
 - `ws-mcp-jail` (ADR 0024, WS-AI-011): local stdio MCP servers run in bubblewrap with a view built from nothing
   (read-only system and kit, writable only `~/.local/state/ws-mcp/<name>`, an empty HOME, no credential store, no
   `~/.claude*`, audit log, other profiles or Windows drives, tokens removed, network only with `--net`; the tab's own
@@ -188,6 +223,20 @@ Breaking behaviour changes, each described below:
 
 ### Changed
 
+- `install.sh` re-registers by itself a registration that runs the same server without the kit's current wrappers
+  (`ws-mcp-keepalive`, `ws-mcp-jail`); other differences still need `--mcp-refresh`. `lib.sh` gains `mcp_unwrap`;
+  `mcp_want`, `mcp_unwrap_merge` (export.sh) and the managed allow list know the keepalive form.
+- The guard protects `~/.local/bin/ws-mcp-keepalive` and `~/.local/state/ws-mcp` (keepalive logs and jail state) as
+  hard roots: an agent cannot plant a link there or erase a restart record.
+- Telegram PIN (ADR 0026): a bare PIN (`1234`, `pin 1234`) works for the pending 🔐 request as a Reply to the PIN
+  prompt, a Reply to the dialog's notification or a plain new message; with several requests pending the bot asks
+  for a Reply to the one meant. The 🔐 message shows the outcome. Every message the bot does not act on gets a short
+  answer saying why and what to do (rate-limited); `/help` lists the formats.
+- Telegram alerts are deduplicated: the context and plan-limit alerts once per threshold crossing (again after
+  `/compact`), stalled, usage and error alerts at most once every `dedup_hours` (6) per tab, one reminder of a waiting
+  dialog after `remind_min` (5) minutes; the daily summary only with `notify all`.
+- Telegram's main entries in the Workstation menu moved into the Telegram submenu (`g`).
+
 - Solo mode (ADR 0022, amends 0016): every solo profile is generated by `tmux-level --settings-file
   solo|solo-net|solo-unsandboxed` from `~/.config/claude-solo/settings.json`, which now also sets
   `allowUnsandboxedCommands: false`; the normal level's excluded commands become `ask` rules in all three, and
@@ -278,6 +327,20 @@ Breaking behaviour changes, each described below:
 
 ### Fixed
 
+- `ws-update` checked the registered command of each local MCP server, which for a jailed server was `ws-mcp-jail`
+  itself; it now checks the server's own executable behind the kit's wrappers.
+- Telegram: a correct bare PIN sent as a Reply to the dialog alert was routed to the text-reply path and counted as
+  "Wrong PIN in a text reply" (alerted, and towards the 3 failures that turn text replies off); a PIN sent as a new
+  message was ignored and left in the chat; after a correct PIN nothing visible changed near the prompt, so it was
+  sent again.
+- Telegram: the service read the PIN once at start; if Windows interop was not ready yet it stayed without a PIN until
+  restarted ("none is set"). It is now read again when needed and the reason is shown.
+- Telegram: `error_api` was logged with an empty reason when curl got no answer, and polling retried a dead network
+  every 40 s; it now logs curl's exit code or the HTTP status and backs off (5 s … 5 min, `retry_after` for a 429; a
+  429 on a send holds the queue).
+- Telegram: the same context alert every 30 minutes all night, and the plan-limit alert every hour (its rate-limit key
+  changed every hour); `open/` question files were never cleaned.
+
 - The local OpenTelemetry collector decompressed a gzip body without a bound: a small request could expand into
   gigabytes; it now stops past the 16 MiB body limit with 413 (WS-SEC-012).
 - `read-convert.sh` wrote its error output to a predictable `/tmp/ws-tomd.err.<pid>`; it uses `mktemp` and removes
@@ -300,6 +363,9 @@ Breaking behaviour changes, each described below:
 
 ### Security
 
+- Telegram: the emergency stop now covers messages too (a PIN or a text reply does nothing while the marker exists);
+  a PIN is deleted from the chat on every path; changing the Telegram settings is audited (`setting_changed`) and
+  `ws-telegram notify off|approvals|digest`, `quiet`, `digest off`, `off` and `text off` are ask rules for Claude.
 - Profiles: `~/.claude-profiles/*/.credentials.json` denied to sandboxed reads (glob, which Claude Code expands on
   Linux, plus literal paths in every tab's fence), to the Read tool and in the guard's credential list (glob lines
   expanded per call); the profiles' az, gh and kube folders live under `~/.config/ws-agent`, denied as a whole. The
