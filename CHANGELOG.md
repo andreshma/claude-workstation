@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-11-26
+
 This release hardens the agent against the gaps of the AI and security assessment in `docs/compliance/`. Several
 changes are **breaking** for daily use; read the upgrade notes first.
 
