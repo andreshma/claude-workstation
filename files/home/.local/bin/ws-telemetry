@@ -961,11 +961,13 @@ def budget_conf() -> tuple[dict, bool]:
 
 
 def budgets(turns: list[dict]) -> list[dict]:
-    """~/.config/ws-telemetry/budgets.conf: lines "project=usd_per_month" (API equivalent); "*=usd" = total.
-    Current month's spend, % used and linear projection to the end of the month."""
+    """~/.config/ws-telemetry/budgets.conf: lines "project=usd_per_month" (API equivalent); "*=usd" = total;
+    "per-session=usd" caps every single Claude session (one conversation, whatever its project). Current month's
+    spend, % used and linear projection to the end of the month; a session row only for sessions over half the cap."""
     limits, _ = budget_conf()
     if not limits:
         return []
+    cap = limits.pop("per-session", None)
     today = dt.date.today()
     start = today.replace(day=1).isoformat()
     month_days = ((today.replace(day=28) + dt.timedelta(days=4)).replace(day=1) - dt.timedelta(days=1)).day
@@ -980,6 +982,16 @@ def budgets(turns: list[dict]) -> list[dict]:
         g = spend.get(k, 0.0)
         rows.append({"project": "(total)" if k == "*" else k, "key": k, "spent": round(g, 2), "budget": lim,
                       "pct": round(100 * g / lim) if lim else 0, "projection": round(g / today.day * month_days, 2)})
+    if cap:
+        per: dict[str, list] = defaultdict(lambda: [0.0, "?"])
+        for t in turns:
+            if (t.get("start") or "") >= start and t.get("session"):
+                per[t["session"]][0] += sum(cost(m, k, table) for k, m in t["models"].items())
+                per[t["session"]][1] = t.get("project", "?")
+        for sid, (g, proj) in per.items():
+            if g >= cap / 2:
+                rows.append({"project": f"(session {sid[:8]} in {proj})", "key": "per-session", "session": sid,
+                             "spent": round(g, 2), "budget": cap, "pct": round(100 * g / cap), "projection": round(g, 2)})
     return sorted(rows, key=lambda f: -f["pct"])
 
 
@@ -988,7 +1000,8 @@ def write_budget_flag(rows: list[dict]) -> None:
     which ignores it once it is 2 h old). Without hard=1 or with nothing over, the file is removed."""
     _, hard = budget_conf()
     flag = STATE / "ws-budget-over"
-    over = [{k: r[k] for k in ("project", "pct", "spent", "budget")} for r in rows if r.get("budget") and r["pct"] >= 100]
+    over = [{k: r[k] for k in ("project", "pct", "spent", "budget", "session") if k in r}
+            for r in rows if r.get("budget") and r["pct"] >= 100]
     try:
         if hard and over:
             STATE.mkdir(parents=True, exist_ok=True)

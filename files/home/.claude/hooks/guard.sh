@@ -20,12 +20,15 @@
 #     opt-out log (always); CLAUDE.md, commands, agents, skills and the Windows-side .claude folder (unless you
 #     opened a window, see below); a recursive rm, mv, rsync, cp -r, tar or unzip that contains any of them
 #     · claude mcp add|add-json|remove and claude plugin install|enable|marketplace add (WS-AI-010)
+#   · the owner's settings (Menu → Settings, ADR-028): ws-settings (except show, get, menu-sync), ws-mcp-tools
+#     approve|forget (trusted MCP tool definitions, ADR-027), tmux-level default|bare, tmux-solo, ws-telegram's
+#     settings (all but status and menu-sync), ws-lang en|es|--toggle, ws-kit-update, ws-backup-cloud setup, WS_LEVEL
 #   · naming a credential store in a command, or reaching one through a link or «..» (WS-SEC-002): the list is
 #     ~/.local/lib/ws-credential-paths.txt (the same entries as sandbox.filesystem.denyRead) plus, when installed,
 #     /etc/claude-code/ws-credential-paths.txt; without either, a built-in minimum
 #   · in a tab with an agent identity (WS_AGENT, set by tmux-level) or a custom profile (WS_PROFILE other than work or
 #     personal, ADR-021), switching Claude, az, gh or kubectl to other credentials (CLAUDE_CONFIG_DIR,
-#     AZURE_CONFIG_DIR, GH_CONFIG_DIR, KUBECONFIG, AZURE_TOKEN_CREDENTIALS, tokens, --kubeconfig, env -i, logins:
+#     AZURE_CONFIG_DIR, GH_CONFIG_DIR, KUBECONFIG, AZURE_TOKEN_CREDENTIALS, GIT_SSH_COMMAND, tokens, --kubeconfig, env -i, logins:
 #     az login, gh auth login|switch|refresh|setup-git, claude auth login|logout, claude setup-token) (WS-AI-026);
 #     in any tab, setting WS_PROFILE or WS_MEMORY (the memory mode the MemPalace hooks honour), and the commands that
 #     switch or create profiles and accounts (ws-profile new|login|logout|tab|use|project|remove|setup,
@@ -79,7 +82,9 @@ cfg_hard+=("$H/.claude.json" "$H/.config/git/hooks" "$H/.config/claude-levels" "
   "$H/.local/state/ws-gate" "$H/.local/lib/ws-tools.lock" "$H/.local/lib/ws-mirror.sh" "$H/.config/tmux-claude/plugins.lock"
   "$H/.tmux/plugins" "$H/.local/state/ws-tools" "$H/.local/state/ws-plugins" "$H/.local/state/ws-backup-mirror.state"
   "$H/.local/bin/ws-mcp-jail" "$H/.local/bin/ws-gate" "$H/.config/ws-mcp"   # ADR-024: the MCP jail and its allow list
-  "$H/.local/bin/ws-mcp-keepalive" "$H/.local/state/ws-mcp")   # ADR-025: the keepalive, its logs and the jail state
+  "$H/.local/bin/ws-mcp-keepalive" "$H/.local/state/ws-mcp"   # ADR-025: the keepalive, its logs and the jail state
+  "$H/.local/bin/ws-mcp-filter" "$H/.local/bin/ws-mcp-tools" "$H/.local/bin/ws-egress-proxy" "$H/.local/lib/ws_mcp_policy.py"
+  "$H/.local/bin/ws-settings" "$H/.config/ws-secret" "$H/.config/ws-backup" "$H/.config/ws-telemetry/budgets.conf")   # ADR-027, ADR-028
 cred=()
 for f in /etc/claude-code/ws-credential-paths.txt "$H/.local/lib/ws-credential-paths.txt"; do
   [[ -r "$f" ]] || continue
@@ -204,6 +209,8 @@ case "$tool" in
       block "WS_TOOLS_ALLOW_UNVERIFIED and WS_PLUGINS_ALLOW_UNPINNED install unverified code: you decide that, not Claude"
     grep -Eq '(^|[;&|[:space:](])(export[[:space:]]+|unset[[:space:]]+([^;&|]*[[:space:]])?|-u[[:space:]]*)?(WS_MEMORY|WS_PROFILE|WS_PROFILE_PANE)([=[:space:]]|$)' <<<"$sc" &&
       block "WS_PROFILE and WS_MEMORY come with the tab's profile (ws-profile): they are not changed from Claude"
+    grep -Eq '(^|[;&|[:space:](])(export[[:space:]]+|unset[[:space:]]+([^;&|]*[[:space:]])?|-u[[:space:]]*)?WS_LEVEL([=[:space:]]|$)' <<<"$sc" &&
+      block "WS_LEVEL comes with the tab's protection level (tmux-level): it is not changed from Claude"
     grep -Eq "${GIT}commit" <<<"$sc" && grep -qi 'co-authored-by' <<<"$cmd" &&
       block "Co-authored-by is forbidden by the organization's policy"
     grep -Eq '(curl|wget)[^|;&]*\|[[:space:]]*(sudo([[:space:]]+-[^[:space:]]+)*[[:space:]]+)?(ba|z|da)?sh([[:space:]]|$)' <<<"$sc" &&
@@ -257,7 +264,7 @@ case "$tool" in
     if [[ -n "${WS_AGENT:-}" ]]; then who="agent identity «$WS_AGENT»"
     elif [[ -n "${WS_PROFILE:-}" && "$WS_PROFILE" != work && "$WS_PROFILE" != personal ]]; then who="profile «$WS_PROFILE»"; fi
     if [[ -n "$who" ]]; then
-      grep -Eq '(^|[;&|[:space:]])(export[[:space:]]+|unset[[:space:]]+([^;&|]*[[:space:]])?|-u[[:space:]]*)?(CLAUDE_CONFIG_DIR|AZURE_CONFIG_DIR|GH_CONFIG_DIR|KUBECONFIG|AZURE_TOKEN_CREDENTIALS|GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|AZURE_CLIENT_SECRET|ARM_CLIENT_SECRET|ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN)([=[:space:]]|$)|--kubeconfig([=[:space:]]|$)|(^|[;&|[:space:]])env[[:space:]]+(-[a-zA-Z]*i|--ignore-environment)([[:space:]]|$)' <<<"$sc" &&
+      grep -Eq '(^|[;&|[:space:]])(export[[:space:]]+|unset[[:space:]]+([^;&|]*[[:space:]])?|-u[[:space:]]*)?(CLAUDE_CONFIG_DIR|AZURE_CONFIG_DIR|GH_CONFIG_DIR|KUBECONFIG|AZURE_TOKEN_CREDENTIALS|GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|AZURE_CLIENT_SECRET|ARM_CLIENT_SECRET|ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|GIT_SSH_COMMAND|GIT_SSH|SSH_AUTH_SOCK)([=[:space:]]|$)|--kubeconfig([=[:space:]]|$)|(^|[;&|[:space:]])env[[:space:]]+(-[a-zA-Z]*i|--ignore-environment)([[:space:]]|$)' <<<"$sc" &&
         block "this tab runs as the $who: it cannot switch Claude, az, gh or kubectl to other credentials"
       grep -Eq '(^|[;&|[:space:]])(az[[:space:]]+(login|logout|account[[:space:]]+clear)|gh[[:space:]]+auth[[:space:]]+(login|logout|switch|refresh|setup-git)|claude[[:space:]]+(auth[[:space:]]+(login|logout)|setup-token))([[:space:]]|$)' <<<"$sc" &&
         block "this tab runs as the $who: logging in or switching accounts is done by you, in a terminal (ws-profile login)"
@@ -330,6 +337,21 @@ case "$tool" in
           block "clearing the emergency stop is yours: run «ws-stop-all --clear» in a terminal" ;;
         ws-telemetry) [[ " ${tok[*]:j+1} " == *" budgets "* && " ${tok[*]:j+1} " == *" --override"* ]] &&
           block "overriding a hard budget is yours: run «ws-telemetry budgets --override» in a terminal" ;;
+        ws-mcp-tools) [[ "${tok[j+1]:-}" =~ ^(approve|forget)$ ]] &&
+          block "ws-mcp-tools ${tok[j+1]} decides which MCP tool definitions are trusted: run it yourself in a terminal (Menu → Settings)" ;;
+        ws-settings) [[ -n "${tok[j+1]:-}" && ! "${tok[j+1]}" =~ ^(show|get|menu-sync|help|-h|--help)$ ]] &&
+          block "ws-settings ${tok[j+1]} changes the workstation's settings: that is yours (Menu → Settings)" ;;
+        tmux-level) [[ "${tok[j+1]:-}" =~ ^(bare|puro)$ || ( "${tok[j+1]:-}" == default && -n "${tok[j+2]:-}" ) ]] &&
+          block "tmux-level ${tok[j+1]} lowers or sets the protection of your tabs: that is yours (Menu → Settings or Claude → Protection)" ;;
+        tmux-solo) [[ -n "${tok[j+1]:-}" && ! "${tok[j+1]}" =~ ^(status|help|-h|--help)$ ]] &&
+          block "tmux-solo starts an agent that approves its own commands: that is yours (Menu → Claude → Protection)" ;;
+        ws-telegram) [[ -n "${tok[j+1]:-}" && ! "${tok[j+1]}" =~ ^(status|menu-sync|help|-h|--help)$ ]] &&
+          block "ws-telegram ${tok[j+1]} changes the phone channel that approves this agent: that is yours (Menu → Settings → Telegram)" ;;
+        ws-lang) [[ "${tok[j+1]:-}" =~ ^(en|es|--toggle)$ ]] &&
+          block "ws-lang ${tok[j+1]} changes the language of the kit's patterns: that is yours (Menu → Settings)" ;;
+        ws-kit-update) block "ws-kit-update installs a new version of the kit: run it yourself (Menu → Settings)" ;;
+        ws-backup-cloud) [[ "${tok[j+1]:-}" == setup ]] &&
+          block "ws-backup-cloud setup creates and shows the backup key: run it yourself in a terminal (Menu → Settings)" ;;
         mempalace|mempalace.exe)
           [[ "${tok[j+1]:-}" =~ ^(mine|add|kg|diary|import|sync|hook|init|repair|compress|split|migrate|delete|remove|forget|write|update|patch)$ ]] &&
             block "writing to MemPalace from the shell skips the memory gate: use the MCP tools (they ask you) or do it yourself" ;;

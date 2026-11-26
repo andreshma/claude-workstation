@@ -342,6 +342,17 @@ function render() {
   const PR = D.budgets;
   if (PR && PR.length) h.push(card("c6", "Budgets for the month", table([["Project", (f) => esc(f.project)], ["Spent", (f) => usd(f.spent)],
       ["Budget", (f) => usd(f.budget)], ["Used", (f) => `<span class="${f.pct >= 100 ? "chip" : ""}">${f.pct}%</span>`], ["Projection", (f) => usd(f.projection)]], PR)));
+  // Approval fatigue (WS-AI-006): the prompts you answered and how fast; report only.
+  const AP = D.prompts;
+  if (AP && (AP.answered || AP.rules)) h.push(card("c13", `Permission prompts (${n(AP.days)} days)`,
+    `<div class="row"><span>Approvals answered in under 2 s and a high rate per hour are signs of rubber-stamping.</span>
+      <span>Detail: <code>ws-telemetry prompts</code></span></div>` +
+    table([["Measure", (f) => esc(f[0])], ["Value", (f) => f[1]]], [
+      ["Answered", n(AP.answered)], ["Approved", n(AP.approvals)], ["Rejected", n(AP.rejections)],
+      ["Approved for good (don't ask again)", n(AP.permanent_grants)], ["Approvals in the last hour", n(AP.last_hour)],
+      ["Most approvals in one hour", n(AP.max_per_hour)], ["Median wait for your answer", `${AP.wait_med_s} s`],
+      ["Answered in under 2 s", `<span class="${AP.quick_pct >= 50 ? "chip" : ""}">${AP.quick_pct}%</span>`],
+      ["Permanent allow rules", `${n(AP.rules)} (${n((AP.broad_rules || []).length)} broad, ${n((AP.new_rules || []).length)} new)`]])));
   h.push(`<footer>Local data in ~/.local/share/ws-telemetry (13 months, no conversation text) · your own queries: <code>ws-telemetry sql</code> · ADR-008</footer>`);
   $("#app").innerHTML = h.join("");
 }
