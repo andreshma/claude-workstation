@@ -33,8 +33,12 @@ are in [docs/governance/](docs/governance/README.md).
   them inside the sandbox; `bare` is Claude almost as it ships. Solo mode runs in auto mode **inside** the sandbox,
   excludes no command from it (the credentialed tools ask) and expires after 4 hours; `--with-network-tools` and
   `--unsandboxed` are audited exceptions ([ADR 0016](docs/adr/0016-solo-mode-inside-the-sandbox.md),
-  [ADR 0022](docs/adr/0022-solo-mode-without-excluded-commands.md)). Local Linux MCP servers run in `ws-mcp-jail`
-  ([ADR 0024](docs/adr/0024-mcp-server-confinement-and-allow-list.md)).
+  [ADR 0022](docs/adr/0022-solo-mode-without-excluded-commands.md)). Full and solo refuse hosts outside the network
+  allow list and deny GitHub's write endpoints ([ADR 0028](docs/adr/0028-network-per-level-mcp-egress-and-settings-menu.md)).
+  Local Linux MCP servers run in `ws-mcp-jail` ([ADR 0024](docs/adr/0024-mcp-server-confinement-and-allow-list.md)),
+  the Azure one without a network of its own but its egress allow list; every local server runs behind
+  `ws-mcp-filter`, which limits its tools per level and pins their definitions
+  ([ADR 0027](docs/adr/0027-mcp-stdio-policy-filter-and-tool-pinning.md)).
 - **The floor** stays at every level: the `deny` rules and `guard.sh`, which fails closed (also when the hook itself
   is missing, `onFailure: block`). `bash install.sh --managed` can install it as a root-owned managed drop-in.
   Bypass-permissions mode is disabled.

@@ -7,9 +7,13 @@
 #   YYYY-MM-DD_HHMM_<tab>.txt   the final screen text, clean and redacted (to attach to a bug)
 #   YYYY-MM-DD_HHMM_<tab>.gif   if you have agg installed (ws-tools install agg)
 # Uses pipe-pane: while recording, that pane cannot use another capture (Ctrl+b H or the searchable history).
-# The .cast stores what was on screen as is: do not record panes with secrets in view.
+# When the recording stops, the .cast is redacted in place (WS-SEC-009): every output event goes through the shapes
+# ws-redact masks (tokens, keys, passwords, connection strings); the gif is made from the redacted copy. A secret split
+# across two output events can still slip through, so do not record panes with secrets in view. WS_RECORD_KEEP_RAW=1
+# keeps the raw recording next to it as <name>.raw.cast (0600) for when you need the exact bytes.
 # Destination: WS_RECORD_DIR if set (tests).
 # Usage: tmux-record <pane>   ·   tmux-record --write <file.cast> <width> <height>  (internal: used by pipe-pane)
+#        tmux-record --redact <file.cast>   redacts a recording in place, prints how many events changed
 set -uo pipefail
 
 if [[ "${1:-}" == --write ]]; then   # raw pane stdin → asciicast v2 with timings
@@ -28,6 +32,38 @@ with open(f, "w", encoding="utf-8") as out:
 ' "$2" "$3" "$4"
 fi
 
+# redact_cast <file> — masks secrets in every output event of an asciicast v2 file, atomically, in place.
+redact_cast() {
+  python3 -I - "$1" "$HOME/.local/lib" <<'PY'
+import json, os, sys
+sys.path.insert(0, sys.argv[2])
+try:
+    from ws_mcp_policy import redact
+except ImportError:
+    sys.exit(3)
+src, n, out = sys.argv[1], 0, []
+with open(src, encoding="utf-8", errors="replace") as f:
+    for i, line in enumerate(f):
+        if i:
+            try:
+                ev = json.loads(line)
+                if isinstance(ev, list) and len(ev) == 3 and isinstance(ev[2], str):
+                    t, c = redact(ev[2])
+                    if c:
+                        n += 1
+                        line = json.dumps([ev[0], ev[1], t]) + "\n"
+            except ValueError:
+                pass
+        out.append(line)
+tmp = src + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    f.writelines(out)
+os.replace(tmp, src)
+print(n)
+PY
+}
+[[ "${1:-}" == --redact ]] && { redact_cast "${2:?file.cast}"; exit $?; }
+
 p="${1:?pane}"
 win_profile() { local u; u="$(wslvar USERPROFILE 2>/dev/null)"; [[ -n "$u" ]] && wslpath -u "$u" 2>/dev/null; }
 base="$(win_profile)"; dir="${base:+$base/Videos/Claude}"; dir="${WS_RECORD_DIR:-${dir:-$HOME/recordings}}"; mkdir -p "$dir"
@@ -38,9 +74,11 @@ if [[ -n "$current" ]]; then
   sleep 0.5
   txt="${current%.cast}.txt"
   tmux capture-pane -p -J -t "$p" -S -2000 | sed -e 's/[[:space:]]*$//' | ws-redact > "$txt"
+  if [[ "${WS_RECORD_KEEP_RAW:-0}" == 1 ]]; then cp -p "$current" "${current%.cast}.raw.cast" && chmod 600 "${current%.cast}.raw.cast"; fi
+  red="$(redact_cast "$current" 2>/dev/null)" || red="?"
   if command -v agg >/dev/null; then ( agg --quiet "$current" "${current%.cast}.gif" >/dev/null 2>&1 & ); fi
   n=$(( $(wc -l < "$current") - 1 ))
-  tmux display -d 4000 "⏹ Recording saved in Videos\\Claude: $(basename "$current") ($n events) + .txt"
+  tmux display -d 4000 "⏹ Recording saved in Videos\\Claude: $(basename "$current") ($n events, $red redacted) + .txt"
   exit 0
 fi
 [[ -n "$(tmux display -p -t "$p" '#{pane_pipe}')" && "$(tmux display -p -t "$p" '#{pane_pipe}')" != 0 ]] && {

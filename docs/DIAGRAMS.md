@@ -281,14 +281,16 @@ flowchart TB
 
 What `ws-mcp-jail` puts in front of a local stdio MCP server
 ([ADR 0024](adr/0024-mcp-server-confinement-and-allow-list.md)). Claude Code starts the registered command: for every
-local server that is `ws-mcp-keepalive` (next diagram), which starts `ws-mcp-jail` for a server with a `jail` object
-in `files/mcp-servers.json`, or the server itself for one with `"jail": false`.
+local server that is `ws-mcp-keepalive` (next diagram), which starts `ws-mcp-filter`
+([ADR 0027](adr/0027-mcp-stdio-policy-filter-and-tool-pinning.md)), which starts `ws-mcp-jail` for a server with a
+`jail` object in `files/mcp-servers.json`, or the server itself for one with `"jail": false`.
 
 ```mermaid
 flowchart LR
   cc["Claude Code<br/>(starts MCP servers outside its sandbox)"] --> ka["ws-mcp-keepalive --name N"]
-  ka --> jail{{"ws-mcp-jail --name N [--net] [--azure-config]"}}
-  ka -- "jail: false (Windows .exe)" --> win["The server itself,<br/>through WSL interop"]
+  ka --> flt["ws-mcp-filter --name N<br/>(tools per level and profile, caps, redaction,<br/>provenance, pinned tool definitions)"]
+  flt --> jail{{"ws-mcp-jail --name N [--net] [--egress] [--azure-config]"}}
+  flt -- "jail: false (Windows .exe)" --> win["The server itself,<br/>through WSL interop"]
   jail -- "Windows .exe (WSL interop)" --> refuse["Refused, exit 126:<br/>cannot be confined;<br/>register with jail: false + reason"]
   jail -- "bubblewrap cannot create namespaces" --> closed["Not started, exit 125<br/>(fail closed)"]
   jail -- "Linux server" --> bwrap["bwrap: new namespaces, no capabilities"]
@@ -296,6 +298,32 @@ flowchart LR
   bwrap --> rw["Read-write: ~/.local/state/ws-mcp/N<br/>(+ the tab's AZURE_CONFIG_DIR with --azure-config)"]
   bwrap --> none["Not in view: ~/.ssh and every credential store,<br/>~/.claude*, the audit log, other profiles,<br/>/mnt/c, /run (interop, agent sockets), tokens in env"]
   bwrap --> net["Network: only with --net"]
+  net -- "--egress" --> proxy["No network of its own: only ws-egress-proxy<br/>(outside the jail, Unix socket) and the hosts of egress.json"]
+```
+
+### An MCP tool definition changes (rug pull)
+
+How a changed tool definition is withheld until the owner approves it
+([ADR 0027](adr/0027-mcp-stdio-policy-filter-and-tool-pinning.md)).
+
+```mermaid
+sequenceDiagram
+  participant C as Claude Code
+  participant F as ws-mcp-filter
+  participant S as MCP server
+  participant P as mcp-tools.lock.json
+  participant O as Owner (terminal)
+  C->>F: tools/list
+  F->>S: tools/list
+  S-->>F: tools (echo: new description)
+  F->>P: same code identity? hash of echo differs
+  F-->>C: tools without echo (withheld)
+  F->>F: pending change, audit mcp_tools_changed, notify once
+  C->>F: tools/call echo
+  F-->>C: error: definition changed, owner must approve
+  O->>P: ws-mcp-tools diff, then approve (refused inside Claude)
+  C->>F: tools/list (after /mcp Reconnect)
+  F-->>C: echo with the approved definition
 ```
 
 ### A local MCP server exits and comes back

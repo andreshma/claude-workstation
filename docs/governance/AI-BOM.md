@@ -84,9 +84,9 @@ inherits the session's tools minus `disallowedTools`.
 | Agent | Model | Effort | Tool limits |
 |---|---|---|---|
 | `architect` | `claude-fable-5-2` | high | `disallowedTools: Edit, Write, NotebookEdit` |
-| `debugger` | `claude-opus-5-5` | medium | None (inherits the session) |
+| `debugger` | `claude-opus-5-5` | medium | `disallowedTools: WebFetch, WebSearch` |
 | `explorer` | `claude-haiku-5-5` | low | `disallowedTools: Edit, Write, NotebookEdit` |
-| `sql-quick` | `claude-sonnet-5-5` | low | None (inherits the session) |
+| `sql-quick` | `claude-sonnet-5-5` | low | `tools: Read, Grep, Glob, Edit, Write, Bash` |
 <!-- ai-bom:end agents -->
 
 | Agent | Data | Risk |
@@ -109,25 +109,30 @@ each one against [files/mcp-servers.lock.json](../../files/mcp-servers.lock.json
 pinned by sha256 on first registration, and a server missing from the lock or with a mismatch is skipped. An opt-in
 server is registered only with `install.sh --mcp-opt-in <name>`. MCP servers run **outside** the sandbox with the
 user's network and files ([THREAT_MODEL.md, Sandbox](../THREAT_MODEL.md#sandbox)); their output is labelled untrusted
-by `untrusted-content.sh` (WS-AI-001).
+by `untrusted-content.sh` (WS-AI-001). Every local server also runs behind `ws-mcp-filter` (ADR 0027): the tools each
+tab may see and call per protection level and profile (`~/.config/ws-mcp/filter.json`, and the owner's
+`filter.local.json`), argument and result caps, secrets masked both ways, provenance stamped on memory writes and the
+tool definitions pinned (`~/.local/share/ws-kit/mcp-tools.lock.json`; a changed one is withheld until
+`ws-mcp-tools approve`). azure reaches the network only through its egress allow list (`ws-egress-proxy`,
+`~/.config/ws-mcp/egress.json`, audit mode until the owner enforces it; ADR 0028).
 
 <!-- ai-bom:begin mcp -->
 | Server | Transport | Command or URL | Pin | Opt-in | Confinement | Restart after an exit | Always-ask rules |
 |---|---|---|---|---|---|---|---|
-| `mempalace` | stdio | `@WINHOME@/.local/bin/mempalace-mcp.exe` | sha256 pinned on first registration (`~/.local/share/ws-kit/mcp-trust.tsv`) | No | not confined (Windows executable reached through WSL interop) | ws-mcp-keepalive | 15 |
-| `recall` | stdio | `@WINHOME@/source/repos/recall/.venv/Scripts/python.exe -I -m recall mcp` | sha256 pinned on first registration (`~/.local/share/ws-kit/mcp-trust.tsv`) | No | not confined (Windows Python (.venv/Scripts/python.exe) reached through WSL interop) | ws-mcp-keepalive | 0 |
+| `mempalace` | stdio | `@WINHOME@/.local/bin/mempalace-mcp.exe` | sha256 pinned on first registration (`~/.local/share/ws-kit/mcp-trust.tsv`) | No | not confined (Windows executable reached through WSL interop); ws-mcp-filter (tools per level, pinned definitions) | ws-mcp-keepalive | 15 |
+| `recall` | stdio | `@WINHOME@/source/repos/recall/.venv/Scripts/python.exe -I -m recall mcp` | sha256 pinned on first registration (`~/.local/share/ws-kit/mcp-trust.tsv`) | No | not confined (Windows Python (.venv/Scripts/python.exe) reached through WSL interop); ws-mcp-filter (tools per level, pinned definitions) | ws-mcp-keepalive | 0 |
 | `microsoft-learn` | http | `https://learn.microsoft.com/api/mcp` | URL only (server side) | No | remote (runs at the provider) | Claude Code reconnects it | 0 |
-| `azure` | stdio | `@HOME@/.local/share/ws-kit/npm/azure-mcp/node_modules/.bin/azmcp server start` | `@azure/mcp@4.0.0-beta.9`, npm sha512 in the lock (prerelease) | No | ws-mcp-jail, network, own Azure config | ws-mcp-keepalive | 31 |
+| `azure` | stdio | `@HOME@/.local/share/ws-kit/npm/azure-mcp/node_modules/.bin/azmcp server start` | `@azure/mcp@4.0.0-beta.9`, npm sha512 in the lock (prerelease) | No | ws-mcp-jail, network through the egress allow list, own Azure config; ws-mcp-filter (tools per level, pinned definitions) | ws-mcp-keepalive | 31 |
 | `ms-release-comms` | http | `https://www.microsoft.com/releasecommunications/mcp` | URL only (server side) | No | remote (runs at the provider) | Claude Code reconnects it | 0 |
-| `chrome-devtools` | stdio | `@HOME@/.local/share/ws-kit/npm/chrome-devtools-mcp/node_modules/.bin/chrome-devtools-mcp --isolated --no-usage-statistics --no-performance-crux --redact-network-headers` | `chrome-devtools-mcp@1.14.0`, npm sha512 in the lock | Yes | ws-mcp-jail, network | ws-mcp-keepalive | 0 |
+| `chrome-devtools` | stdio | `@HOME@/.local/share/ws-kit/npm/chrome-devtools-mcp/node_modules/.bin/chrome-devtools-mcp --isolated --no-usage-statistics --no-performance-crux --redact-network-headers` | `chrome-devtools-mcp@1.14.0`, npm sha512 in the lock | Yes | ws-mcp-jail, network; ws-mcp-filter (tools per level, pinned definitions) | ws-mcp-keepalive | 0 |
 <!-- ai-bom:end mcp -->
 
 | Server | Upstream | Hosts it needs | Credentials reachable | Data | Risk |
 |---|---|---|---|---|---|
-| `mempalace` | External repository, not inspected | None expected (`HF_HUB_OFFLINE=1`); not verifiable from the repo | The user's, on the Windows side | Reads and writes the memory store: drawers, knowledge graph, diary. Every write asks through `memory-gate.sh`, which stamps provenance and blocks `<private>` text (WS-AI-012) | High (WS-AI-012, WS-AI-009) |
-| `recall` | External repository, not inspected | None expected (`HF_HUB_OFFLINE=1`) | The user's, on the Windows side | Search queries; returns passages of the local book corpus | Medium (WS-AI-009, WS-AI-024) |
+| `mempalace` | External repository, not inspected | None expected (`HF_HUB_OFFLINE=1`); not verifiable from the repo | The user's, on the Windows side | Reads and writes the memory store: drawers, knowledge graph, diary. Every write asks through `memory-gate.sh`; `ws-mcp-filter` refuses `<private>` text, stamps provenance itself, never passes `hook_settings`, `mine` or the bulk deletes, and allows only reads at full and in solo (WS-AI-012) | High (WS-AI-012, WS-AI-009) |
+| `recall` | External repository, not inspected | None expected (`HF_HUB_OFFLINE=1`) | The user's, on the Windows side | Search queries; returns passages of the local book corpus (about 148 technical books, by the server's own description), capped at 512 KiB and redacted by `ws-mcp-filter`, labelled untrusted | Medium (WS-AI-009, WS-AI-024) |
 | `microsoft-learn` | Microsoft | `learn.microsoft.com` | None | Search queries and URLs chosen by the agent; returns untrusted text | Medium (WS-AI-001) |
-| `azure` | Microsoft | The Azure endpoints of the tools called (not listed in the repo); no registry access at start | Only the tab's Azure CLI login (`AZURE_CONFIG_DIR`, the one folder `ws-mcp-jail --azure-config` binds); no other credential, profile or Windows path (ADR 0024) | Tool arguments; returns subscription and resource data. Mutating tools and the `keyvault`, `role`, `storage`, `sql`, `cosmos` and other data tools always ask; mutating tools against a production subscription are blocked by the guard (WS-SEC-006) | High (WS-AI-009, WS-AI-011) |
+| `azure` | Microsoft | The Azure endpoints of [egress.json](../../files/home/.config/ws-mcp/egress.json) (login, management, Graph, Key Vault, storage, data services); others logged as would-deny until enforced; no registry access at start | Only the tab's Azure CLI login (`AZURE_CONFIG_DIR`, the one folder `ws-mcp-jail --azure-config` binds); no other credential, profile or Windows path (ADR 0024) | Tool arguments; returns subscription and resource data. Mutating tools and the `keyvault`, `role`, `storage`, `sql`, `cosmos` and other data tools always ask; mutating tools against a production subscription are blocked by the guard (WS-SEC-006) | High (WS-AI-009, WS-AI-011) |
 | `ms-release-comms` | Microsoft | `www.microsoft.com` | None | Queries; returns untrusted text | Medium (WS-AI-001) |
 | `chrome-devtools` | Google (Chrome DevTools team) | The pages the agent opens, in a Chrome reachable from WSL | None with `--isolated` (its own temporary profile); a Windows Chrome attached through a debugging port exposes whatever that profile holds | Page content, network and console of the pages it drives, as untrusted text; usage statistics and update checks off | Medium (WS-AI-011) |
 
@@ -176,11 +181,13 @@ pipeline order is in [architecture.md](../architecture.md).
 | `guard.sh` | PreToolUse; onFailure `block` | - |
 | `intent-route.sh` | UserPromptSubmit | - |
 | `lint-on-edit.sh` | PostToolUse (`Edit\|Write\|MultiEdit`) | 30 |
+| `mcp-pin-gate.sh` | PreToolUse (`mcp__.*`); SessionStart | 5 |
 | `memory-filter.sh` → `win-hook.sh` → `mempalace.exe` | SessionEnd; SessionStart; Stop; PreCompact | 20, 30, 45 |
 | `memory-filter.sh` → `win-hook.sh` → `python.exe` → `recall_hook.py` | UserPromptSubmit | 5 |
 | `memory-gate.sh` | PreToolUse (`mcp__.*mempalace.*`); UserPromptSubmit | 5, 10 |
 | `prompt-screen.sh` | UserPromptSubmit | 5 |
 | `read-convert.sh` | PreToolUse (`Read`) | 180 |
+| `read-screen.sh` | PreToolUse (`Read`) | 10 |
 | `tmux-state.sh` | Notification; PostToolUse; PostToolUseFailure; PreCompact; PreToolUse; SessionEnd; SessionStart; Stop; StopFailure; SubagentStart; SubagentStop; UserPromptSubmit | - |
 | `untrusted-content.sh` | PostToolUse (`^(WebFetch\|WebSearch\|mcp__.*)$`); PostToolUse (`Bash`) if the command starts with `curl`, `wget`, `gh api`, `gh issue view`, `gh pr view`, `gh pr diff`, `gh run view`, `gh release view`, `gh search` | 5 |
 | `win-notify.sh` | Notification; Stop; UserPromptSubmit | - |
@@ -206,6 +213,8 @@ pipeline order is in [architecture.md](../architecture.md).
 | `guard.sh` | Tool input | Blocks with exit 2 and logs the block; fails closed, also when it is missing (`onFailure: block`) | Low (WS-SEC-005) |
 | `audit.sh` | Tool input, prompt length | `~/.claude/audit/*.jsonl`: commands redacted, URLs without query string, search queries, 500 redacted characters of MCP input; hash chain with anchors on the Windows side; 395 days | Medium (WS-SEC-010, WS-SEC-011) |
 | `read-convert.sh` | Office and PDF files | Converted Markdown, announced as document data | Low |
+| `read-screen.sh` | The first 2 MiB of a text file Claude is about to read | Asks before a file outside the project with what looks like a secret is read; inside the project, a note not to repeat the values; audit `read-secret` lines (count only, never the value) | Low (WS-AI-022) |
+| `mcp-pin-gate.sh` | MCP tool names; the pending tool-definition changes | Denies a tool whose definition changed and is not approved; at session start runs `ws-mcp-tools check-remote` in the background (the remote servers' tool lists); audit `blocked` line | Low (WS-AI-031) |
 | `lint-on-edit.sh` | The edited file | Findings as context | Low |
 | `ws-sandbox-notice.sh` | Command result | `~/.local/share/ws-telemetry/raw/sandbox-*.jsonl` | Low |
 | `win-notify.sh` | Event, pane text | Windows notification; calls `ws-telegram notify`, which sends redacted text to Telegram | Medium (WS-AI-007, WS-SEC-009) |
@@ -236,16 +245,17 @@ Maps to: WS-GOV-002, WS-AI-014 (OWASP-ASI:ASI04, CSF:ID.AM-02, CIS-v8:2.1).
 
 ## External services
 
-Retention and terms are not in the repository; they are filled in by hand at the monthly review
-([REVIEW-CADENCE.md](REVIEW-CADENCE.md)).
+Retention and terms are filled in by hand from the providers' pages (read 2026-11-26) and re-read at the monthly
+review ([REVIEW-CADENCE.md](REVIEW-CADENCE.md)). They are the published defaults: the account's own agreement (for
+example zero data retention on an Enterprise plan) may differ, and the owner confirms it.
 
 | Service | Used by | Endpoint (source) | Data sent | Credential | Retention, terms | Risk |
 |---|---|---|---|---|---|---|
-| Anthropic, Claude Code | Every session, subagents, `claude -p` in scripts | Managed by Claude Code | The conversation | Claude login per account (`~/.claude/.credentials.json`, denied to agents) | Those of the account's plan: to fill | Medium (WS-AI-022) |
-| Anthropic API, `ant` CLI 2.10.0 (`ws-copilot`, SHA-256 verified) | Terminal copilot | Managed by `ant` | The command line, redacted | Console login in `~/.config/anthropic-copilot` (denied to agents) | To fill | Low |
-| Telegram Bot API | `ws-telegram` | `api.telegram.org` (`ws-telegram`) | Redacted notifications, command output, summaries | `ws/telegram-bot-token`, PIN `ws/telegram-pin` | Telegram stores the text ([THREAT_MODEL.md](../THREAT_MODEL.md#telegram-remote-control)); terms to fill | Medium (WS-AI-007) |
-| Microsoft Learn MCP | `microsoft-learn` | `learn.microsoft.com/api/mcp` (`mcp-servers.json`) | Agent queries | None | To fill | Low |
-| Microsoft release communications MCP | `ms-release-comms` | `www.microsoft.com/releasecommunications/mcp` (`mcp-servers.json`) | Agent queries | None | To fill | Low |
+| Anthropic, Claude Code | Every session, subagents, `claude -p` in scripts | Managed by Claude Code | The conversation | Claude login per account (`~/.claude/.credentials.json`, denied to agents) | Team, Enterprise and API: 30 days, no training on the data ([Commercial Terms](https://www.anthropic.com/legal/commercial-terms)); Free, Pro and Max: 30 days, or 5 years with model improvement on ([Consumer Terms](https://www.anthropic.com/legal/consumer-terms)); `/feedback` transcripts 5 years; locally, transcripts per `cleanupPeriodDays` ([data usage](https://code.claude.com/docs/en/data-usage)) | Medium (WS-AI-022) |
+| Anthropic API, `ant` CLI 2.10.0 (`ws-copilot`, SHA-256 verified) | Terminal copilot | Managed by `ant` | The command line, redacted | Console login in `~/.config/anthropic-copilot` (denied to agents) | API: 30 days, no training ([Commercial Terms](https://www.anthropic.com/legal/commercial-terms), [Privacy Center](https://privacy.anthropic.com/)) | Low |
+| Telegram Bot API | `ws-telegram` | `api.telegram.org` (`ws-telegram`) | Redacted notifications, command output, summaries | `ws/telegram-bot-token`, PIN `ws/telegram-pin` | Cloud chats, bot chats included, are kept on Telegram's servers «for as long as it is necessary» (no period), until deleted; an account inactive for 18 months is deleted ([Privacy Policy](https://telegram.org/privacy), §3.3.1, §4.3, §10.4, last changed 2026-08-21); the bot's side is the kit, which keeps no message text ([THREAT_MODEL.md](../THREAT_MODEL.md#telegram-remote-control)) | Medium (WS-AI-007) |
+| Microsoft Learn MCP | `microsoft-learn` | `learn.microsoft.com/api/mcp` (`mcp-servers.json`) | Agent queries | None | Public documentation, no authentication; use is under the [Microsoft Learn Terms of Use](https://learn.microsoft.com/en-us/legal/termsofuse) ([overview](https://learn.microsoft.com/en-us/training/support/mcp)); no retention period for queries is published | Low |
+| Microsoft release communications MCP | `ms-release-comms` | `www.microsoft.com/releasecommunications/mcp` (`mcp-servers.json`) | Agent queries | None | No authentication; no terms or retention published for the endpoint (checked 2026-11-26), so the [Microsoft Terms of Use](https://www.microsoft.com/en-us/legal/terms-of-use) and [Privacy Statement](https://privacy.microsoft.com/privacystatement) of the site apply | Low |
 | Azure | `azure` MCP; `az` (excluded from the sandbox at the normal level) | Not in the repo | Tool and command arguments | The user's Azure CLI login, or an agent identity under `~/.config/ws-agent/<name>` (`tmux-level --agent`) | Governed by the subscription owner | High (WS-AI-011, WS-SEC-006) |
 | npm registry | `ws-pinned install` and `verify --online` | `registry.npmjs.org` | Package requests for the pinned versions | None | - | Medium (WS-AI-009: integrity-checked against the lock) |
 | Microsoft 365 connector | Claude account connector, not installed by the kit | Not in the repo | Mail, calendar and files the agent reads or sends | The account's connector login | Governed by the tenant | Medium (WS-AI-005: writes always ask) |
@@ -263,8 +273,9 @@ CSF:ID.AM-04, CSF:GV.SC-05, CIS-v8:15.1, ISO42001:A.10).
   are still right: those are reviewed monthly (WS-GOV-002).
 - MemPalace and recall internals, the Windows-side `CLAUDE.md` and the recall corpus are outside this repository
   (WS-AI-012, WS-AI-024).
-- Retention and terms of each external service are not recorded (WS-GOV-008).
+- Retention and terms are the providers' published defaults; the account's own agreement may differ (WS-GOV-008).
 - Model aliases in scripts resolve to whatever Claude Code maps them to.
-- MCP servers are not confined (no `ws-mcp-jail` yet, WS-AI-011).
+- MemPalace and recall cannot be confined by `ws-mcp-jail` (Windows executables); their traffic is filtered by
+  `ws-mcp-filter` (WS-AI-011, ADR 0027).
 
 Maps to: WS-GOV-002, WS-GOV-008 (NIST-AI-RMF:MANAGE-3.2, CSF:ID.AM-02).

@@ -1,0 +1,16 @@
+{
+  "_comment": "Egress allow list per jailed MCP server (ADR-028, WS-SEC-003, WS-AI-011), read by ws-mcp-jail and ws-egress-proxy at every server start. A server registered with jail.egress has no network of its own: it reaches only the hosts listed here, through ws-egress-proxy. mode: enforce (anything else is refused, 403) | audit (everything passes and what is not listed is logged as would-deny: build the list, then enforce) | off (shared network, as before). Hosts: exact names or *.domain; ports 443 and 80 unless the entry names one. See what a server really reached with: ws-egress-proxy report NAME. Yours to edit in a plain shell or from Menu > Settings; Claude cannot (guard.sh).",
+  "azure": {
+    "mode": "audit",
+    "hosts": [
+      "login.microsoftonline.com", "login.windows.net", "management.azure.com", "management.core.windows.net",
+      "graph.microsoft.com", "*.vault.azure.net", "*.blob.core.windows.net", "*.queue.core.windows.net",
+      "*.table.core.windows.net", "*.file.core.windows.net", "*.dfs.core.windows.net", "*.documents.azure.com",
+      "*.database.windows.net", "*.database.windows.net:1433", "*.kusto.windows.net", "*.monitor.azure.com",
+      "api.loganalytics.io", "*.applicationinsights.azure.com", "*.servicebus.windows.net", "*.azurecr.io",
+      "*.search.windows.net", "*.openai.azure.com", "*.cognitiveservices.azure.com", "*.services.ai.azure.com",
+      "*.redis.cache.windows.net:6380", "*.postgres.database.azure.com:5432", "*.mysql.database.azure.com:3306",
+      "*.azconfig.io", "*.azurewebsites.net", "*.scm.azurewebsites.net"
+    ]
+  }
+}

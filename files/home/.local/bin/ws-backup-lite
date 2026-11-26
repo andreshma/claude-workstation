@@ -42,14 +42,16 @@ DEST="${WS_BACKUP_DEST:-$(win_home)/WSL-Backups/lite}"
 [[ "$DEST" == /* ]] || { echo "✖ Windows folder not found; set WS_BACKUP_DEST" >&2; exit 1; }
 
 #######################################
-# Expiry of the Windows-side copies (WS_BACKUP_COPY_DAYS, default 30; 0 turns it off).
+# Expiry of the Windows-side copies (WS_BACKUP_COPY_DAYS, else ~/.config/ws-backup/copy-days; 30; 0: never).
 #   .claude-wsl-backup: files older than that whose original under ~/.claude no longer exists (ws-backup copies
 #     incrementally and never deletes, so a conversation Claude Code cleaned up stayed there for ever);
 #   .tmux-resurrect-backup: tmux_resurrect_*.txt(.age) older than that, except the newest; last.txt(.age) stays.
 # Globals: WS_BACKUP_WINHOME (the Windows profile seen from WSL; detected when unset). Outputs: count to the log.
 #######################################
 prune_copies() {
-  local days="${WS_BACKUP_COPY_DAYS:-30}" wh n=0 f rel newest
+  local days="${WS_BACKUP_COPY_DAYS:-}" wh n=0 f rel newest
+  [[ -n "$days" ]] || { read -r days < "$HOME/.config/ws-backup/copy-days"; } 2>/dev/null || true   # Menu → Settings
+  days="${days:-30}"
   [[ "$days" =~ ^[0-9]+$ ]] && (( days > 0 )) || return 0
   wh="${WS_BACKUP_WINHOME:-}"
   # A run with its own destination (ws-test, a manual test) never prunes the real Windows profile: its HOME is not

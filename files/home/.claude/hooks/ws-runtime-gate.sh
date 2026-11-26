@@ -6,7 +6,9 @@
 #             run «ws-stop-all --clear» in a terminal.
 #   budget    ~/.local/state/ws-budget-over (written by «ws-telemetry build» when budgets.conf has hard=1, WS-AI-019)
 #             lists the projects at or over 100 % of their monthly budget; «(total)» stands for every project. Work in
-#             those projects is held until «ws-telemetry budgets --override <project> [hours]».
+#             those projects is held until «ws-telemetry budgets --override <project> [hours]». With
+#             «per-session=USD» in budgets.conf, a single session over that cap is held too (its own row, matched by
+#             session_id), whatever its project; the same override, with the project, lets it go on.
 # Failure mode: the stop marker blocks with or without jq. The budget gate fails OPEN: a missing, unreadable or stale
 # flag (older than 2 hours: the dashboard stopped updating) lets work continue, because it cannot know the spend.
 # The project is the folder name of the session's cwd, the same key ws-telemetry and budgets.conf use.
@@ -36,7 +38,8 @@ command -v jq >/dev/null || exit 0
 (( $(date +%s) - $(stat -c %Y "$OVER" 2>/dev/null || echo 0) <= 7200 )) || exit 0
 cwd="$(jq -r '.cwd // empty' <<<"$input" 2>/dev/null)"; proj="${cwd%/}"; proj="${proj##*/}"
 [[ -n "$proj" ]] || exit 0
-hit="$(jq -r --arg p "$proj" '[.over[]? | select(.project == $p or .project == "(total)")][0]
+sid="$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null)"
+hit="$(jq -r --arg p "$proj" --arg s "${sid:-none}" '[.over[]? | select((.session // "") == $s or ((.session // "") == "" and (.project == $p or .project == "(total)")))][0]
   | if . then "\(.project)\t\(.pct)\t\(.spent)\t\(.budget)" else empty end' "$OVER" 2>/dev/null)"
 [[ -n "$hit" ]] || exit 0
 IFS=$'\t' read -r key pct spent budget <<<"$hit"

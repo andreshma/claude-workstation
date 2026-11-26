@@ -51,7 +51,7 @@ echo "2) tmux-solo"
 : > "$F/log"; t0="$(date +%s)"
 run bash "$BIN/tmux-solo" this %1 >/dev/null 2>&1
 check "this: restarts Claude in auto mode with the generated solo profile" \
-  grep -qF -- "send-keys -t %1 -l claude-resume --permission-mode auto --settings '$WS_LEVELS_DIR/solo.json'" "$F/log"
+  grep -qF -- "send-keys -t %1 -l WS_LEVEL=solo claude-resume --permission-mode auto --settings '$WS_LEVELS_DIR/solo.json'" "$F/log"
 check "  which keeps the sandbox and excludes NO command from it (ADR-022)" \
   jq -e '.sandbox.enabled and .sandbox.autoAllowBashIfSandboxed and (.sandbox.allowUnsandboxedCommands == false) and (.sandbox | has("excludedCommands") | not)' "$WS_LEVELS_DIR/solo.json"
 n_ex="$(jq '.sandbox.excludedCommands | length' "$ROOT/files/home/.config/claude-levels/normal-adds.json")"
@@ -80,7 +80,7 @@ check "  and 4 h at most" not grep -q 'send-keys' "$F/log"
 : > "$F/log"; run bash "$BIN/tmux-solo" this %1 --with-network-tools --unsandboxed >/dev/null 2>&1
 check "  never together with --unsandboxed" not grep -q 'send-keys' "$F/log"
 : > "$F/log"; run bash "$BIN/tmux-solo" normal %1 >/dev/null 2>&1
-check "normal: back to the normal level and every solo mark removed" bash -c "grep -qF -- \"-l claude-resume --settings '$WS_LEVELS_DIR/normal.json'\" '$F/log' && grep -q 'set -wu -t @1 @csolo_until' '$F/log' && grep -q 'set -wu -t @1 @csolo_nosb' '$F/log' && grep -q 'set -wu -t @1 @csolo_net' '$F/log'"
+check "normal: back to the normal level and every solo mark removed" bash -c "grep -qF -- \"-l WS_LEVEL=normal claude-resume --settings '$WS_LEVELS_DIR/normal.json'\" '$F/log' && grep -q 'set -wu -t @1 @csolo_until' '$F/log' && grep -q 'set -wu -t @1 @csolo_nosb' '$F/log' && grep -q 'set -wu -t @1 @csolo_net' '$F/log'"
 R="$T/repo"; git init -q "$R" && git -C "$R" commit -q --allow-empty -m "chore: init"
 : > "$F/log"; run bash "$BIN/tmux-solo" new "$R" >/dev/null 2>&1
 check "new in a git repo: its own worktree and branch by default" bash -c "ls -d '$R'.wt/solo-* && git -C '$R' branch --list 'solo/*' | grep -q solo/ && grep -q 'new-window .* -c $R.wt/solo-' '$F/log'"

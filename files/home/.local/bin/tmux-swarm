@@ -25,6 +25,27 @@ D="$HOME/.local/share/tmux-swarm"; mkdir -p "$D/profiles" "$D/cache" && chmod 70
 die() { echo "✖ $*" >&2; exit 1; }
 state() { jq -r "$1" "$D/$2.json"; }
 
+# task_problems <n> <text> — why a subtask (model output, WS-AI-017) cannot be an agent's task as it is: shell to
+# run (a shebang, $(…), backticks, download and run), YAML frontmatter, instructions the guard or the swarm forbid
+# (push, --no-verify, Co-authored-by, bypass or skip-permissions, the sandbox off), injection phrases, invisible
+# Unicode (tag, bidirectional and zero-width characters) or text marked <private>. One line per problem; none: «».
+task_problems() {
+  local n="$1" t="${2//\\n/$'\n'}" p=()
+  [[ "$t" =~ (^|$'\n')'#!' ]] && p+=("a shebang")
+  [[ "$t" == *'$('* || "$t" == *'`'* ]] && p+=("command substitution")
+  grep -Eqi '(curl|wget)[^|]*\|[[:space:]]*(sudo[[:space:]]+)?(ba|z)?sh' <<<"$t" && p+=("download and run")
+  grep -Eq '^(---$|(name|description|tools|allowed-tools|model):[[:space:]])' <<<"$t" && p+=("frontmatter")
+  grep -Eqi 'git[[:space:]]+push|--no-verify|co-authored-by|bypassPermissions|dangerously-skip-permissions|allowUnsandboxedCommands|(turn|switch)[[:space:]]+off[[:space:]]+the[[:space:]]+sandbox|disable[[:space:]]+the[[:space:]]+sandbox' <<<"$t" \
+    && p+=("an action the guard or the swarm forbids")
+  grep -Eqi 'ignore (all |the )?(previous|prior|above) (instructions|rules)|disregard (the|your) (rules|instructions)|ignora (las )?instrucciones' <<<"$t" \
+    && p+=("an injection phrase")
+  LC_ALL=C.UTF-8 grep -Pq '[\x{E0000}-\x{E007F}\x{200B}-\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{FEFF}]' <<<"$t" 2>/dev/null \
+    && p+=("invisible Unicode characters")
+  grep -qi '</\?private>' <<<"$t" && p+=("text marked <private>")
+  (( ${#p[@]} )) && printf '  %d. %s: %s\n' "$n" "$(head -1 <<<"$t" | cut -c1-60)" "$(IFS=,; echo "${p[*]}" | sed 's/,/, /g')"
+  return 0
+}
+
 # Swarms created by earlier versions keep their Spanish state keys, session name and branch prefix.
 legacy() { jq -e 'has("tareas")' "$D/$1.json" >/dev/null 2>&1; }
 session() { if legacy "$1"; then echo "enj-$1"; else echo "swarm-$1"; fi; }
@@ -82,9 +103,16 @@ new_swarm() {
       "Split this goal into 2 to 4 subtasks that can be done IN PARALLEL by different people, each on its own branch, touching different files to avoid conflicts. For each one: title on the first line, what to do, which files or folders it touches and the done criterion. Goal: $goal. Repo files (stdin)." 2>/dev/null \
       || printf 'Subtask 1: …\n---\nSubtask 2: …\n'
   } > "$f"
-  "${EDITOR:-nano}" "$f"
-  mapfile -t tasks < <(grep -v '^#' "$f" | awk 'BEGIN{RS="\n---+\n"} {gsub(/^\n+|\n+$/,""); if (length($0)) {gsub(/\n/,"\\n"); print}}')
-  n=${#tasks[@]}; (( n >= 1 && n <= 6 )) || die "I need 1 to 6 subtasks (there are $n)"
+  while :; do
+    "${EDITOR:-nano}" "$f"
+    mapfile -t tasks < <(grep -v '^#' "$f" | awk 'BEGIN{RS="\n---+\n"} {gsub(/^\n+|\n+$/,""); if (length($0)) {gsub(/\n/,"\\n"); print}}')
+    n=${#tasks[@]}; (( n >= 1 && n <= 6 )) || die "I need 1 to 6 subtasks (there are $n)"
+    bad="$(for i in "${!tasks[@]}"; do task_problems "$((i + 1))" "${tasks[$i]}"; done)"
+    [[ -z "$bad" ]] && break
+    printf '\n✖ Subtasks carry text an agent must not receive as its task (WS-AI-017):\n%s\n' "$bad"
+    read -r -p "Edit them again? [Y/n] " s
+    [[ "$s" =~ ^[nN] ]] && { echo "Cancelled: no agent was started."; exit 1; }
+  done
   echo; for i in "${!tasks[@]}"; do printf '  %d. %s\n' $((i + 1)) "$(head -1 <<<"${tasks[$i]//\\n/$'\n'}")"; done
   read -r -p $'\n'"Create $n worktrees, branches swarm/$id/1..$n and $n tabs with Claude? [y/N] " s
   [[ "$s" =~ ^([yY]([eE][sS])?|[sS]([iIíÍ])?)$ ]] || { echo "Cancelled."; exit 0; }
@@ -110,7 +138,7 @@ new_swarm() {
     cmd="$(agent_command "$level" "$wt" "$D/profiles/$id-$((i + 1)).json")" || die "Could not build the profile of agent $((i + 1))"
     # Spanish on purpose: accented letters are kept in tab names taken from subtask titles typed in Spanish.
     tmux new-window -d -t "swarm-$id:" -n "$((i + 1))-$(head -1 <<<"${tasks[$i]//\\n/$'\n'}" | tr -c 'A-Za-z0-9áéíóúñ_-' '-' | cut -c1-18)" -c "$wt" \
-      "bash -lc 'eval \"\$(ws-profile --export $pf)\" && ${cmd/#claude /claude-resume --new } \"\$(cat .swarm-task.md)\"; exec bash -l'"
+      "bash -lc 'eval \"\$(ws-profile --export $pf)\" && WS_LEVEL=$level ${cmd/#claude /claude-resume --new } \"\$(cat .swarm-task.md)\"; exec bash -l'"
     js="$(jq -c --arg r "$branch" --arg w "$wt" --arg t "${tasks[$i]}" --arg p "$D/profiles/$id-$((i + 1)).json" \
       '. + [{branch: $r, path: $w, task: $t, profile: $p}]' <<<"$js")"
   done

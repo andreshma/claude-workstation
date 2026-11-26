@@ -5,8 +5,8 @@ if -F '#{!=:#{status-interval},0}' 'set -gF @si_prev "#{status-interval}"'
 set -g status-interval 0
 display-menu -O -T "#[align=centre] ▦  Panes · #W " -x C -y C -- \
   "-#[nodim]── Arrange ──" "" "" \
-  "Split side by side" v "split-window -h -c '#{pane_current_path}'" \
-  "Split top and bottom" h "split-window -v -c '#{pane_current_path}'" \
+  "Split side by side" v "split-window -h -c '##{pane_current_path}'" \
+  "Split top and bottom" h "split-window -v -c '##{pane_current_path}'" \
   "Zoom the pane (again to go back)" z "resize-pane -Z" \
   "Main layout 65 %" M "select-layout main-vertical" \
   "Tiled" T "select-layout tiled" \
@@ -18,7 +18,7 @@ display-menu -O -T "#[align=centre] ▦  Panes · #W " -x C -y C -- \
   "Extract URLs, paths, IDs… (Ctrl+b u)" u "display-popup -E -w 85% -h 70% -T ' Extract from the screen ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-extract #{pane_id}\"" \
   "-#[nodim]── Notifications ──" "" "" \
   "Notify me when it finishes (Ctrl+b N)" N "run-shell -b '~/.local/bin/tmux-notify-me #{pane_id}'" \
-  "Live logs with alarm" L "display-popup -E -w 85% -h 70% -T ' Live logs ' -d \"#{pane_current_path}\" \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-logs\"" \
+  "Live logs with alarm" L "display-popup -E -w 85% -h 70% -T ' Live logs ' -d \"##{pane_current_path}\" \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-logs\"" \
   '' \
   "‹ Back" BSpace "source-file ~/.config/tmux-claude/menu.tmux"
 set -gF status-interval '#{?@si_prev,#{@si_prev},15}'

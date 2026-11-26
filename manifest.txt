@@ -148,6 +148,16 @@
 .local/bin/ws-pinned
 .local/bin/ws-mcp-jail
 .local/bin/ws-mcp-keepalive
+.local/bin/ws-mcp-filter
+.local/bin/ws-mcp-tools
+.local/bin/ws-egress-proxy
+.local/bin/ws-settings
+.local/lib/ws_mcp_policy.py
+.config/ws-mcp/filter.json
+.config/ws-mcp/egress.json
+.config/claude-levels/network.json
+.config/ws-secret/rotation.conf
+.config/tmux-claude/menu-settings.tmux
 .local/bin/agent-browser
 .local/lib/ws-npm/azure-mcp/
 .local/lib/ws-npm/chrome-devtools-mcp/

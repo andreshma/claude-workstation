@@ -378,15 +378,64 @@ def mcp_confinement(kitdef: dict) -> None:
             "ws-mcp-jail --probe failed: the jailed servers do not start (fail closed)",
             "sudo apt-get install bubblewrap; on Ubuntu 24.04 check the AppArmor userns restriction.")
     mcp_keepalive(kitdef, servers)
+    mcp_filter(kitdef, servers)
 
 
 def unwrap_keepalive(s: dict) -> tuple[str, list[str]]:
-    """A registration's command and arguments without ws-mcp-keepalive (ADR-025): ws-mcp-jail, or the server itself."""
+    """A registration's command and arguments without ws-mcp-keepalive (ADR-025) and ws-mcp-filter (ADR-027):
+    ws-mcp-jail, or the server itself."""
     cmd, args = str(s.get("command") or ""), [str(a) for a in s.get("args") or []]
-    if cmd.endswith("/ws-mcp-keepalive") and "--" in args:
+    while cmd.endswith(("/ws-mcp-keepalive", "/ws-mcp-filter")) and "--" in args:
         i = args.index("--")
         cmd, args = (args[i + 1] if i + 1 < len(args) else ""), args[i + 2:]
     return cmd, args
+
+
+def has_filter(s: dict) -> bool:
+    """True when ws-mcp-filter is in the registration's chain (directly or inside the keepalive)."""
+    cmd, args = str(s.get("command") or ""), [str(a) for a in s.get("args") or []]
+    return cmd.endswith("/ws-mcp-filter") or any(a.endswith("/ws-mcp-filter") for a in args)
+
+
+def mcp_filter(kitdef: dict, servers: dict) -> None:
+    """Every local MCP server runs through ws-mcp-filter (ADR-027, WS-AI-031, WS-AI-011): tool allow list per tab,
+    tool-definition pins, redaction and caps; and no tool-definition change is waiting for the owner. The remote
+    servers' tool lists are compared with their pins too (ws-mcp-tools check-remote, network)."""
+    on, off, bare = [], [], []
+    for n, s in servers.items():
+        if not isinstance(s, dict) or (s.get("type") or "stdio") != "stdio":
+            continue
+        if has_filter(s):
+            on.append(n)
+        elif isinstance(kitdef.get(n), dict) and kitdef[n].get("filter") is False:
+            off.append(n)
+        else:
+            bare.append(n)
+    if on or off or bare:
+        res("ok" if not bare else "warn", f"local MCP servers behind ws-mcp-filter: {len(on)}, not: "
+            f"{len(bare) + len(off)}", "; ".join(bare[:4] + [f"{n} (filter: false)" for n in off[:4]])[:160],
+            ("Without the filter their tool definitions are not pinned and their traffic is not filtered: "
+             "bash install.sh --mcp-refresh." if bare else ""))
+    pol = jload(H / ".config/ws-mcp/filter.json")
+    res("ok" if isinstance(pol, dict) else "warn", "MCP filter policy (~/.config/ws-mcp/filter.json) is valid",
+        "" if isinstance(pol, dict) else "missing or not JSON: the built-in policy applies (nothing hidden per level)",
+        "bash install.sh restores the kit's policy.")
+    rc, out = sh("ws-mcp-tools status")
+    if rc == 1:
+        res("fail", "MCP tool definitions: a change is waiting for your review (rug-pull check)",
+            " ".join(x.strip() for x in out.splitlines() if "PENDING" in x)[:200],
+            "ws-mcp-tools diff NAME, then ws-mcp-tools approve NAME only if you trust the change (Menu → Settings).")
+    elif rc == 0:
+        res("ok", "MCP tool definitions: no change pending", f"{len([x for x in out.splitlines() if x.strip()])} "
+            "servers pinned")
+    if os.environ.get("WS_AUDIT_OFFLINE") != "1":
+        rc, out = sh("ws-mcp-tools check-remote", t=60)
+        if rc == 1:
+            res("fail", "remote MCP servers: tool definitions changed since they were pinned",
+                " ".join(x.strip() for x in out.splitlines() if "✖" in x)[:200],
+                "ws-mcp-tools diff NAME; if you do not trust it, claude mcp remove NAME.")
+        elif rc == 0 and out.strip():
+            res("ok", "remote MCP servers: tool definitions as pinned", " ".join(out.split())[:160])
 
 
 KEEPALIVE_RE = re.compile(r"^(\S+) (restart|giveup|refused) (.*)$")
@@ -789,6 +838,112 @@ def p_security() -> None:
     res("ok" if n == 0 else "fail", f"possible secrets in ~/.bash_history: {n}", "",
         "Rotate those credentials and then: ws-history --clean")
     host_hygiene()
+    branch_protection()
+    secret_rotation()
+    level_network()
+
+
+def repo_roots() -> list[Path]:
+    """The git repositories under REPOS and ~/code (one level down), at most 60."""
+    out: list[Path] = []
+    for root in [Path(p) for p in (os.environ.get("REPOS", ""), str(H / "code")) if p and Path(p).is_dir()]:
+        for d in sorted(root.iterdir()):
+            if (d / ".git").exists() and d not in out:
+                out.append(d)
+    return out[:60]
+
+
+def branch_protection() -> None:
+    """Agents push branches and the review happens on the remote (WS-AI-021): for every repository with a GitHub
+    origin, the default branch must require a pull request (classic protection or a ruleset). Warns, never fails:
+    the remote's rules are the owner's or the organisation's. Needs gh logged in; WS_AUDIT_OFFLINE=1 skips it."""
+    if os.environ.get("WS_AUDIT_OFFLINE") == "1" or not shutil.which("gh"):
+        res("info", "branch protection of the repositories agents push to: not checked",
+            "gh missing" if not shutil.which("gh") else "WS_AUDIT_OFFLINE=1", "")
+        return
+    unprotected, checked, unknown = [], 0, 0
+    for r in repo_roots():
+        _, url = sh(f"git -C {shlex.quote(str(r))} remote get-url origin 2>/dev/null")
+        m = re.search(r"github\.com[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?$", url.strip())
+        if not m:
+            continue
+        _, head = sh(f"git -C {shlex.quote(str(r))} symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null")
+        branch = head.split("/", 1)[1] if "/" in head else "main"
+        o, n = m.group(1), m.group(2)
+        rc, rules = sh(f"gh api repos/{o}/{n}/rules/branches/{shlex.quote(branch)} --jq '[.[].type]' 2>/dev/null", 20)
+        checked += 1
+        if rc != 0:
+            unknown += 1
+            continue
+        if "pull_request" in rules:
+            continue
+        rc2, prot = sh(f"gh api repos/{o}/{n}/branches/{shlex.quote(branch)}/protection "
+                       "--jq '.required_pull_request_reviews.required_approving_review_count // 0' 2>/dev/null", 20)
+        if rc2 == 0 and prot.strip().isdigit() and int(prot.strip()) > 0:
+            continue
+        unprotected.append(f"{o}/{n}:{branch}")
+    if not checked:
+        res("info", "branch protection: no repository with a GitHub origin under REPOS or ~/code")
+        return
+    res("ok" if not unprotected else "warn",
+        f"default branches that require a pull request: {checked - len(unprotected) - unknown} of {checked}"
+        + (f" ({unknown} not readable)" if unknown else ""), "; ".join(unprotected[:5]),
+        "Agents push branches and the review is the remote's: add a ruleset (Settings → Rules) or branch protection "
+        "that requires a pull request with one approval on the default branch.")
+
+
+def secret_rotation() -> None:
+    """Secrets of Windows Credential Manager past their rotation period (WS-GOV-010): ws-secret ages reads
+    LastWritten for every ws/<name> with a period in ~/.config/ws-secret/rotation.conf; never the value."""
+    if not shutil.which("ws-secret") or not (H / ".config/ws-secret/rotation.conf").exists():
+        return
+    rc, out = sh("ws-secret ages 2>/dev/null", 120)
+    if rc != 0:
+        res("info", "secret rotation: not checked", "ws-secret ages failed (Windows interop?)", "")
+        return
+    late, unknown, n = [], [], 0
+    for line in out.splitlines():
+        p = line.split("\t")
+        if len(p) != 3 or not p[2].isdigit():
+            continue
+        n += 1
+        if not p[1].lstrip("-").isdigit() or int(p[1]) < 0:
+            unknown.append(p[0])
+        elif int(p[1]) > int(p[2]):
+            late.append(f"{p[0]} ({p[1]} d > {p[2]} d)")
+    if n:
+        res("ok" if not late else "warn", f"secrets within their rotation period: {n - len(late)} of {n}",
+            "; ".join(late + [f"{u} (age unknown)" for u in unknown])[:200],
+            "Rotate them (docs/runbook.md, Rotating secrets); the periods are in ~/.config/ws-secret/rotation.conf.")
+
+
+def level_network() -> None:
+    """Network per protection level (WS-SEC-003, ADR-028): the full and solo profiles carry strictAllowlist and
+    their deniedDomains, the base denies the upload and gist hosts, and Claude Code is new enough to honour
+    strictAllowlist (2.1.219)."""
+    base = jload(H / ".claude/settings.json")
+    denied = set(((base.get("sandbox") or {}).get("network") or {}).get("deniedDomains") or [])
+    res("ok" if {"gist.github.com", "uploads.github.com"} <= denied else "warn",
+        "sandbox denies the gist and upload hosts at every level", "" if denied else "no deniedDomains in settings.json",
+        "bash install.sh restores the kit's settings.json.")
+    if shutil.which("tmux-level"):
+        rc, full = sh("tmux-level --profile full 2>/dev/null")
+        try:
+            net = json.loads(full).get("sandbox", {}).get("network", {}) if rc == 0 else {}
+        except ValueError:
+            net = {}
+        full_denied = net.get("deniedDomains")
+        full_denied = set(full_denied) if isinstance(full_denied, list) else set()   # a list of hosts, never a URL
+        res("ok" if net.get("strictAllowlist") is True and {"api.github.com"} <= full_denied else "warn",
+            "full level: strict network allow list and the GitHub API denied",
+            "" if net else "tmux-level --profile full did not produce a profile",
+            "Check ~/.config/claude-levels/network.json (bash install.sh restores it).")
+    _, v = sh("claude --version 2>/dev/null")
+    m = re.match(r"(\d+)\.(\d+)\.(\d+)", v.strip())
+    if m:
+        ok = tuple(int(x) for x in m.groups()) >= (2, 1, 219)
+        res("ok" if ok else "warn", f"Claude Code {m.group(0)} honours sandbox.network.strictAllowlist (2.1.219+)", "",
+            "Update Claude Code: older versions prompt for hosts outside the allow list in full and solo.")
 
 
 APT_CONF = Path(os.environ.get("WS_APT_CONF") or "/etc/apt/apt.conf.d")
@@ -915,6 +1070,26 @@ def p_resilience() -> None:
     res("ok" if c.exists() and age(c) < 1 else "warn", "copy of conversations to Windows", f"{age(c) * 60:.0f} min ago" if c.exists() else "never")
     _, kit = sh("git -C ~/code/claude-workstation status -sb | head -1")
     res("ok" if kit.startswith("##") and "ahead" not in kit and "behind" not in kit else "warn", f"kit: {kit[:80]}", "", "ws-verify && git push")
+    restore_drill()
+
+
+def restore_drill(target_s: int = 1800, max_days: int = 400) -> None:
+    """The yearly restore drill (WS-GOV-013): ws-restore-lite --drill records date, seconds and result; the last one
+    must have passed within the last 400 days and within the runbook's recovery time for the light backup."""
+    f = Path(os.environ.get("WS_TELEMETRY_DIR") or H / ".local/share/ws-telemetry") / "restore-drills.tsv"
+    try:
+        last = f.read_text(encoding="utf-8").strip().splitlines()[-1].split("\t")
+        when = dt.datetime.fromisoformat(last[0])
+        days = (dt.datetime.now(when.tzinfo) - when).days
+        secs, result = int(last[1]), last[2]
+    except (OSError, IndexError, ValueError):
+        res("warn", "restore drill: never timed", "", "Run ws-restore-lite --drill once a year (docs/runbook.md, "
+            "Recovery objectives); it records how long a restore test takes.")
+        return
+    ok = result == "ok" and days <= max_days and secs <= target_s
+    res("ok" if ok else "warn", f"last restore drill: {result} in {secs} s, {days} days ago",
+        "" if ok else ("failed" if result != "ok" else ("older than a year" if days > max_days else "slower than 30 min")),
+        "ws-restore-lite --drill; record the time in docs/runbook.md, Recovery objectives.")
 
 
 def p_performance() -> None:

@@ -36,7 +36,17 @@
 # ~/.config/ws-agent/NAME, so --agent NAME gives the tab NAME's az, gh and kubectl logins while it keeps its Claude
 # account; ws-profile tab NAME switches all of it. A level change keeps the tab's profile (@cprofile): the command is
 # typed after «eval "$(ws-profile --export NAME)" &&», which gives the pane's shell that profile's environment.
+# Network per level (WS-SEC-003, ADR-028): ~/.config/claude-levels/network.json adds to the sandbox's network what
+# each level needs: «full» and the solo variants get strictAllowlist (a host outside the allow list is refused, never
+# prompted for: no one is there to judge it, and the auto-mode classifier must not) and deniedDomains for the hosts
+# that can carry data out with a token typed into a command (the GitHub API, uploads, gists); the base settings.json
+# denies the upload and gist hosts at every level. A deny passed with --settings cannot be lifted by a repository.
+# Every start also carries WS_LEVEL=<level> (full, normal, bare): the MCP filter (ws-mcp-filter, ADR-027) narrows
+# each server's tools by it (tmux-solo sets solo). New tabs start at «normal» unless you choose «full» (Menu →
+# Settings): tmux-level default [full|normal], stored in ~/.config/claude-levels/default (guard.sh keeps it yours).
 # Usage: tmux-level full|normal|bare [PANE] [--agent NAME|none]
+#      tmux-level default [full|normal]   prints or sets the level new tabs start with
+#      tmux-level --new-tab-command [folder]   the command a new tab starts Claude with (the default level)
 #      tmux-level --profile full|normal|bare|solo|solo-net|solo-unsandboxed [settings.json] [folder]
 #                                     prints the generated profile (tests)
 #      tmux-level --command full|normal|bare [folder] [--agent NAME] [--pane PANE]
@@ -51,6 +61,15 @@ D="${WS_LEVELS_DIR:-$HOME/.config/claude-levels}"
 USR="$HOME/.claude/settings.json"
 ADDS="${WS_NORMAL_ADDS:-$HOME/.config/claude-levels/normal-adds.json}"
 SOLO="$HOME/.config/claude-solo/settings.json"
+NET="${WS_LEVEL_NETWORK:-$HOME/.config/claude-levels/network.json}"
+DEF="$D/default"
+# net <level> — that level's network additions from network.json ({} when missing or invalid: the base applies).
+net() {
+  jq -c --arg l "$1" '(.[$l] // {}) | if type == "object" then {deniedDomains, strictAllowlist}
+    | with_entries(select(.value != null)) else {} end' "$NET" 2>/dev/null || echo '{}'
+}
+# default_level — the level new tabs start with: full or normal (anything else in the file is normal).
+default_level() { local l=""; { read -r l < "$DEF"; } 2>/dev/null || true; [[ "$l" == full ]] && echo full || echo normal; }
 # merge — deep merge of the JSON objects on stdin (jq -s), later ones win, lists concatenated without duplicates:
 # the same rule Claude Code applies across sources.
 MERGE='def m(a; b): reduce (b | keys_unsorted[]) as $k (a;
@@ -92,7 +111,9 @@ profile() {   # level [settings] [project folder] → JSON
       # Your whole settings.json (permissions, hooks, bar…) minus the list of commands that leave the sandbox. With
       # the project folder, reads are also limited to that project.
       [[ -n "${3:-}" && "${WS_FULL_READ:-1}" != 0 ]] && reads="$(isolate "$3")"
-      jq --argjson reads "$reads" '(. // {}) | .sandbox = (((.sandbox // {}) + {enabled: true, allowUnsandboxedCommands: false}) | del(.excludedCommands))
+      jq --argjson reads "$reads" --argjson net "$(net full)" '(. // {}) | .sandbox = (((.sandbox // {}) + {enabled: true, allowUnsandboxedCommands: false}) | del(.excludedCommands))
+          | .sandbox.network.deniedDomains = (((.sandbox.network.deniedDomains // []) + ($net.deniedDomains // [])) | unique)
+          | if $net.strictAllowlist == true then .sandbox.network.strictAllowlist = true else . end
           | .sandbox.filesystem.denyRead = (((.sandbox.filesystem.denyRead // []) + $reads.deny) | unique)
           | if ($reads.allow | length) > 0 then .sandbox.filesystem.allowRead = (((.sandbox.filesystem.allowRead // []) + $reads.allow) | unique) else . end' "$s" 2>/dev/null \
         || echo '{"sandbox":{"enabled":true,"allowUnsandboxedCommands":false}}' ;;
@@ -115,12 +136,13 @@ profile() {   # level [settings] [project folder] → JSON
       # come back, each one still asking you. solo-unsandboxed: the sandbox is off; the same ask rules stay.
       [[ -f "$SOLO" ]] || { echo "$SOLO is missing" >&2; return 1; }
       jq -e 'type == "object"' "$SOLO" >/dev/null 2>&1 || { echo "$SOLO is not valid JSON" >&2; return 1; }
-      local adds asks
+      local adds asks sn
       adds="$(profile normal)"
       asks="$(jq -c '{permissions: {ask: ((.sandbox.excludedCommands // []) | map("Bash(" + . + ")"))}}' <<<"$adds")"
+      sn="$(jq -c '{sandbox: {network: .}}' <<<"$(net solo)")"
       case "$1" in
-        solo) jq -s "$MERGE" "$SOLO" <(echo "$asks") ;;
-        solo-net) jq -s "$MERGE" "$SOLO" <(echo "$adds") <(echo "$asks") ;;
+        solo) jq -s "$MERGE" "$SOLO" <(echo "$asks") <(echo "$sn") ;;
+        solo-net) jq -s "$MERGE" "$SOLO" <(echo "$adds") <(echo "$asks") <(echo "$sn") ;;
         solo-unsandboxed) jq -s "$MERGE" "$SOLO" <(echo "$asks") <(echo '{"sandbox":{"enabled":false}}') ;;
       esac ;;
     *) echo "invalid level: $1" >&2; return 2 ;;
@@ -149,6 +171,9 @@ agent_env() {
   a="$HOME/.config/ws-agent/$n"
   [[ -d "$a" ]] || { echo "✖ $a does not exist: create it and log in there first (az, gh, kubectl)" >&2; return 1; }
   printf "WS_AGENT=%s AZURE_CONFIG_DIR='%s' GH_CONFIG_DIR='%s' KUBECONFIG='%s' " "$n" "$a/azure" "$a/gh" "$a/kube/config"
+  # Its own SSH key, when the identity has one (WS-AI-026): git over SSH never falls back to the owner's agent or keys.
+  [[ -f "$a/ssh/id_ed25519" ]] && printf "GIT_SSH_COMMAND='ssh -i %s -o IdentitiesOnly=yes -o IdentityAgent=none' " "$a/ssh/id_ed25519"
+  return 0
 }
 
 # profile_prefix <pane> — «eval "$(ws-profile --export NAME)" && » for the profile that pane's tab keeps ("" when
@@ -191,17 +216,17 @@ command_for() {   # level [folder] → Claude command (resumes the folder's conv
   local f="$D/full.json"
   mkdir -p "$D" && chmod 700 "$D"
   case "$1" in
-    normal) f="$(settings_file normal)" || return 1; echo "claude-resume --settings '$f'" ;;
+    normal) f="$(settings_file normal)" || return 1; echo "WS_LEVEL=normal claude-resume --settings '$f'" ;;
     full)
       has_sources || { echo "✖ Your Claude has no --setting-sources: «full» cannot remove the commands excluded from the sandbox" >&2; return 1; }
       # With a folder, the profile is specific to that project (it carries its read paths).
       [[ -n "${2:-}" ]] && f="$D/full-$(printf '%s' "$2" | md5sum | cut -c1-12).json"
       profile full "" "${2:-}" > "$f"; chmod 600 "$f"
-      echo "claude-resume --setting-sources project,local --settings '$f'" ;;
+      echo "WS_LEVEL=full claude-resume --setting-sources project,local --settings '$f'" ;;
     bare)
       has_sources || { echo "✖ Your Claude has no --setting-sources: «bare» cannot remove the user rules" >&2; return 1; }
       profile bare > "$D/bare.json"; chmod 600 "$D/bare.json"
-      echo "claude-resume --setting-sources project,local --settings '$D/bare.json'" ;;
+      echo "WS_LEVEL=bare claude-resume --setting-sources project,local --settings '$D/bare.json'" ;;
     *) echo "invalid level: $1" >&2; return 2 ;;
   esac
 }
@@ -223,12 +248,22 @@ case "${1:-}" in
   --command) : "${2:?level}"; pre="$(agent_env "$agent")" || exit 1; c="$(command_for "$(canon "$2")" "${3:-}")" || exit 1
              echo "$(profile_prefix "$ppane")$pre$c"; exit 0 ;;
   --fenced) fenced "${2:?settings file}"; exit 0 ;;
+  --new-tab-command) pre="$(agent_env "$agent")" || exit 1; c="$(command_for "$(default_level)" "${2:-}")" || exit 1
+             echo "$pre$c"; exit 0 ;;
+  default)
+    if [[ -z "${2:-}" ]]; then default_level; exit 0; fi
+    [[ "$2" == full || "$2" == normal ]] || { echo "usage: tmux-level default [full|normal] (bare is never a default)" >&2; exit 2; }
+    [[ -z "${CLAUDECODE:-}" ]] || { echo "✖ the level of new tabs is yours to set, in a terminal or the menu: not from inside Claude" >&2; exit 2; }
+    { mkdir -p "$D" && chmod 700 "$D" && printf '%s\n' "$2" > "$DEF" && chmod 600 "$DEF"; } || exit 1
+    "$HOME/.claude/hooks/audit.sh" level-default "new tabs: $2" <<<'{"cwd":"/"}' >/dev/null 2>&1 || true
+    if [[ -n "${TMUX:-}" ]]; then tmux set -g @clevel_default "$2" 2>/dev/null || true; fi
+    echo "New tabs start at the $2 level"; exit 0 ;;
   --prefix) profile_prefix "${2:-}"; exit 0 ;;
   --settings-file) [[ "${2:-}" =~ ^(normal|solo|solo-net|solo-unsandboxed)$ ]] \
                      || { echo "usage: tmux-level --settings-file normal|solo|solo-net|solo-unsandboxed" >&2; exit 2; }
              settings_file "$2"; exit $? ;;
   full|normal|bare|completo|puro) ;;
-  *) sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,58p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
 
 level="$(canon "$1")"; pane="${2:-$(tmux display -p '#{pane_id}')}"

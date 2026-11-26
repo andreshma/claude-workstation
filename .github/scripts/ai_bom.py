@@ -185,11 +185,18 @@ def t_mcp(root: Path, d: dict) -> list[str]:
         if v.get("type") == "http":
             conf = "remote (runs at the provider)"
         elif isinstance(jail, dict):
-            conf = "ws-mcp-jail" + (", network" if jail.get("net") else ", no network")
+            net = (
+                ", network through the egress allow list"
+                if jail.get("egress")
+                else ", network"
+            )
+            conf = "ws-mcp-jail" + (net if jail.get("net") else ", no network")
             conf += ", own Azure config" if jail.get("azureConfig") else ""
         else:
             why = str(v.get("jailOptOut") or "no reason given").split(":")[0]
             conf = f"not confined ({why})"
+        if v.get("type") != "http" and v.get("filter") is not False:
+            conf += "; ws-mcp-filter (tools per level, pinned definitions)"
         if v.get("type") == "http":
             restart = "Claude Code reconnects it"
         elif v.get("keepalive") is False:

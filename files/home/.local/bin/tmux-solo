@@ -53,7 +53,7 @@ hours="${hours:-4}"
 # become ask rules; solo-net adds the exclusions back; solo-unsandboxed turns the sandbox off.
 variant=solo; (( nosb )) && variant=solo-unsandboxed; (( net )) && variant=solo-net
 profile="$(tmux-level --settings-file "$variant")" || { msg "tmux-level could not build the $variant profile"; exit 1; }
-CMD_SOLO="claude --permission-mode auto --settings '$profile'"
+CMD_SOLO="WS_LEVEL=solo claude --permission-mode auto --settings '$profile'"
 CMD_NORMAL="$(tmux-level --command normal 2>/dev/null)" || CMD_NORMAL="claude-resume"
 audit() { printf '{"cwd":"%s"}' "$PWD" | "$HOME/.claude/hooks/audit.sh" "$1" "$2" >/dev/null 2>&1 || true; }
 # mark <window> — solo marks: @csolo, its expiry (read by tmux-watch) and the unsandboxed flag.

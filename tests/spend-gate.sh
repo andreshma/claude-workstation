@@ -70,5 +70,14 @@ rm -f "$WS_STATE_DIR/ws-stop-all"
 command -v shellcheck >/dev/null && check "shellcheck ws-runtime-gate.sh" shellcheck -S warning "$GATE"
 check "ws-telemetry compiles" python3 -c "import ast,sys; ast.parse(open('$TEL').read())"
 
+echo "5) per-session cap"
+printf 'hard=1\nother=1000\nper-session=1\n' > "$HOME/.config/ws-telemetry/budgets.conf"
+python3 "$TEL" budgets >/dev/null 2>&1
+check "per-session=USD: a session over the cap is in the flag with its id" jq -e '.over | any(.session == "s1" and (.project | startswith("(session s1")))' "$FLAG"
+check "the session over the cap is held in any project" not gate PreToolUse /repos/elsewhere
+gate2() { jq -nc '{hook_event_name: "PreToolUse", cwd: "/repos/elsewhere", session_id: "s2", tool_name: "Bash"}' | "$GATE"; }
+check "another session is not held by it" gate2
+check "per-session is a cap, not a project row" bash -c "! jq -e '.over | any(.project == \"per-session\")' '$FLAG'"
+
 printf '\n%d ok, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

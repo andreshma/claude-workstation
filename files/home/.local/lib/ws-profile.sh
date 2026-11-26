@@ -157,6 +157,10 @@ wsp_exports() {
   else printf -v s 'export CLAUDE_CONFIG_DIR=%q' "$dir"; fi
   printf -v REPLY '%s AZURE_CONFIG_DIR=%q GH_CONFIG_DIR=%q KUBECONFIG=%q AZURE_TOKEN_CREDENTIALS=AzureCliCredential WS_PROFILE=%s WS_MEMORY=%q WS_PROFILE_PANE=%q' \
     "$s" "$c/azure" "$c/gh" "$c/kube/config" "$n" "$mem" "${TMUX_PANE:-}"
+  # A profile's own SSH key (WS-AI-026): git over SSH in its tabs uses only that key, never the owner's agent or keys.
+  [[ -f "$c/ssh/id_ed25519" ]] && printf -v REPLY '%s GIT_SSH_COMMAND=%q' "$REPLY" \
+    "ssh -i $c/ssh/id_ed25519 -o IdentitiesOnly=yes -o IdentityAgent=none"
+  return 0
 }
 
 # wsp_memory — REPLY = the MemPalace mode of THIS process: off | on | wing:<w>. WS_MEMORY first (set with the

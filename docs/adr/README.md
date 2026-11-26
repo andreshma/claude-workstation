@@ -25,14 +25,16 @@ comments and the changelog refer to a record as `ADR-0NN` (for example `ADR-013`
 | [0016](0016-solo-mode-inside-the-sandbox.md) | Solo mode inside the sandbox, with an expiry | Accepted, amended by [0022](0022-solo-mode-without-excluded-commands.md) |
 | [0017](0017-defence-in-depth-for-agent-configuration.md) | Defence in depth for agent configuration and untrusted content | Accepted |
 | [0018](0018-supply-chain-pinning-and-signed-releases.md) | Supply-chain pinning and signed kit releases | Accepted |
-| [0019](0019-strict-base-and-level-profiles.md) | Strict base settings with level profiles and an optional managed drop-in | Accepted |
+| [0019](0019-strict-base-and-level-profiles.md) | Strict base settings with level profiles and an optional managed drop-in | Accepted, amended by [0028](0028-network-per-level-mcp-egress-and-settings-menu.md) |
 | [0020](0020-agent-scoped-identities.md) | Agent-scoped identities per tab | Accepted, amended by [0021](0021-per-tab-profiles.md) and [0023](0023-git-gate-agent-trailer-and-throwaway-repositories.md) |
 | [0021](0021-per-tab-profiles.md) | Per-tab profiles: Claude organisation, Azure tenant, credentials and memory per tab | Accepted |
-| [0022](0022-solo-mode-without-excluded-commands.md) | Solo mode keeps every command in the sandbox; network tools are an audited, time-boxed opt-in that asks | Accepted |
+| [0022](0022-solo-mode-without-excluded-commands.md) | Solo mode keeps every command in the sandbox; network tools are an audited, time-boxed opt-in that asks | Accepted, amended by [0028](0028-network-per-level-mcp-egress-and-settings-menu.md) |
 | [0023](0023-git-gate-agent-trailer-and-throwaway-repositories.md) | Git gate: an Agent-Session trailer on agent commits, and throwaway repositories | Accepted |
 | [0024](0024-mcp-server-confinement-and-allow-list.md) | Local MCP servers in bubblewrap (ws-mcp-jail) and a managed MCP allow list | Accepted |
 | [0025](0025-mcp-server-keepalive.md) | Local MCP servers restarted by a stdio keepalive proxy (ws-mcp-keepalive) | Accepted |
 | [0026](0026-telegram-notification-policy-and-pin-input.md) | Telegram notification policy (approvals, digest, quiet hours) and PIN input that just works | Accepted |
+| [0027](0027-mcp-stdio-policy-filter-and-tool-pinning.md) | A policy filter in the stdio path of every local MCP server, with tool-definition pinning | Accepted |
+| [0028](0028-network-per-level-mcp-egress-and-settings-menu.md) | Network egress per protection level, an egress proxy for jailed MCP servers, and a Settings menu | Accepted |
 
 Records 0001 to 0007 are not in this repository. Its history mentions 0001 to 0006 only as part of a design
 document that was never part of it, and nothing mentions 0007; the code, the changelog and the other documents do not

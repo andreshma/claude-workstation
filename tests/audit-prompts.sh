@@ -48,6 +48,7 @@ EOF
 ! python3 '$TEL' prompts --alerts | grep -q '^permanent'"
 check "the terminal summary prints" bash -c "python3 '$TEL' prompts | grep -q 'Permission prompts in 7 days: 37 answered'"
 check "without OpenTelemetry data it still reports the rules" bash -c "WS_TELEMETRY_DIR='$T/empty' python3 '$TEL' prompts --json | jq -e '.answered == 0 and .rules == 3'"
-
+TPL="$ROOT/files/home/.config/ws-telemetry/dashboard.template.html"
+check "the dashboard renders the prompts block (WS-AI-006)" bash -c "grep -q 'const AP = D.prompts' '$TPL' && grep -q 'Answered in under 2 s' '$TPL'"
 printf '\n%d ok, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

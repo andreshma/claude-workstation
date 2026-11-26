@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+"""ws-egress-proxy — per-server egress allow list for jailed MCP servers that need the network (ADR-028, WS-SEC-003,
+WS-AI-011).
+
+A server jailed with --share-net reaches any host. With egress on, ws-mcp-jail gives it NO network of its own
+(bubblewrap --unshare-net: only a loopback) and this program is the only way out:
+
+  serve   runs OUTSIDE the jail, on a Unix socket in the server's state folder: an HTTP proxy that accepts CONNECT
+          host:port (HTTPS) and absolute-form http:// requests, checks the host against the server's allow list
+          (exact names and «*.domain» wildcards; ports 443 and 80 unless the entry names one) and either tunnels the
+          connection or answers 403. mode enforce refuses what is not listed; mode audit lets it through and records
+          it as «would-deny», so the owner can build the list from real use before enforcing. Every decision is a
+          line in ~/.local/state/ws-mcp/<name>.egress.log; the first denial of each host per run is an
+          mcp_egress_denied event in the audit chain. It exits when its parent (the jail) does.
+  bridge  runs INSIDE the jail: listens on 127.0.0.1:PORT, forwards each connection to the Unix socket, sets
+          HTTP_PROXY, HTTPS_PROXY, ALL_PROXY (and NODE_USE_ENV_PROXY=1 for Node) for the server, runs it with the
+          jail's stdin and stdout and exits with its status. A client that ignores the proxy variables cannot
+          connect at all: there is no other route (fail closed).
+  report  hosts seen per server, with how many connections were allowed, denied and would-be denied.
+
+The allow list and mode live in ~/.config/ws-mcp/egress.json (owner-edited; guard.sh protects the folder), read at
+every server start: {"<server>": {"mode": "enforce|audit|off", "hosts": ["login.microsoftonline.com", …]}}.
+
+Usage:
+  ws-egress-proxy serve --name NAME --socket PATH        (ws-mcp-jail starts it)
+  ws-egress-proxy bridge --socket PATH [--port N] -- COMMAND [ARG]...
+  ws-egress-proxy report [NAME]
+  ws-egress-proxy check NAME HOST[:PORT]                 exit 0 allowed, 1 refused (tests, the owner)
+--socket tcp:127.0.0.1:PORT uses a loopback TCP port instead of a Unix socket (tests in a sandbox that forbids Unix
+sockets; never what the jail uses, since a jailed server has no route to the host's loopback).
+"""
+
+from __future__ import annotations
+
+import ctypes
+import fnmatch
+import json
+import os
+import re
+import signal
+import socket
+import subprocess  # nosec B404 — audit.sh, and the MCP server in «bridge»
+import sys
+import threading
+import time
+from pathlib import Path
+
+H = Path.home()
+CONF = Path(os.environ.get("WS_EGRESS_CONF") or H / ".config/ws-mcp/egress.json")
+STATE = Path(os.environ.get("XDG_STATE_HOME") or H / ".local/state") / "ws-mcp"
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,31}$")
+HOST_RE = re.compile(r"^[A-Za-z0-9.-]{1,253}$|^\[[0-9A-Fa-f:.]+\]$")
+MODES = ("enforce", "audit", "off")
+
+
+def policy(name: str) -> tuple[str, list[str]]:
+    """(mode, hosts) of a server; a server not in the file, or a broken file, is «enforce» with no host. The owner's
+    egress.local.json (Menu → Settings; install.sh never touches it) replaces the mode and adds hosts."""
+
+    def entry(p: Path):
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return data.get(name) if isinstance(data, dict) and isinstance(data.get(name), dict) else None
+
+    s, lo = entry(CONF), entry(CONF.with_name("egress.local.json"))
+    if s is None and lo is None:
+        return "enforce", []
+    mode = next((x.get("mode") for x in (lo, s) if x and x.get("mode") in MODES), "enforce")
+    hosts = [h.lower() for x in (s, lo) if x for h in x.get("hosts") or [] if isinstance(h, str)]
+    return mode, hosts
+
+
+def allowed(host: str, port: int, hosts: list[str]) -> bool:
+    host = host.lower().rstrip(".")
+    for e in hosts:
+        h, _, p = e.rpartition(":") if re.search(r":\d+$", e) else (e, "", "")
+        if p and int(p) != port:
+            continue
+        if not p and port not in (443, 80):
+            continue
+        if fnmatch.fnmatchcase(host, h) if h.startswith("*.") else host == h:
+            return True
+    return False
+
+
+class Log:
+    def __init__(self, name: str):
+        self.path, self.lock, self.name, self.denied = STATE / f"{name}.egress.log", threading.Lock(), name, set()
+        STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    def write(self, decision: str, host: str, port: int) -> None:
+        line = f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {decision} {host}:{port}\n"
+        with self.lock:
+            try:
+                fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+                try:
+                    if os.fstat(fd).st_size > 1024 * 1024:
+                        os.ftruncate(fd, 0)
+                    os.write(fd, line.encode())
+                finally:
+                    os.close(fd)
+            except OSError:
+                pass
+        if decision == "deny" and host not in self.denied:
+            self.denied.add(host)
+            a = H / ".claude/hooks/audit.sh"
+            if os.access(a, os.X_OK):
+                try:
+                    subprocess.run(
+                        [str(a), "mcp_egress_denied", f"{self.name}: {host}:{port}"],  # nosec B603
+                        input=b'{"cwd":"/"}',
+                        cwd="/",
+                        timeout=10,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    pass
+
+
+def pipe(a: socket.socket, b: socket.socket) -> None:
+    """Copies a → b until either side closes; then closes both."""
+    try:
+        while True:
+            data = a.recv(65536)
+            if not data:
+                break
+            b.sendall(data)
+    except OSError:
+        pass
+    for s in (a, b):
+        try:
+            s.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+
+def splice(a: socket.socket, b: socket.socket) -> None:
+    t = threading.Thread(target=pipe, args=(b, a), daemon=True)
+    t.start()
+    pipe(a, b)
+    t.join(timeout=30)
+    a.close()
+    b.close()
+
+
+def read_head(c: socket.socket) -> bytes:
+    buf = b""
+    while b"\r\n\r\n" not in buf and len(buf) < 65536:
+        d = c.recv(4096)
+        if not d:
+            break
+        buf += d
+    return buf
+
+
+def handle(c: socket.socket, name: str, log: Log) -> None:
+    try:
+        head = read_head(c)
+        first = head.split(b"\r\n", 1)[0].decode("latin-1")
+        parts = first.split(" ")
+        if len(parts) != 3:
+            c.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+            return
+        method, target, _ = parts
+        if method.upper() == "CONNECT":
+            host, _, p = target.rpartition(":")
+            port = int(p) if p.isdigit() else 443
+            rest = head.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in head else b""
+        else:
+            m = re.match(r"^http://([^/:]+)(?::(\d+))?(/.*)?$", target)
+            if not m:
+                c.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\nonly CONNECT and absolute http:// requests\r\n")
+                return
+            host, port = m.group(1), int(m.group(2) or 80)
+            rest = f"{method} {m.group(3) or '/'} HTTP/1.1".encode() + head[len(first) :]
+        host = host.strip("[]") if host.startswith("[") else host
+        if not HOST_RE.match(host) and not re.match(r"^[0-9A-Fa-f:.]+$", host):
+            c.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+            return
+        mode, hosts = policy(name)
+        ok = allowed(host, port, hosts)
+        if not ok and mode == "enforce":
+            log.write("deny", host, port)
+            c.sendall(
+                f"HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n\r\nws-egress-proxy: {host} is not in "
+                f"the egress allow list of {name} (~/.config/ws-mcp/egress.json)\r\n".encode()
+            )
+            return
+        log.write("allow" if ok else "would-deny", host, port)
+        try:
+            up = socket.create_connection((host, port), timeout=20)
+        except OSError:
+            c.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+            return
+        up.settimeout(None)
+        if method.upper() == "CONNECT":
+            c.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        if rest:
+            up.sendall(rest)
+        splice(c, up)
+    except OSError:
+        pass
+    finally:
+        try:
+            c.close()
+        except OSError:
+            pass
+
+
+def die_with_parent() -> None:
+    try:
+        ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGTERM, 0, 0, 0)  # PR_SET_PDEATHSIG
+    except (OSError, AttributeError):
+        pass
+
+
+def tcp_addr(path: str) -> tuple[str, int] | None:
+    m = re.match(r"^tcp:(127\.0\.0\.1):(\d+)$", path)
+    return (m.group(1), int(m.group(2))) if m else None
+
+
+def serve(name: str, path: str) -> int:
+    die_with_parent()
+    log = Log(name)
+    if tcp_addr(path):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind(tcp_addr(path))
+    else:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        old = os.umask(0o177)
+        try:
+            s.bind(path)
+        finally:
+            os.umask(old)
+    s.listen(64)
+    signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+    while True:
+        c, _ = s.accept()
+        threading.Thread(target=handle, args=(c, name, log), daemon=True).start()
+
+
+def bridge(path: str, port: int, cmd: list[str]) -> int:
+    ls = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    ls.bind(("127.0.0.1", port))
+    ls.listen(64)
+    port = ls.getsockname()[1]
+
+    def accept() -> None:
+        while True:
+            c, _ = ls.accept()
+            try:
+                if tcp_addr(path):
+                    u = socket.create_connection(tcp_addr(path), timeout=10)
+                    u.settimeout(None)
+                else:
+                    u = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    u.connect(path)
+            except OSError:
+                c.close()
+                continue
+            threading.Thread(target=splice, args=(c, u), daemon=True).start()
+
+    threading.Thread(target=accept, daemon=True).start()
+    url = f"http://127.0.0.1:{port}"
+    env = dict(
+        os.environ,
+        HTTP_PROXY=url,
+        HTTPS_PROXY=url,
+        ALL_PROXY=url,
+        http_proxy=url,
+        https_proxy=url,
+        all_proxy=url,
+        NO_PROXY="",
+        no_proxy="",
+        NODE_USE_ENV_PROXY="1",
+    )
+    try:
+        p = subprocess.Popen(cmd, env=env)  # nosec B603 — the jailed MCP server, no shell
+    except FileNotFoundError:
+        return 127
+    except OSError:
+        return 126
+    for sg in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sg, lambda n, _f: p.send_signal(n))
+    rc = p.wait()
+    return rc if rc >= 0 else 128 - rc
+
+
+def report(name: str) -> int:
+    files = [STATE / f"{name}.egress.log"] if name else sorted(STATE.glob("*.egress.log"))
+    for f in files:
+        counts: dict[str, dict[str, int]] = {}
+        try:
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            p = line.split(" ")
+            if len(p) == 3:
+                counts.setdefault(p[2], {}).setdefault(p[1], 0)
+                counts[p[2]][p[1]] += 1
+        srv = f.name.split(".egress.log")[0]
+        mode, hosts = policy(srv)
+        print(f"{srv} (mode {mode}, {len(hosts)} hosts listed)")
+        for h, c in sorted(counts.items()):
+            print(f"  {h:50} " + "  ".join(f"{k} {v}" for k, v in sorted(c.items())))
+    return 0
+
+
+def main(a: list[str]) -> int:
+    if not a or a[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0 if a else 2
+    cmd, opts, rest = a[0], {}, []
+    i = 1
+    while i < len(a):
+        if a[i] == "--":
+            rest = a[i + 1 :]
+            break
+        if a[i] in ("--name", "--socket", "--port") and i + 1 < len(a):
+            opts[a[i][2:]] = a[i + 1]
+            i += 2
+            continue
+        rest.append(a[i])
+        i += 1
+    if cmd == "serve" and NAME_RE.match(opts.get("name", "")) and opts.get("socket"):
+        return serve(opts["name"], opts["socket"])
+    if cmd == "bridge" and opts.get("socket") and rest:
+        return bridge(opts["socket"], int(opts.get("port") or 0), rest)
+    if cmd == "report":
+        return report(rest[0] if rest else "")
+    if cmd == "check" and len(rest) == 2 and NAME_RE.match(rest[0]):
+        host, _, p = rest[1].rpartition(":") if ":" in rest[1] else (rest[1], "", "443")
+        mode, hosts = policy(rest[0])
+        ok = allowed(host, int(p) if p.isdigit() else 443, hosts)
+        print(
+            f"{rest[1]}: {'allowed' if ok else ('would be denied (audit)' if mode == 'audit' else 'denied')} "
+            f"(mode {mode})"
+        )
+        return 0 if ok or mode in ("audit", "off") else 1
+    print(
+        "usage: ws-egress-proxy serve --name NAME --socket PATH | bridge --socket PATH [--port N] -- COMMAND… | "
+        "report [NAME] | check NAME HOST[:PORT]",
+        file=sys.stderr,
+    )
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

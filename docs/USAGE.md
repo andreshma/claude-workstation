@@ -142,6 +142,31 @@ registers the jailed form over an older one; `ws-audit` warns about a local serv
 out. To jail a server of your own, give it a `"jail": {"net": true}` object in `files/mcp-servers.json` (and its lock);
 to leave one out, `"jail": false` with a `"jailOptOut"` reason.
 
+**Policy filter and tool pinning** ([ADR 0027](adr/0027-mcp-stdio-policy-filter-and-tool-pinning.md)). Every local
+server also runs behind `ws-mcp-filter`, between the keepalive and the jail (or the Windows executable):
+
+```text
+Claude Code ──stdio──▶ ws-mcp-keepalive --name azure -- ws-mcp-filter --name azure -- ws-mcp-jail --name azure --net --egress --azure-config -- azmcp server start
+```
+
+| It… | How |
+|---|---|
+| shows each tab only the tools its level and profile allow | `~/.config/ws-mcp/filter.json` (the kit's) and `~/.config/ws-mcp/filter.local.json` (yours, Menu → Settings → `f`); `WS_LEVEL` comes with every start. MemPalace: read-only at full and solo; `hook_settings`, `mine` and the bulk deletes never pass. A hidden tool's call gets an error, never reaches the server |
+| keeps the tab's memory mode | `WS_MEMORY=off` hides every MemPalace tool; `wing:W` forces the wing |
+| caps and redacts | Arguments over `maxArgBytes` refused; results over `maxResultBytes` cut with a note; secret shapes masked both ways (not inside images) |
+| stamps memory writes | `<private>` content refused; `source_file` / `added_by` stamped with level, profile, session and time by the filter, not the model |
+| pins every tool definition | The first `tools/list` is pinned in `~/.local/share/ws-kit/mcp-tools.lock.json`; a tool that is new or changed while the server's code did not change is withheld, audited and notified once. Review with `ws-mcp-tools diff NAME`, accept with `ws-mcp-tools approve NAME` in a terminal (Menu → Settings → `t`); a kit pin move re-pins by itself |
+
+Remote servers do not pass through it: at session start `ws-mcp-tools check-remote` lists their tools in the
+background, and a changed tool of any server is denied (`mcp-pin-gate.sh`) until you approve it. `ws-mcp-tools status`
+shows every pin and what is pending.
+
+**Egress of jailed servers** ([ADR 0028](adr/0028-network-per-level-mcp-egress-and-settings-menu.md)). azure is
+registered with `--egress`: it has no network of its own, only `ws-egress-proxy` and the hosts of
+`~/.config/ws-mcp/egress.json`. It ships in `audit` mode (unlisted hosts pass and are logged as would-deny); after a
+week, `ws-egress-proxy report azure`, add what is missing to `~/.config/ws-mcp/egress.local.json`, then Menu →
+Settings → `e` (enforce). `ws-egress-proxy check azure HOST` answers for one host.
+
 **Restart after an exit** ([ADR 0025](adr/0025-mcp-server-keepalive.md)). Claude Code reconnects a remote (HTTP)
 server by itself, but in an interactive session a local (stdio) server whose process exits is marked as failed and
 stays down until `/mcp` → Reconnect ([Claude Code docs](https://code.claude.com/docs/en/mcp), «Stdio servers that
@@ -372,6 +397,7 @@ it. The title shows the group, the tab, Claude's state and the context percentag
 | | `r` | Usage and reports › | Usage and reports |
 | | `e` | Workstation: health, backups, notifications › | Health, backups, notifications |
 | | `v` | Appearance and screensaver › | Appearance and screensaver |
+| | `S` | Settings: protection, MCP, backups, spend, guard, kit › | Every setting with its current value |
 | Help | `m` | Full manual (everything installed) | Full generated manual |
 | | `h` | Keyboard shortcuts | Shortcuts |
 
@@ -483,6 +509,39 @@ opens the tree.
 | `s` | Pick a scene from a list |
 | `p`, `n` | Start it now; Next scene |
 | `e` | Screensaver: on / off |
+
+### "Settings" (`S`)
+
+Every setting that used to need a command, each with its current value (ADR 0028). `ws-settings` is the command
+behind it (`ws-settings show` lists the values). These are your actions: `ws-settings` refuses to change anything from
+inside Claude and the guard blocks it there; entries that lower protection or remove something confirm first, and
+the backup key and the Telegram PIN are only typed in a terminal popup.
+
+| Key | Label | What it does |
+|---|---|---|
+| `L` | Protection of new tabs: normal / full (switch) | `ws-settings level full\|normal` (`tmux-level default`); normal confirms. `bare` is never a default |
+| `p` | Profile of new tabs and this project › | `ws-profile menu`: the profile for new tabs and the project pin |
+| `l` | Language of prompts and reports (switch) | `ws-settings lang en\|es` |
+| `c` | chrome-devtools (opt-in): on / off | on: `install.sh --mcp-opt-in chrome-devtools` in a popup; off: removes it (confirms) |
+| `k` | Restart on exit (keepalive) › | One entry per local MCP server: `ws-settings keepalive NAME on\|off` (off confirms; remembered in `~/.config/ws-mcp/overrides.json` for `install.sh`) |
+| `e` | Azure egress allow list: audit / enforce | `ws-settings egress azure enforce\|audit` (both confirm), in `~/.config/ws-mcp/egress.local.json` |
+| `r` | Hosts the jailed servers reached | `ws-egress-proxy report` |
+| `t` | Tool-definition changes to review | `ws-settings mcp-review`: `ws-mcp-tools status`, then the diff and `approve` (y/N) for each pending server |
+| `a` | Managed MCP allow list (install, sudo) | `ws-settings allowlist`: prints the sudo command and a dry run, asks y/N |
+| `f` | Your MCP tool rules (filter.local.json, editor) | `ws-settings filter`: your editor; saved only if it is valid JSON |
+| `b` | Encryption key (set up, in a terminal) | `ws-settings backup-key` (`ws-backup-cloud setup`, asks first) |
+| `d` | Windows-side copies expire after N days | `ws-settings copy-days N` (0: never) |
+| `o`, `O` | Cloud copy now; Test the latest cloud copy | `ws-backup-cloud`; `ws-backup-cloud test` |
+| `B` | Budgets (edit) | `ws-settings budgets`: `~/.config/ws-telemetry/budgets.conf` (`project=usd`, `*=usd`, `per-session=usd`) |
+| `H` | Hold work at 100 % of a budget (hard): on / off | `ws-settings hard on\|off` (off confirms) |
+| `P` | Production subscriptions and contexts (edit) | `ws-settings production`: `subscription <id or name>` and `context <name>` lines, checked before saving |
+| `W` | Claude may edit CLAUDE.md, commands, agents, skills: closed / N min left | `ws-settings window open\|close` (open confirms; every write audited) |
+| `R` | Secret rotation periods (edit) | `ws-settings rotation`: `name=days` |
+| `n` | Windows notifications: on / off | `ws-settings notify on\|off` |
+| `g`, `v` | Telegram ›; Theme and screensaver › | The Telegram and Appearance submenus |
+| `U` | Update the kit (signed release) | `ws-kit-update` |
+| `A`, `C`, `h` | Audit; Compliance; Health | `ws-audit`; `ws-audit --compliance`; `ws-health` |
+| `s` | All current values | `ws-settings show` |
 
 ## 7. Status bar legend
 
@@ -726,6 +785,21 @@ generated profile that adds or removes permissions on top of it
 A `claude` typed by hand in a shell starts at the strict base, without the excluded commands; start it with
 `claude-resume` (or restart the tab) to get the normal level.
 
+**Network per level** ([ADR 0028](adr/0028-network-per-level-mcp-egress-and-settings-menu.md)). Sandboxed commands
+reach only the hosts of `sandbox.network.allowedDomains`, at every level except `bare`; on top of that:
+
+| Level | Network |
+|---|---|
+| Every level | `gist.github.com`, `gist.githubusercontent.com` and `uploads.github.com` denied (they accept data with a token typed into a command) |
+| Normal | A host outside the list is prompted for, as before |
+| Full | `strictAllowlist`: a host outside the list is refused, never prompted for; `github.com`, `api.github.com`, `codeload.github.com` and `objects.githubusercontent.com` denied |
+| Solo | `strictAllowlist`; `github.com` and `api.github.com` denied (git with the network: `--with-network-tools`) |
+
+The rules are in `~/.config/claude-levels/network.json`; they reach Claude with `--settings`, so a repository's
+settings cannot lift them. `strictAllowlist` needs Claude Code 2.1.219 or later (`ws-audit` checks). Every start also
+carries `WS_LEVEL=<level>`, which the MCP filter uses. New tabs start at `normal` unless you choose `full` in Menu →
+Settings (`tmux-level default full`).
+
 In every level, including `bare` and solo mode, the floor stays on: the `deny` rules (credential files, printing
 secrets, bypassing the git gate, the agent's own configuration), `disableBypassPermissionsMode` and the `guard.sh`
 hook, which fails closed (forced pushes, pushes to `main`, `--no-verify`, production changes, secrets written to
@@ -777,7 +851,7 @@ the credentials-only case, and `ws-profile tab NAME` also switches the Claude ac
 | A note next to a web page, search, MCP result or `curl`/`gh api` output that the content is untrusted | `untrusted-content.sh` labels it and screens it for injection markers; a hit is logged as `injection-suspect` | Read what it flagged before you let Claude act on it |
 | Every MemPalace write asks, also after "don't ask again" and in solo mode | `memory-gate.sh` asks, stamps the provenance and logs the hash of the input | Approve or reject; `ws-memory review --older-than 90` and `ws-memory log` in a terminal |
 | Text you do not want stored | Wrap it in `<private>` … `</private>` in the prompt | Memory writes that contain it are blocked, and the lifecycle hooks hand MemPalace and recall a redacted copy. A paraphrase is not recognised; `WS_MEMORY_PRIVATE=skip` sends nothing of such a session |
-| Every `.exe` command asks | Windows executables run outside the sandbox | Approve the ones you expect ([runbook](runbook.md#wsl-interop)) |
+| Every `.exe` command asks | Windows executables run outside the sandbox | Approve the ones you expect ([runbook](runbook.md#wsl-interop-and-firewall)) |
 | Prompts and tools are "held" | The emergency stop is on, or a hard budget is spent | `ws-stop-all --clear`, or `ws-telemetry budgets --override <project> [hours]`, in a terminal |
 
 ### Emergency stop and anomalies

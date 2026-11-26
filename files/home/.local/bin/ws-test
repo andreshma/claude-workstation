@@ -50,7 +50,7 @@ setup() {
   cp -a "$RH/.local/bin/." "$TH/.local/bin/" 2>/dev/null
   rm -f "$TH/.local/bin/claude" "$TH/.local/bin/ant"   # neither the real Claude nor your API session in these tests
   # The kit's libraries (ws-routing.sh, ws-lang.sh and its packs); not the rest of ~/.local/lib.
-  mkdir -p "$TH/.local/lib"; for d in "$RH"/.local/lib/ws-*; do [[ -e "$d" ]] && cp -a "$d" "$TH/.local/lib/"; done
+  mkdir -p "$TH/.local/lib"; for d in "$RH"/.local/lib/ws-* "$RH"/.local/lib/ws_*.py; do [[ -e "$d" ]] && cp -a "$d" "$TH/.local/lib/"; done
   for d in tmux-claude claude-solo ws-telemetry; do [[ -d "$RH/.config/$d" ]] && cp -a "$RH/.config/$d" "$TH/.config/"; done
   # What the normal level adds (only the kit file: the generated profiles of your home stay out).
   mkdir -p "$TH/.config/claude-levels"
@@ -1242,10 +1242,10 @@ test_level() {
      "$RH/.claude/settings.json" >/dev/null && ok "settings: no az wildcards in allow and with the deny floor" || fail "settings without the ADR-013 floor"
   mkdir -p "$T/fc59"; printf '#!/bin/bash\n[[ "$1" == --help ]] && echo "  --setting-sources <sources>"\n' > "$T/fc59/claude"; chmod +x "$T/fc59/claude"
   r="$(E env PATH="$T/fc59:$TH/.local/bin:/usr/bin:/bin" WS_LEVELS_DIR="$T/levels" tmux-level --command bare)"
-  [[ "$r" == "claude-resume --setting-sources project,local --settings '$T/levels/bare.json'" && "$(stat -c %a "$T/levels/bare.json")" == 600 ]] \
+  [[ "$r" == "WS_LEVEL=bare claude-resume --setting-sources project,local --settings '$T/levels/bare.json'" && "$(stat -c %a "$T/levels/bare.json")" == 600 ]] \
     && ok "bare starts with --setting-sources project,local and its profile (0600)" || fail "bare command: $r"
   r="$(E env WS_LEVELS_DIR="$T/levels" tmux-level --command normal 2>&1)"
-  [[ "$r" == "claude-resume --settings '$T/levels/normal.json'" && "$(stat -c %a "$T/levels/normal.json")" == 600 ]] \
+  [[ "$r" == "WS_LEVEL=normal claude-resume --settings '$T/levels/normal.json'" && "$(stat -c %a "$T/levels/normal.json")" == 600 ]] \
     && jq -e '.sandbox.excludedCommands | index("az *") and index("git push *")' "$T/levels/normal.json" >/dev/null \
     && ok "normal starts through claude-resume with the profile that adds the sandbox exclusions (0600)" || fail "normal command: $r"
   # ADR-022: solo excludes nothing and every excluded command of normal asks; solo-net brings them back, asking.
@@ -1292,7 +1292,7 @@ EOF
     && ok "bare keeps the bypass-mode lock in the floor" || fail "bare without disableBypassPermissionsMode: $r"
   mkdir -p "$TH/.config/ws-agent/ops"
   r="$(E env WS_LEVELS_DIR="$T/levels" tmux-level --command normal --agent ops 2>&1)"
-  [[ "$r" == "WS_AGENT=ops AZURE_CONFIG_DIR='$TH/.config/ws-agent/ops/azure' GH_CONFIG_DIR='$TH/.config/ws-agent/ops/gh' KUBECONFIG='$TH/.config/ws-agent/ops/kube/config' claude-resume --settings"* ]] \
+  [[ "$r" == "WS_AGENT=ops AZURE_CONFIG_DIR='$TH/.config/ws-agent/ops/azure' GH_CONFIG_DIR='$TH/.config/ws-agent/ops/gh' KUBECONFIG='$TH/.config/ws-agent/ops/kube/config' WS_LEVEL=normal claude-resume --settings"* ]] \
     && ! E env WS_LEVELS_DIR="$T/levels" tmux-level --command normal --agent missing >/dev/null 2>&1 \
     && ok "an agent identity starts Claude with its own az, gh and kubectl credentials (and an unknown one is refused)" || fail "agent identity: $r"
   rm -rf "$TH/.config/ws-agent"

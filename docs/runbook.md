@@ -417,7 +417,7 @@ logged under `~/.local/state/ws-tools/` or `ws-plugins/` and recorded in the aud
 - **Low disk space:** `ws-health` requires 15 % free on `/` and 50 GB on `C:`. Clean caches
   (`npm cache clean --force`, old `node_modules`) before backups.
 
-### WSL interop
+### WSL interop and firewall
 
 Windows executables run outside the Linux sandbox, so every `.exe` an agent names asks you first (`Bash(*.exe*)` in
 `permissions.ask`; `pwsh.exe`, `powershell.exe`, `cmd.exe` and `wsl.exe` are listed by name too) and the guard blocks
@@ -436,6 +436,18 @@ appendWindowsPath=false
 
 The cost: `code`, `explorer.exe`, `clip.exe`, `pwsh.exe` and every other Windows tool must then be called by full path
 (`/mnt/c/...`) or from your own `PATH` additions; the kit's hooks already use full paths. Interop itself stays on.
+
+Firewall (WS-SEC-021): WSL has no host firewall of its own that the kit configures; the boundary is the Windows
+Hyper-V firewall, part of the organisation's baseline. `ws-audit` reports services listening beyond loopback, `sshd`
+and the networking mode. In mirrored mode a listener in WSL is reachable from the network unless that firewall blocks
+it; the organisation (or the owner, with admin rights) sets, in an elevated PowerShell:
+
+```powershell
+# Default inbound block for WSL's Hyper-V VM (mirrored networking); check the VM creator id with Get-NetFirewallHyperVVMCreator
+Set-NetFirewallHyperVVMSetting -Name '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -DefaultInboundAction Block
+```
+
+Then `ws-audit` again; keep the kit read-only on the Windows side (it exports a `.wslconfig` but never applies it).
 
 ## 10. Floating windows, AI in the terminal and tests
 
@@ -745,7 +757,13 @@ packs, `~/.config/tmux-claude/lang`) stay in place and are harmless.
 
 The targets the backup layers are built for (WS-GOV-013; Well-Architected RE:04 and RE:09). The recovery point
 (RPO) follows from each layer's frequency; the recovery times (RTO) are targets for one owner with the runbook open,
-not measurements: time the next drill (`ws-restore-lite --restore` into a throwaway distro) and write the result here.
+not measurements yet. The yearly drill: `ws-restore-lite --drill` times a full restore test of the latest light
+backup and records it in `~/.local/share/ws-telemetry/restore-drills.tsv`; `ws-audit` reports the last drill (passed,
+within a year, under 30 minutes). Write the measured time here after each drill.
+
+| Drill | Date | Result | Seconds |
+|---|---|---|---|
+| Light backup, `ws-restore-lite --drill` | Not run yet | - | - |
 
 | What is lost | RPO (data you can lose) | RTO target | Restored from |
 |---|---|---|---|
@@ -817,6 +835,20 @@ With neither key, or without `age`, the backup is made in clear with a warning, 
 differs as `<file>.~N~`.
 
 ## 18. Security operations
+
+### MCP tool definitions and egress
+
+- **A tool is missing or a call says "BLOCKED by ws-mcp-filter … its definition changed" or "by mcp-pin-gate":** the
+  server's tool definitions changed while its code did not (a rug-pull check, [ADR 0027](adr/0027-mcp-stdio-policy-filter-and-tool-pinning.md)).
+  `ws-mcp-tools diff NAME` shows the change: read the descriptions, they are instructions to the model. Trust it:
+  `ws-mcp-tools approve NAME` in a terminal (or Menu → Settings → `t`), then `/mcp` → Reconnect. Do not trust it:
+  leave it withheld and, for a remote server, `claude mcp remove NAME`. The audit log has an `mcp_tools_changed`
+  line.
+- **A tool is missing at full or in solo mode** (MemPalace writes, for example): the level's policy hides it
+  (`~/.config/ws-mcp/filter.json`); use the normal level, or add your own rule in `filter.local.json`.
+- **azure cannot reach a host** (after you switched its egress to enforce): `ws-egress-proxy report azure` shows
+  `deny` lines; add the host to `~/.config/ws-mcp/egress.local.json` (`{"azure": {"hosts": ["…"]}}`) and reconnect,
+  or go back to audit (Menu → Settings → `e`).
 
 What to do when an agent misbehaves, when the audit log must be trusted, and when a secret is rotated or the
 workstation is handed back. The playbooks per incident are in

@@ -63,6 +63,14 @@ After installing, in this order:
 14. Telegram (ADR 0026): nothing to do for the defaults (`notify approvals`, a digest every hour, no quiet hours);
     pick quiet hours if you want them (Menu → Workstation → Telegram, or `ws-telegram quiet 22:00-07:00`). The
     service restarts itself with the new code within a minute; `ws-telegram status` shows «PIN in the service: yes».
+15. Round 4 (ADR 0027, ADR 0028): `bash install.sh` (it re-registers every local MCP server through `ws-mcp-filter` by
+    itself), then `tmux-claude-restart --all`; with the managed allow list, `sudo bash install.sh --managed
+    --mcp-allowlist` again (Menu → Settings → Managed MCP allow list), or the new command line is blocked. The first
+    `tools/list` of each server pins its tool definitions; nothing to approve then. After a week, read
+    `ws-egress-proxy report azure` and switch azure's egress to enforce (Menu → Settings). Once: confirm the rotation
+    periods (Menu → Settings → Secret rotation), run `ws-restore-lite --drill`, and in a live session type a prompt with
+    a fake token (`ghp_` and 36 letters) to see it blocked. Claude Code 2.1.219 or later is needed for the strict
+    network allow list of full and solo (`ws-audit` says so).
 
 Breaking behaviour changes, each described below:
 
@@ -72,6 +80,14 @@ Breaking behaviour changes, each described below:
   they ask in every solo variant; `tmux-solo this --with-network-tools` brings them back (asking) for at most 4 h.
 - The Azure MCP server (and chrome-devtools when opted in) runs inside `ws-mcp-jail`: it sees only its own Azure
   config, not the rest of the home; without a working bubblewrap it does not start.
+- At the full level and in solo mode a host outside the sandbox's allow list is refused instead of prompted for, and
+  `github.com` and the GitHub API are denied to sandboxed commands (git with the network: normal, or
+  `tmux-solo … --with-network-tools`); every level denies gist and upload hosts.
+- MemPalace is read-only at the full level and in solo mode, and `mempalace_hook_settings`, `mempalace_mine` and the
+  bulk deletes never reach it from Claude (ws-mcp-filter); a changed MCP tool definition is withheld until
+  `ws-mcp-tools approve`.
+- Claude can no longer run `ws-telegram`'s settings, `tmux-solo`, `tmux-level bare|default`, `ws-lang en|es`,
+  `ws-kit-update` or `ws-backup-cloud setup` (the guard blocks them: they are the owner's, from Menu → Settings).
 
 - Solo mode runs inside the sandbox; the old mode is `tmux-solo this --unsandboxed` (audited).
 - More permission prompts: every MemPalace write asks, also after "don't ask again" and in solo mode, and every
@@ -81,6 +97,35 @@ Breaking behaviour changes, each described below:
 - `ws-kit-update` refuses releases whose tag is not signed by a key in `allowed_signers`.
 
 ### Added
+
+- `ws-mcp-filter` (ADR 0027, WS-AI-031, WS-AI-011, WS-AI-012): a policy filter in the stdio path of every local MCP
+  server (keepalive → filter → jail → server). Tools per protection level (`WS_LEVEL`, set now by every start) and
+  profile, from `~/.config/ws-mcp/filter.json` and the owner's `filter.local.json`; memory servers honour `WS_MEMORY`;
+  argument and result caps; secrets masked both ways; `<private>` refused and provenance stamped on memory writes by
+  the filter itself. Tool definitions pinned per server and code identity (`~/.local/share/ws-kit/mcp-tools.lock.json`):
+  a change without a kit pin change is withheld, audited and notified until the owner approves it.
+- `ws-mcp-tools` (status, diff, approve, forget, check-remote) and `mcp-pin-gate.sh` (remote servers checked at session
+  start, a changed tool of any server denied until approved).
+- `ws-egress-proxy` and `ws-mcp-jail --egress` (ADR 0028, WS-SEC-003): a jailed server with no network of its own,
+  reaching only the hosts of `~/.config/ws-mcp/egress.json` (azure, audit mode) through a proxy; `report` and `check`.
+- Network per protection level (ADR 0028): `deniedDomains` in `settings.json`; `~/.config/claude-levels/network.json`
+  gives full and solo `strictAllowlist` and more denies. `tmux-level default full|normal` and `--new-tab-command`:
+  the level new tabs start with.
+- Menu → Settings (`S`, `menu-settings.tmux`) and `ws-settings`: every setting that needed a command, with its
+  current value (new-tab level, profile, language, MCP servers and keepalive, Azure egress, tool-definition review,
+  managed allow list, filter rules, backup key and copy expiry, cloud copy, budgets and the hard stop, production
+  targets, the config-write window, secret rotation, notifications, Telegram, appearance, kit update, audits).
+- `read-screen.sh` (WS-AI-022): a file outside the project with what looks like a secret asks before Claude reads it.
+- `tmux-swarm` refuses subtasks with shell, frontmatter, forbidden actions, injection phrases, invisible Unicode or
+  `<private>` text (WS-AI-017); swarm agents start with `WS_LEVEL`.
+- `per-session=USD` in `budgets.conf` (WS-AI-019); the dashboard renders the approval-fatigue block (WS-AI-006).
+- `ws-audit`: branch protection of the repositories agents push to (WS-AI-021), secret ages against
+  `~/.config/ws-secret/rotation.conf` (`ws-secret age|ages`, WS-GOV-010), network per level, the filter and pending
+  tool changes, the remote servers' definitions, the last restore drill (`ws-restore-lite --drill`, WS-GOV-013).
+- A per-identity SSH key: `~/.config/ws-agent/<name>/ssh/id_ed25519` makes git use only that key (WS-AI-026).
+- Tests: `mcp-filter`, `mcp-egress`, `level-network`, `settings-menu`, `menu-escaping`, `hooks-read-screen`,
+  `swarm-tasks`, `redaction-out`, `agents-identity`, `audit-round4`, `hook-chain-budget` (the whole hook chain under
+  400 ms, WS-GOV-014).
 
 - `ws-mcp-keepalive` (ADR 0025, WS-GOV-015): every local stdio MCP server runs behind a transparent stdio proxy that
   starts it again when it exits mid-session, which Claude Code does not do for stdio servers in an interactive
@@ -222,6 +267,18 @@ Breaking behaviour changes, each described below:
 - `tests/profiles.sh`, profile cases in `tests/guard.sh` and `ws-test` (tab switch, isolation, memory off, label).
 
 ### Changed
+
+- The menus pass tab names and folder paths to tmux as formats (`##W`, `##{pane_current_path}`,
+  `##{q:pane_current_path}`): a hostile name can no longer become tmux or shell syntax (WS-SEC-028).
+- `tmux-record` redacts a recording in place when it stops (the raw copy only with `WS_RECORD_KEEP_RAW=1`);
+  Windows notifications go through `ws-redact` (WS-SEC-009).
+- The debugger subagent has no web tools; `sql-quick` has an explicit tool list without MCP or web tools (WS-AI-016).
+- The Windows-side backup copies expire after the days in `~/.config/ws-backup/copy-days` when
+  `WS_BACKUP_COPY_DAYS` is not set. `install.sh` applies the owner's keepalive choices from
+  `~/.config/ws-mcp/overrides.json`.
+- AI-BOM: retention and terms of every external service from the providers' pages (WS-GOV-008).
+- Frameworks re-checked on 2026-11-26 (the NSA agentic guidance's five risk categories, ITSM.00.125 verified, the
+  Red Teaming Guide's date, the AIVSS calculator, the AI Omnibus wording of Article 4; NIST SP 2400-102e2026 watched).
 
 - `install.sh` re-registers by itself a registration that runs the same server without the kit's current wrappers
   (`ws-mcp-keepalive`, `ws-mcp-jail`); other differences still need `--mcp-refresh`. `lib.sh` gains `mcp_unwrap`;
@@ -376,6 +433,9 @@ Breaking behaviour changes, each described below:
   and `~/.local/lib/ws-profile.sh` are hard-protected (and Edit-denied in `settings.json` and the managed policy).
 - Security model, residual risks and the agentic (ASI01–ASI10) cross-reference updated in
   [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) and [SECURITY.md](SECURITY.md).
+- Round 4: the guard hard-protects the filter, its policy and pins, the egress proxy, `ws-settings`, the secret
+  rotation file, the backup settings and `budgets.conf`; in an identity or custom-profile tab it blocks changing
+  `GIT_SSH_COMMAND`, `GIT_SSH` and `SSH_AUTH_SOCK`; `WS_LEVEL` is never set from Claude.
 
 ## [3.0.1] - 2026-11-25
 

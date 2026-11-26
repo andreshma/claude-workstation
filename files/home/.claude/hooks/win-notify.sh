@@ -12,6 +12,7 @@
 # · CLAUDE_NOTIFY_FORCE=1 notifies even if you are looking at the tab (for testing).
 # · Uses PowerShell 5.1 with -EncodedCommand (no .ps1 files or modules; the execution policy
 #   does not affect it) and runs in the background: the hook never makes Claude wait.
+# · Title and text go through ws-redact before they reach Windows (WS-SEC-009).
 # Silent and always exit 0.
 [[ -n "${TMUX_PANE:-}" ]] && command -v tmux >/dev/null || exit 0
 input="$(cat)"
@@ -88,6 +89,10 @@ if [[ -z "${CLAUDE_NOTIFY_FORCE:-}" && "$(tmux display -p -t "$p" '#{window_acti
 command -v powershell.exe >/dev/null || exit 0
 
 title="${atitle:-Claude · $(tmux display -p -t "$p" '#{window_index} #{window_name}')}"
+# A toast shows on the lock screen and stays in the Action Center: it goes through ws-redact first (WS-SEC-009).
+if [[ -x "$HOME/.local/bin/ws-redact" ]]; then
+  title="$("$HOME/.local/bin/ws-redact" <<<"$title")"; body="$("$HOME/.local/bin/ws-redact" <<<"$body")"
+fi
 ps="\$d={param(\$s)[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(\$s))}
 \$t=& \$d '$(b64 "$title")'; \$b=& \$d '$(b64 "$body")'
 \$null=[Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime]

@@ -12,7 +12,7 @@ display-menu -O -T "#[align=centre] ⚙  Workstation " -x C -y C -- \
   "Restart Claude in all idle tabs (picks up the new configuration)" R "confirm-before -p \"Exit and re-enter every Claude tab that is not working? They resume their conversation (y/n)\" \"run-shell -b '~/.local/bin/tmux-claude-restart --all'\"" \
   "Update the workstation from the kit" U "display-popup -E -w 92% -h 85% -T ' Update ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-pause 'ws-kit-update'\"" \
   "-#[nodim]── Security and cloud ──" "" "" \
-  "Repo quality and security" Q "display-popup -E -w 95% -h 90% -T ' Repo quality ' -d \"#{pane_current_path}\" \"~/.local/bin/tmux-popup-run ~/.local/bin/ws-gate repo-view\"" \
+  "Repo quality and security" Q "display-popup -E -w 95% -h 90% -T ' Repo quality ' -d \"##{pane_current_path}\" \"~/.local/bin/tmux-popup-run ~/.local/bin/ws-gate repo-view\"" \
   "Claude audit" u "display-popup -E -w 90% -h 80% -T ' Audit ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-pause 'claude-report'\"" \
   "Switch Azure subscription" z "display-popup -E -w 80% -h 70% -T ' Azure subscription ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-az-sub\"" \
   "Installed tools" I "display-popup -E -w 92% -h 85% -T ' Tools ' \"~/.local/bin/tmux-popup-run ~/.local/bin/tmux-pause 'ws-tools'\"" \

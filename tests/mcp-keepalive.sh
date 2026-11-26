@@ -323,8 +323,9 @@ for n in $(jq -r 'keys[]' "$M"); do
   w="$(want "$n")"
   if [[ "$(jq -r --arg n "$n" '.[$n].type // "stdio"' "$M")" == stdio ]]; then
     inner="$(jq -r --arg n "$n" 'if (.[$n].jail | type) == "object" then "/home/u/.local/bin/ws-mcp-jail" else .[$n].command end' "$M")"
-    check "$n: registered through ws-mcp-keepalive --name $n -- $(basename "$inner")" \
-      jq -e --arg n "$n" --arg i "$inner" '.command == "/home/u/.local/bin/ws-mcp-keepalive" and .args[0:3] == ["--name", $n, "--"] and .args[3] == $i' <<<"$w"
+    check "$n: registered through ws-mcp-keepalive --name $n -- ws-mcp-filter --name $n -- $(basename "$inner")" \
+      jq -e --arg n "$n" --arg i "$inner" '.command == "/home/u/.local/bin/ws-mcp-keepalive" and .args[0:3] == ["--name", $n, "--"]
+        and .args[3] == "/home/u/.local/bin/ws-mcp-filter" and .args[4:7] == ["--name", $n, "--"] and .args[7] == $i' <<<"$w"
   else
     check "$n: an HTTP server is registered as written (Claude Code reconnects it itself)" \
       jq -e --arg n "$n" --slurpfile k "$M" '. == $k[0][$n] and (has("command") | not)' <<<"$w"
@@ -335,10 +336,10 @@ done
 check "every stdio server says keepalive: true or false; HTTP servers carry no keepalive key" \
   jq -e 'all(.[]; if (.type // "stdio") == "stdio" then (.keepalive | type) == "boolean" else has("keepalive") | not end)' "$M"
 check "the jailed server keeps its jail inside the keepalive (azure: --net --azure-config)" \
-  jq -e '.args[3:] | .[0] == "/home/u/.local/bin/ws-mcp-jail" and index("--net") and index("--azure-config") and (.[index("--") + 1] | endswith("azmcp"))' <<<"$(want azure)"
+  jq -e '.args[7:] | .[0] == "/home/u/.local/bin/ws-mcp-jail" and index("--net") and index("--azure-config") and (.[index("--") + 1] | endswith("azmcp"))' <<<"$(want azure)"
 jq '.mempalace.keepalive = false' "$M" > "$T/m.json"
-check "\"keepalive\": false registers the server as before (no wrapper)" \
-  jq -e '.command | endswith("mempalace-mcp.exe")' <<<"$(want mempalace "$T/m.json")"
+check "\"keepalive\": false registers the server without the keepalive (the filter stays)" \
+  jq -e '(.command | endswith("/ws-mcp-filter")) and (.args[3] | endswith("mempalace-mcp.exe"))' <<<"$(want mempalace "$T/m.json")"
 all="$(for n in $(jq -r 'keys[]' "$M"); do jq -c --arg n "$n" '{($n): .}' <<<"$(want "$n")"; done | jq -s 'add | {mcpServers: .}')"
 printf '%s\n' "$all" > "$T/claude.json"
 m="$(bash -c 'source "$1/lib.sh"; mcp_unwrap_merge "$2" "$3"' _ "$ROOT" "$M" "$T/claude.json" | sed 's#/home/u/#@HOME@/#g')"

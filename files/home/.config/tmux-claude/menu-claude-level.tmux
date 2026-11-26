@@ -4,14 +4,14 @@
 if -F '#{!=:#{status-interval},0}' 'set -gF @si_prev "#{status-interval}"'
 set -g status-interval 0
 display-menu -O -T "#[align=centre] 🛡  Protection · #W · #{?@clevel,#{@clevel},normal} " -x C -y C -- \
-  "Full: sandbox with no escape hatches + kit rules#{?#{==:#{@clevel},full}, ✓,}" c "confirm-before -p \"Restart #W with full protection? Resumes the conversation (y/n)\" \"run-shell -b '~/.local/bin/tmux-level full #{pane_id}'\"" \
-  "Normal: your usual configuration#{?@clevel,, ✓}" n "confirm-before -p \"Restart #W with normal protection? Resumes the conversation (y/n)\" \"run-shell -b '~/.local/bin/tmux-level normal #{pane_id}'\"" \
-  "Pure: no kit sandbox or permissions (the floor stays)#{?#{==:#{@clevel},bare}, ✓,}" p "confirm-before -p \"Restart #W as pure Claude (no sandbox; the floor stays)? (y/n)\" \"run-shell -b '~/.local/bin/tmux-level bare #{pane_id}'\"" \
+  "Full: sandbox with no escape hatches + kit rules#{?#{==:#{@clevel},full}, ✓,}" c "confirm-before -p \"Restart ##W with full protection? Resumes the conversation (y/n)\" \"run-shell -b '~/.local/bin/tmux-level full #{pane_id}'\"" \
+  "Normal: your usual configuration#{?@clevel,, ✓}" n "confirm-before -p \"Restart ##W with normal protection? Resumes the conversation (y/n)\" \"run-shell -b '~/.local/bin/tmux-level normal #{pane_id}'\"" \
+  "Pure: no kit sandbox or permissions (the floor stays)#{?#{==:#{@clevel},bare}, ✓,}" p "confirm-before -p \"Restart ##W as pure Claude (no sandbox; the floor stays)? (y/n)\" \"run-shell -b '~/.local/bin/tmux-level bare #{pane_id}'\"" \
   "-#[nodim]── Other ways to start ──" "" "" \
-  "#{?#{@csolo},Leave solo mode,Solo mode: auto inside the sandbox for 4 h (asks you for critical actions)}" s "confirm-before -p \"#{?#{@csolo},Return #W to normal mode?,Switch #W to solo mode: auto inside the sandbox for 4 h?} (y/n)\" \"run-shell -b '~/.local/bin/tmux-solo #{?#{@csolo},normal,this} #{pane_id}'\"" \
-  "Solo Claude in a new tab (own worktree in a repo)" t "run-shell -b '~/.local/bin/tmux-solo new \"#{pane_current_path}\"'" \
-  "Solo Claude in a new worktree" w "run-shell -b '~/.local/bin/tmux-solo worktree \"#{pane_current_path}\"'" \
-  "Restart without changing the protection (resumes the conversation)" C "confirm-before -p \"Restart Claude in #W? (y/n)\" \"run-shell -b '~/.local/bin/tmux-claude-restart #{pane_id}'\"" \
+  "#{?#{@csolo},Leave solo mode,Solo mode: auto inside the sandbox for 4 h (asks you for critical actions)}" s "confirm-before -p \"#{?#{@csolo},Return ##W to normal mode?,Switch ##W to solo mode: auto inside the sandbox for 4 h?} (y/n)\" \"run-shell -b '~/.local/bin/tmux-solo #{?#{@csolo},normal,this} #{pane_id}'\"" \
+  "Solo Claude in a new tab (own worktree in a repo)" t "run-shell -b '~/.local/bin/tmux-solo new ##{q:pane_current_path}'" \
+  "Solo Claude in a new worktree" w "run-shell -b '~/.local/bin/tmux-solo worktree ##{q:pane_current_path}'" \
+  "Restart without changing the protection (resumes the conversation)" C "confirm-before -p \"Restart Claude in ##W? (y/n)\" \"run-shell -b '~/.local/bin/tmux-claude-restart #{pane_id}'\"" \
   "-#[nodim]── View ──" "" "" \
   "Active rules (/permissions)" r "send-keys /permissions Enter" \
   "Sandbox status (/sandbox)" x "send-keys /sandbox Enter" \

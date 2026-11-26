@@ -59,7 +59,7 @@ H = Path.home()
 STATE = Path(os.environ.get("XDG_STATE_HOME") or H / ".local/state") / "ws-mcp"
 LOG_MAX = 1024 * 1024
 LINE_MAX = 4000
-WRAPPERS = ("ws-mcp-keepalive", "ws-mcp-jail")
+WRAPPERS = ("ws-mcp-keepalive", "ws-mcp-filter", "ws-mcp-jail")
 RESET_AFTER = 60.0          # seconds of uptime after which the backoff starts again at its minimum
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,31}$")
 # The shapes ws-redact masks, for the server's stderr (built in pieces so the kit's secret scanners do not mistake
@@ -90,7 +90,7 @@ def idkey(v) -> str:
 
 
 def real_command(argv: list[str]) -> list[str]:
-    """The server's own command behind the kit's wrappers (ws-mcp-keepalive, ws-mcp-jail): what the lock vouches for."""
+    """The server's own command behind the kit's wrappers (keepalive, filter, jail): what the lock vouches for."""
     a = list(argv)
     while a and os.path.basename(a[0]) in WRAPPERS and "--" in a[1:]:
         a = a[a.index("--", 1) + 1:]

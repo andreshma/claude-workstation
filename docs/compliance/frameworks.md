@@ -1,7 +1,7 @@
 # Frameworks
 
 The AI, security and governance frameworks the control catalogue ([controls.yaml](controls.yaml)) maps to: the version
-in force on 2026-11-25, where it was verified, how it applies to a single-user developer workstation that runs AI
+in force on 2026-11-26, where it was verified, how it applies to a single-user developer workstation that runs AI
 agents, and what is out of scope. The [assessment](assessment.md) uses these sources.
 
 ## Contents
@@ -23,7 +23,7 @@ could not be confirmed from a public source.
 
 ## Sources
 
-Verified online on 2026-11-25 from the official pages listed, unless the notes say otherwise.
+Verified online on 2026-11-26 (round 4; first on 2026-11-25) from the official pages listed, unless the notes say otherwise.
 
 | Prefix | Framework | Version | Date | Official URL | How it applies to this workstation | Out of scope, and why |
 |---|---|---|---|---|---|---|
@@ -37,9 +37,9 @@ Verified online on 2026-11-25 from the official pages listed, unless the notes s
 | `OWASP-MCP10` | OWASP MCP Top 10 | 2025 (beta: "Phase 3 - Beta Release and Pilot Testing") | Not stated | <https://owasp.org/www-project-mcp-top-10/> | `MCP01` to `MCP10` for the five MCP servers the kit registers and confines. | Nothing. Titles may still change while the list is in beta; `MCP06` has two titles (project page and repository), both recorded. |
 | `OWASP-RTM` | GenAI Red Teaming Manual: A Practical Guide for Adversarial Testing of Generative AI Models & Systems | 1.0 | October 2026 (page 2026-10-20) | <https://genai.owasp.org/resource/genai-red-teaming-manual-version-1-0/> | The adversarial test catalogue for WS-AI-027 and the `ws-audit --ai` cases; items are section numbers (the manual's test-case ids such as TS-1 or TC-2 are local to each section). | Model-level testing (weights, training data, fine-tuning): no model is trained or hosted. |
 | `OWASP-SAA` | Securing Agentic Applications (V2: A Builder & Defender's Guide) | 2.0 | October 2026 (page 2026-11-10) | <https://genai.owasp.org/resource/securing-agentic-applications-v2/> | Key components `KC1` to `KC6.6`; its section 5.5.1 (coding and computer-use agents) describes this workstation. | Orchestration and reasoning components the kit does not build (`KC1` to `KC3`); `KC6.6` operating critical systems. |
-| - | GenAI Red Teaming Guide: A Practical Approach to Evaluating AI Vulnerabilities | 1.0 | 2025-01-23 | <https://genai.owasp.org/resource/genai-red-teaming-guide/> | Its appendix D names twelve agentic red-teaming tasks; the newer Manual (`OWASP-RTM`) gives them test cases and oracles. | Not mapped: the Manual is cited instead. |
+| - | GenAI Red Teaming Guide: A Practical Approach to Evaluating AI Vulnerabilities | 1.0 | 2025-01-22 | <https://genai.owasp.org/resource/genai-red-teaming-guide/> | Its appendix D names twelve agentic red-teaming tasks; the newer Manual (`OWASP-RTM`) gives them test cases and oracles. | Not mapped: the Manual is cited instead. |
 | - | Securing Agentic Applications Guide | 1.0 | 2025-07-27 | <https://genai.owasp.org/resource/securing-agentic-applications-guide-1-0/> | Superseded by V2. | Not mapped. |
-| - | AIVSS Scoring System For OWASP Agentic AI Core Security Risks | v0.8 | Not stated (released with the AIUC-1 crosswalk, 2026) | <https://aivss.owasp.org/> | A scoring method over CVSS v4.0 for ten core agentic risks; usable to score a finding of this catalogue. | Not mapped: a scoring system, not a control list, and its risks carry no identifiers. |
+| - | AIVSS Scoring System For OWASP Agentic AI Core Security Risks | v0.8 (document); the AIVSS 1.0 calculator is marked live on the site | Not stated (released with the AIUC-1 crosswalk, 2026) | <https://aivss.owasp.org/> | A scoring method over CVSS v4.0 for ten core agentic risks; usable to score a finding of this catalogue. | Not mapped: a scoring system, not a control list, and its risks carry no identifiers. |
 | - | State of Agentic AI Security and Governance | 2.01 | June 2026 | <https://genai.owasp.org/resource/state-of-agentic-ai-security-and-governance/> | Landscape report. | Not mapped: no requirements or identifiers. |
 | - | Multi-Agentic system Threat Modeling Guide | 1.0 | 2025-04-23 | <https://genai.owasp.org/resource/multi-agentic-system-threat-modeling-guide-v1-0/> | Read for the swarm threat model (docs/THREAT_MODEL.md). | Not mapped: identifiers not verified (the PDF was not read). |
 | - | Agent Name Service (ANS) for Secure Al Agent Discovery ("Al" as published) | 1.0 | 2025-05-14 | <https://genai.owasp.org/resource/agent-name-service-ans-for-secure-al-agent-discovery-v1-0/> | - | Not applicable: the kit discovers no agents over a network. |
@@ -56,8 +56,8 @@ Verified online on 2026-11-25 from the official pages listed, unless the notes s
 | - | CIS Microsoft Windows 11 Enterprise Benchmark | 5.1.1 (download page; 5.1.0 was announced in the September 2026 update) | Not stated | <https://www.cisecurity.org/benchmark/microsoft_windows_desktop> | The kit touches Windows only through the Credential Manager, a PowerShell profile and an HKCU protocol handler. | Not mapped: the Windows baseline is the organisation's; the kit changes no Windows security setting. |
 | `NSA-DAISS` | NSA AISC and partners, Deploying AI Systems Securely (CSI) | 1.0 | 2024-04-15 | <https://media.defense.gov/2024/Apr/15/2003439257/-1/-1/0/CSI-DEPLOYING-AI-SYSTEMS-SECURELY.PDF> | The deployment environment here is the workstation: governance, hardening, monitoring, access control, updates. Items are the guidance's headings. | "Protect model weights": the kit hosts no model. |
 | `NSA-AIDATA` | NSA AISC and partners, AI Data Security: Best Practices for Securing Data Used to Train & Operate AI Systems (CSI) | Final | 2025-05-22 | <https://media.defense.gov/2025/May/22/2003720601/-1/-1/0/CSI_AI_DATA_SECURITY.PDF> | The data that operates the agents: prompts, memory, retrieval corpora, telemetry and backups. Items `BP1` to `BP10` are the ten numbered best practices. | Training-data sections (data drift, poisoned training sets): no training happens here. |
-| `NSA-AGENTIC` | ASD's ACSC, CISA, NSA and partners, Careful Adoption of Agentic AI Services | Final | 2026-05-01 | <https://www.cyber.gov.au/business-government/secure-design/artificial-intelligence/careful-adoption-of-agentic-ai-services> | Privilege, structural and accountability risks of agents. | Section headings could not be read (the official site timed out again on 2026-11-25 and the PDF returned 403); items cite the three risk categories named in summaries and are marked unverified. |
-| - | Canadian Centre for Cyber Security with CISA and partners, Managing AI Token Consumption for Operational Resilience (ITSM.00.125) | Final | October 2026 (from a secondary source) | <https://cyber.gc.ca/en/guidance/managing-ai-token-consumption-operational-resilience-itsm00125> | Spend caps and consumption monitoring (WS-AI-019). | Not mapped: date and section headings not verified. |
+| `NSA-AGENTIC` | ASD's ACSC, CISA, NSA and partners, Careful Adoption of Agentic AI Services | Final | 2026-05-01 | <https://www.cyber.gov.au/business-government/secure-design/artificial-intelligence/careful-adoption-of-agentic-ai-services> | The five risk categories of agents: privilege, design and configuration, behavioural, structural and accountability; best practices grouped design, develop, deploy and operate. | Headings read on 2026-11-26 from the Canadian Centre for Cyber Security's copy (<https://cyber.gc.ca/en/guidance/careful-adoption-agentic-ai>, modified 2026-09-10); cyber.gov.au timed out. The catalogue cites the privilege, structural and accountability categories; design and configuration and behavioural risks are covered by the same controls (the guard, the levels, the filter) and not cited separately. |
+| - | Canadian Centre for Cyber Security with CISA and partners, Managing AI Token Consumption for Operational Resilience (ITSM.00.125) | Final | October 2026 (page modified 2026-10-22, verified 2026-11-26) | <https://cyber.gc.ca/en/guidance/managing-ai-token-consumption-operational-resilience-itsm00125> | Spend caps and consumption monitoring (WS-AI-019: budgets, the hard stop and the per-session cap). | Not mapped: guidance without item identifiers; six section headings read, from "Demystifying AI tokens" to "Optimizing AI token usage". |
 | - | NIST CAISSI, NSA and CISA, Key Practices for Incident Readiness and Response in Super Intelligence Training and Evaluation | Final | 2026-10-16 | <https://www.nist.gov/news-events/news/2026/10/key-practices-incident-readiness-and-response-super-intelligence-training> | - | Not applicable: incidents during model training and evaluation; no model is trained here. |
 | `WAF-SEC` | Microsoft Azure Well-Architected Framework, Security checklist | Page updated 2026-06-26 | 2026-06-26 | <https://learn.microsoft.com/azure/well-architected/security/checklist> | `SE:01` to `SE:12` read with the workstation as the workload. | Azure platform services: the kit deploys none. |
 | `WAF-REL` | Azure Well-Architected Framework, Reliability checklist | Page updated 2026-05-29 | 2026-05-29 | <https://learn.microsoft.com/azure/well-architected/reliability/checklist> | `RE:04` recovery targets, `RE:07` self-preservation, `RE:09` recovery plans and `RE:10` health, for one workstation and its backups. | `RE:02`, `RE:03`, `RE:05`, `RE:06`, `RE:08`: user flows, redundancy, scaling and chaos testing of a multi-instance workload. |
@@ -71,7 +71,7 @@ Verified online on 2026-11-25 from the official pages listed, unless the notes s
 | `ISO42001` | ISO/IEC 42001:2023, AI management system | 2023 (EN ISO/IEC 42001:2026 adopts it unchanged) | 2023-12 | <https://www.iso.org/standard/81230.html> | Clauses 4 to 10 and the Annex A control objective groups `A.2` to `A.10`, for the owner's own management of AI use. | The paid text was not available: clause names follow the ISO harmonized structure and Annex A group names come from public summaries; individual Annex A controls are not cited because summaries disagree on their numbering. Certification and organisational roles are out of scope. iso.org could not be read on 2026-11-25; a search index lists the standard as "to be revised". |
 | `ISO25010` | ISO/IEC 25010:2023, Systems and software Quality Requirements and Evaluation (SQuaRE): Product quality model | Second edition | 2023-11 | <https://www.iso.org/standard/78176.html> | The nine product quality characteristics applied to the kit as a product; items are the characteristic names. | Sub-characteristics are not cited (they come from a secondary source); the quality-in-use model of ISO/IEC 25019 is not mapped. |
 | `ATLAS` | MITRE ATLAS | Release 2026.10 (data format 6.1.0) | 2026-10-28 | <https://atlas.mitre.org>, <https://github.com/mitre-atlas/atlas-data> | Cross-reference for injection, memory poisoning and the agent techniques (tool invocation, configuration, credentials, exfiltration, tool poisoning, agentic resource consumption). | Model-level techniques (weights, training data). |
-| - | EU AI Act (Regulation (EU) 2024/1689), as simplified by the AI Omnibus in force 2026-07-27 | - | - | <https://digital-strategy.ec.europa.eu/en/policies/regulatory-framework-ai> | The owner deploys a hosted general-purpose model for their own professional work: Article 4 (AI literacy) applies, covered by WS-GOV-012 and the AI use policy. | Not mapped: no provider obligations (the kit trains and places no model on the market) and no high-risk use. |
+| - | EU AI Act (Regulation (EU) 2024/1689), as simplified by the AI Omnibus in force 2026-07-27 | - | - | <https://digital-strategy.ec.europa.eu/en/policies/regulatory-framework-ai> | The owner deploys a hosted general-purpose model for their own professional work: Article 4 (AI literacy) applies, covered by WS-GOV-012 and the AI use policy. The AI Omnibus turned Article 4 into an obligation of means for deployers ("take measures supporting" AI literacy) and moved the high-risk dates to 2027-12-02 (Annex III) and 2028-08-02 (Annex I), according to the Commission's page and law-firm summaries; the Official Journal text was not read. | Not mapped: no provider obligations (the kit trains and places no model on the market) and no high-risk use. |
 
 ## Version notes
 
@@ -108,6 +108,15 @@ Verified online on 2026-11-25 from the official pages listed, unless the notes s
   documentation. CIS also publishes a separate Ubuntu 24.04 STIG benchmark (v1.0.0), not mapped.
 - **MITRE ATLAS** moved from semantic versions to monthly releases (`YYYY.MM`); release 2026.10 keeps `AML.T0051`,
   `AML.T0080` and `AML.T0080.000` with their names.
+- **Round 4 (2026-11-26).** Every row re-checked: nothing superseded, no draft became final, no preview became GA
+  (MCSB v2 still "currently in preview"; SSDF 1.2 and IR 8596 still drafts; ATLAS 2026.10 still the latest release).
+  Corrected: the Red Teaming Guide's date (2025-01-22). Now verified: the NSA and partners' agentic guidance headings
+  (five risk categories) and ITSM.00.125. Noted: the AIVSS 1.0 calculator (the document stays v0.8) and the AI
+  Omnibus wording of Article 4. Watched, not mapped: NIST SP 2400-102e2026, "Adversarial Machine Learning: A Taxonomy
+  and Terminology of Attacks and Mitigations" (initial public draft, comments 2026-11-09 to 2026-12-18; it continues the
+  AI 100-2 series with agentic systems), and the OWASP GenAI Data Security Best Practices v2 (three parts,
+  2026-11-02 to 2026-11-24). Not fetchable on 2026-11-26: iso.org and media.defense.gov (HTTP 403), cyber.gov.au
+  (timeout); those rows keep the 2026-11-25 reading.
 - **Checked and unchanged on 2026-11-25:** OWASP LLM Top 10 2026, Agentic Top 10 2026, NHI Top 10 2025, the
   third-party MCP cheat sheet 1.0, NIST AI RMF 1.0, AI 600-1, SSDF 1.1, SP 800-218A, CSF 2.0, IR 8596 (preliminary
   draft), CIS Controls 8.1, CIS Ubuntu 24.04 2.0.0, the three NSA and partner documents, WAF Security, WAF AI, CAF
@@ -134,7 +143,9 @@ Verified online on 2026-11-25 from the official pages listed, unless the notes s
 | Item | What was done instead |
 |---|---|
 | OWASP LLM Top 10 2026 official crosswalk from 2025 | Name-based crosswalk above |
-| NSA "Careful Adoption of Agentic AI Services" headings | Three risk categories from summaries, marked unverified |
+| NSA "Careful Adoption of Agentic AI Services" headings on the official site (cyber.gov.au) | Read on the Canadian Centre for Cyber Security's copy of the same guidance (2026-11-26) |
+| EU AI Act Article 4 as amended by the AI Omnibus | The Commission's page and law-firm summaries; the Official Journal text was not read |
+| ISO/IEC 42001 and 25010 pages, NSA DAISS and AI data security PDFs on 2026-11-26 | HTTP 403; the 2026-11-25 reading stands |
 | CIS Ubuntu 24.04 v2.0.0 section numbers | Recommendations cited by name, marked "(id unverified)" |
 | CIS Windows 11 Enterprise 5.1.1 release date | Version from the download page; not mapped |
 | ISO/IEC 42001 Annex A individual control numbers, and whether a revision is in progress | Group level `A.2` to `A.10` only; iso.org could not be read |
@@ -528,9 +539,9 @@ checked against the catalogue when it was written (no reference outside this lis
 
 | ID | Item | Controls |
 |---|---|---|
-| `privilege risks` | Privilege risks (category name from secondary summaries; id unverified) | WS-AI-002, WS-AI-004, WS-AI-026 |
-| `structural risks` | Structural risks (id unverified) | WS-AI-015 |
-| `accountability risks` | Accountability risks (id unverified) | WS-AI-005, WS-AI-006, WS-AI-026, WS-SEC-010, WS-SEC-011 |
+| `privilege risks` | Privilege risks (heading verified 2026-11-26; the guidance numbers no categories) | WS-AI-002, WS-AI-004, WS-AI-026 |
+| `structural risks` | Structural risks (heading verified 2026-11-26) | WS-AI-015 |
+| `accountability risks` | Accountability risks (heading verified 2026-11-26) | WS-AI-005, WS-AI-006, WS-AI-026, WS-SEC-010, WS-SEC-011 |
 
 ### `WAF-SEC`
 

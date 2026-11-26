@@ -126,16 +126,19 @@ Linux ones inside `ws-mcp-jail` ([ADR 0024](adr/0024-mcp-server-confinement-and-
 
 | Path | `full` | `normal` | `bare` | solo | solo `--unsandboxed` |
 |---|---|---|---|---|---|
-| Sandboxed commands | Network allow list | Network allow list | No sandbox: unrestricted | Network allow list, no prompt | No sandbox: unrestricted |
+| Sandboxed commands | Allow list, strict (outside it refused, never prompted); `github.com` and the GitHub API denied | Allow list; gist and upload hosts denied | No sandbox: unrestricted | Allow list, strict; `github.com` and the GitHub API denied | No sandbox: unrestricted |
 | Excluded commands (az, gh, git push…) | None: they stay in the sandbox | Unrestricted, after the rules and the guard | Not applicable | None: they stay in the sandbox and ask; with `--with-network-tools` unrestricted after you approve each one | Not applicable (they ask) |
 | WebFetch | Five documentation and registry hosts allowed, others ask | Same | Claude Code's default prompt | Auto-mode classifier | Auto-mode classifier |
-| Jailed MCP servers (azure, chrome-devtools) | Unrestricted network, filesystem limited to the jail | Same | Same | Same | Same |
+| Jailed MCP servers | azure: only the hosts of `egress.json`, through `ws-egress-proxy` (audit mode until the owner enforces it); chrome-devtools: shared network | Same | Same | Same | Same |
 | Windows MCP servers (mempalace, recall), hooks, Telegram, `!` mode | Unrestricted | Unrestricted | Unrestricted | Unrestricted | Unrestricted |
 
-Residual: `github.com` and `*.githubusercontent.com` are in the allow list and can carry data out (a gist, an issue,
-a raw upload through `gh`). `ws-mcp-jail` confines what a Linux MCP server can read, not where it connects: a server
-registered with `--net` has no per-host egress limit, and the two Windows servers are not confined at all.
-WebFetch to an unlisted host is one approval away, and in solo it is the classifier's decision.
+The level rules are Claude Code's `deniedDomains` and `strictAllowlist`, generated into the full and solo profiles
+from `~/.config/claude-levels/network.json` and passed with `--settings`, so a repository's settings cannot lift them
+([ADR 0028](adr/0028-network-per-level-mcp-egress-and-settings-menu.md)). Residual: at the normal level `github.com`
+stays allowed to sandboxed commands (a push with a token typed into the command) and the excluded commands are
+unrestricted by design; azure's egress list is in audit mode until the owner enforces it; chrome-devtools, the two
+Windows servers, hooks and `!` mode have no egress control. WebFetch to an unlisted host is one approval away, and in
+solo it is the classifier's decision.
 
 #### Permission rules
 
@@ -284,13 +287,17 @@ not personal data, and not files the agent reads.
   `WS_MEMORY_PRIVATE=skip` sends nothing from such a session. If redaction fails, the hook is not run (`memory-skip`).
 - `ws-memory review --older-than 90` lists facts saved through `ws-learn` for keep or invalidate; `ws-memory log` lists
   memory writes, redactions and private blocks from the audit log.
+- `ws-mcp-filter`, in the stdio path of MemPalace and recall ([ADR 0027](adr/0027-mcp-stdio-policy-filter-and-tool-pinning.md)),
+  does the same deterministically, whatever the hooks do: `<private>` content refused, provenance stamped by the
+  filter process, `WS_MEMORY` off and `wing:W` enforced, `hook_settings`, `mine` and bulk deletes never passed,
+  MemPalace read-only at full and solo, results capped and redacted, and the tool definitions pinned.
 
 Residual: MemPalace's own lifecycle hooks still store transcript content without a per-item approval; the kit only
 removes the private spans. A paraphrase of private text (Claude restating it) is not recognised; `skip` is the only
 answer to that. Provenance is stamped on the way in but MemPalace does not make it immutable, has no expiry, and
 whether it mines `~/.claude/projects` outside the hooks is decided outside this repository. The review covers only
-facts saved through `ws-learn`. recall passages are not labelled as untrusted by the kit, and its corpus is outside
-the repository.
+facts saved through `ws-learn`. recall passages are labelled untrusted (`untrusted-content.sh`), capped and redacted;
+its corpus is outside the repository.
 
 #### Commit gate
 
@@ -477,9 +484,10 @@ conversations, the audit log and captured pane contents.
 |---|---|---|
 | Prompt injection makes an agent change the repository or the remote | Untrusted-content labelling, sandbox, `ask` rules, guard, commit gate | An agent can still commit and push to a feature branch; review happens on the remote |
 | An agent disables the controls or persists an instruction | Guard and `Edit` deny on settings, hooks, `~/.claude.json`, plugins, profiles, git hooks and the kit's keys; `CLAUDE.md`, commands, agents and skills only inside the owner's window; MCP and plugin registration denied; `core.hooksPath` and `ws.gate.*` denied and guarded; `--no-verify` blocked; ConfigChange audit; optional root-owned managed drop-in | Indirect writes the guard does not parse are only recorded afterwards; without `--managed` the files are the user's |
-| Memory poisoning | Every MemPalace write asks, with provenance stamped by the hook; shell writes to MemPalace blocked; `ws-memory review` | MemPalace's lifecycle hooks store transcripts without per-item approval; no expiry |
+| Memory poisoning | Every MemPalace write asks, with provenance stamped by the hook and by `ws-mcp-filter`; `<private>` refused in the stdio path; read-only at full and solo; shell writes to MemPalace blocked; `ws-memory review` | MemPalace's lifecycle hooks store transcripts without per-item approval; no expiry |
 | A compromised dependency or MCP server | Pinned versions and integrity, `npm ci --ignore-scripts`, sha256 of local executables on first use | See [Supply chain](#supply-chain) |
-| A folder or tab name carries shell syntax | The tab's path is escaped in the status-bar branch command | Escaping in the menus is pending |
+| An MCP server changes its tool definitions (rug pull) | Every tool's definition pinned per server and code identity; a change withheld (local) or denied (remote, `mcp-pin-gate.sh`) until `ws-mcp-tools approve` in a terminal; audited and notified | A remote server's mid-session change is caught at the next session start; the first listing is trusted on first use |
+| A folder or tab name carries shell syntax | The status-bar branch command escapes the path; the menus pass names to tmux as formats (`##W`, `##{q:pane_current_path}`), tested with a hostile name on a private server (`tests/menu-escaping.sh`) | None known |
 
 #### Repudiation
 
@@ -590,12 +598,12 @@ above, the kit's controls and the catalogue controls that cite it.
 | `ASI01` Agent Goal Hijack | Instructions in a README, an issue, a web page or an MCP result redirect an agent | `untrusted-content.sh`, the guard, `ask` rules, the sandbox, `ws-anomaly`, `tests/interop-adversarial.sh` | WS-AI-001, WS-AI-027, WS-AI-030 | Screening is heuristic; social engineering without markers |
 | `ASI02` Tool Misuse and Exploitation | An agent uses a legitimate tool (az, kubectl, an MCP tool) destructively | Strict base, levels, `ask` and `deny` rules, production list, per-level egress, Telegram allow list | WS-AI-002, WS-AI-003, WS-AI-004, WS-AI-005, WS-AI-008, WS-AI-011, WS-AI-018, WS-SEC-003, WS-SEC-005 | Excluded commands at the normal level and `--net` MCP servers have open egress; solo asks for every excluded command |
 | `ASI03` Identity and Privilege Abuse | An agent acts with every credential the owner holds | Credential denies at every level, `--agent` identities, production guard, bypass mode disabled, Telegram PIN | WS-AI-002, WS-AI-003, WS-AI-007, WS-AI-015, WS-AI-016, WS-AI-026, WS-SEC-002, WS-SEC-006 | Agent identities are optional; the `Agent-Session` trailer is attribution, not a boundary |
-| `ASI04` Agentic Supply Chain Vulnerabilities | A poisoned MCP server, npm package, plugin or kit update | Lock file and integrity, trust on first use, registration denied to agents, signed release tags, SHA-pinned CI, SBOM | WS-AI-009, WS-AI-010, WS-SEC-015, WS-SEC-016, WS-GOV-002 | Azure beta; the Windows MCP servers are not confined; MCP tool definitions are not pinned (WS-AI-031) |
+| `ASI04` Agentic Supply Chain Vulnerabilities | A poisoned MCP server, npm package, plugin or kit update | Lock file and integrity, trust on first use, registration denied to agents, signed release tags, SHA-pinned CI, SBOM | WS-AI-009, WS-AI-010, WS-SEC-015, WS-SEC-016, WS-GOV-002 | Azure beta; the Windows MCP servers are not confined (their traffic is filtered); a remote server's tool change is caught at the next session start |
 | `ASI05` Unexpected Code Execution | Generated or injected code runs outside the sandbox | Sandbox, `.exe` asks, PowerShell and download-and-run blocks, lint-on-edit without repository tools, `ws-learn` checks | WS-AI-004, WS-AI-017, WS-AI-027, WS-SEC-001, WS-SEC-005, WS-SEC-022, WS-SEC-027 | Telegram-run git commands honour repository config |
 | `ASI06` Memory and Context Poisoning | A fact written to MemPalace, or an edited `CLAUDE.md` or skill, steers later sessions | Memory gate with provenance, `<private>` filter, `ws-memory review`, guard on instruction files, untrusted labelling | WS-AI-001, WS-AI-012, WS-AI-013, WS-AI-014, WS-AI-024 | MemPalace's own mining; no expiry; recall corpus outside the repo |
 | `ASI07` Insecure Inter-Agent Communication | Swarm agents share a task file, memory and MCP servers | Swarm worktrees at the full level with push denied; memory writes ask | WS-AI-015, WS-AI-029 | The kit owns no agent-to-agent channel; agent teams are Claude Code's |
 | `ASI08` Cascading Failures | One runaway agent or swarm spends, loops or multiplies damage | Emergency stop, runtime gate, hard budget, swarm budget, solo expiry | WS-AI-015, WS-AI-019, WS-AI-025, WS-AI-028 | Spend gate fails open on a stale flag |
-| `ASI09` Human-Agent Trust Exploitation | Approval fatigue, or a convincing request answered from the phone | Approval-fatigue report and alerts, no persistent allow from Telegram, PIN for risky approvals, screen re-read | WS-AI-005, WS-AI-006, WS-AI-007, WS-AI-018, WS-AI-029 | Metrics need OpenTelemetry on; the dashboard does not render them yet |
+| `ASI09` Human-Agent Trust Exploitation | Approval fatigue, or a convincing request answered from the phone | Approval-fatigue report and alerts, no persistent allow from Telegram, PIN for risky approvals, screen re-read | WS-AI-005, WS-AI-006, WS-AI-007, WS-AI-018, WS-AI-029 | Metrics need OpenTelemetry on |
 | `ASI10` Rogue Agents | An agent that keeps acting against intent, or hides what it did | Anomaly alerts, emergency stop, hash-chained audit log with anchors, config-change audit, incident playbooks | WS-AI-004, WS-AI-014, WS-AI-025, WS-AI-030, WS-SEC-010, WS-SEC-011, WS-GOV-003 | The log is tamper-evident, not tamper-proof |
 
 ## Accepted risks
@@ -628,11 +636,11 @@ otherwise. Do not rely on any of the unimplemented items:
 | Strict user base, with `normal` adding exclusions through `--settings` | Implemented ([ADR 0019](adr/0019-strict-base-and-level-profiles.md)); solo adds none and makes them ask ([ADR 0022](adr/0022-solo-mode-without-excluded-commands.md)). |
 | PIN and a read-only allow list to run a command from Telegram | Implemented: PIN on by default, `RUN_ALLOW` allow list, block lists as a second check. |
 | `install.sh` setting git's hooks path | Implemented: set when no hooks path is configured; an existing one is not replaced; `ws-check` reports it. |
-| Escaped paths in the menus | Done for the status bar only. |
+| Escaped paths in the menus | Implemented: the menus pass names as formats; `tests/menu-escaping.sh`. |
 | Encrypted backups with expiry | Light backups encrypted when a recipient exists, Windows-side copies expire after 30 days; the incremental copies stay in clear. |
 | Bar indicator derived from the effective configuration | Derived from a tmux option. |
-| A test for every promise | Guard bypasses and fail-closed in `tests/guard.sh`; the Telegram allow list in `tests/telegram-approvals.sh`; the gate without gitleaks in `tests/gate-secret-scan.sh`; malicious folder and tab names in menus are not covered. |
-| MCP server confinement (`ws-mcp-jail`) and a registration check in `ws-audit` that fails on a server not in `files/mcp-servers.json` | Implemented for the Linux servers ([ADR 0024](adr/0024-mcp-server-confinement-and-allow-list.md)) and the registration check; the managed `allowedMcpServers` list is an owner step (`install.sh --managed --mcp-allowlist`), not verified as root. MCP tool-definition pinning is not built (WS-AI-031). |
+| A test for every promise | Guard bypasses and fail-closed in `tests/guard.sh`; the Telegram allow list in `tests/telegram-approvals.sh`; the gate without gitleaks in `tests/gate-secret-scan.sh`; malicious folder and tab names in `tests/menu-escaping.sh`. |
+| MCP server confinement (`ws-mcp-jail`) and a registration check in `ws-audit` that fails on a server not in `files/mcp-servers.json` | Implemented for the Linux servers ([ADR 0024](adr/0024-mcp-server-confinement-and-allow-list.md)) and the registration check; the managed `allowedMcpServers` list is an owner step (`install.sh --managed --mcp-allowlist`), not verified as root. MCP tool-definition pinning is implemented ([ADR 0027](adr/0027-mcp-stdio-policy-filter-and-tool-pinning.md)). |
 | `Agent-Session` commit trailer ([ADR 0020](adr/0020-agent-scoped-identities.md)) | Implemented in `ws-gate commit-msg` ([ADR 0023](adr/0023-git-gate-agent-trailer-and-throwaway-repositories.md)). |
 | Pinned tmux plugins (`plugins.lock`) and independent checksums in `ws-tools` | Implemented (`plugins.lock`, `ws-tools.lock`). |
 | `ws-audit --ai` adversarial cases with a real Claude (planted injection, Windows interop) | Built: grant modification, MCP registration write, unsandboxed retry and a README with a planted instruction; not yet run on the live machine. Windows interop from inside bubblewrap stays a probe. |
@@ -652,7 +660,7 @@ otherwise. Do not rely on any of the unimplemented items:
 
 | Item | Value |
 |---|---|
-| Last review | 2026-11-25, after phase 2 of the AI security hardening ([compliance/assessment.md](compliance/assessment.md)): strict base and level profiles, solo inside the sandbox, protected agent configuration, untrusted-content labelling, the memory gate, the tamper-evident audit log, the emergency stop, supply-chain pinning and signed releases ([ADR 0016](adr/0016-solo-mode-inside-the-sandbox.md) to [ADR 0020](adr/0020-agent-scoped-identities.md)); MemPalace and recall added as assets, and the OWASP agentic Top 10 cross-reference added. Before that, 2026-11-24 (English names, [ADR 0015](adr/0015-english-names-and-language-selector.md)), 2026-11-23 (phase 2 of ADR 0013, partly) and 2026-11-20 (the adversarial review behind ADR 0013) |
+| Last review | 2026-11-26, after round 4 ([ADR 0027](adr/0027-mcp-stdio-policy-filter-and-tool-pinning.md), [ADR 0028](adr/0028-network-per-level-mcp-egress-and-settings-menu.md)): the MCP policy filter and tool-definition pinning, network per level and MCP egress, read screening, menu escaping, the Settings menu. Before that, 2026-11-25, after phase 2 of the AI security hardening ([compliance/assessment.md](compliance/assessment.md)): strict base and level profiles, solo inside the sandbox, protected agent configuration, untrusted-content labelling, the memory gate, the tamper-evident audit log, the emergency stop, supply-chain pinning and signed releases ([ADR 0016](adr/0016-solo-mode-inside-the-sandbox.md) to [ADR 0020](adr/0020-agent-scoped-identities.md)); MemPalace and recall added as assets, and the OWASP agentic Top 10 cross-reference added. Before that, 2026-11-24 (English names, [ADR 0015](adr/0015-english-names-and-language-selector.md)), 2026-11-23 (phase 2 of ADR 0013, partly) and 2026-11-20 (the adversarial review behind ADR 0013) |
 | Next review | Quarterly, with the catalogue, as [governance/REVIEW-CADENCE.md](governance/REVIEW-CADENCE.md) sets out; and on each Claude Code major release (settings schema, hook contract, sandbox and CLI flags); when a control described here changes (`settings.json` permissions or sandbox, `normal-adds.json`, `guard.sh` or another enforcing hook, `ws-gate`, `ws-telegram`, `ws-otel`, the backup scripts, the MCP lock); when an ADR that affects security is added; when an item of [Pending work](#pending-work) is implemented; or after an incident ([governance/AI-INCIDENT-RESPONSE.md](governance/AI-INCIDENT-RESPONSE.md)) |
 
 Report vulnerabilities privately as described in [SECURITY.md](../SECURITY.md).
