@@ -25,7 +25,7 @@ body:
     id: versions
     attributes:
       label: Versions
-      placeholder: "kit 3.0.1, Windows 11, Ubuntu 24.04 (WSL2), tmux 3.4, Claude Code 2.1.x"
+      placeholder: "kit 4.0.0, Windows 11, Ubuntu 24.04 (WSL2), tmux 3.4, Claude Code 2.1.x"
   - type: textarea
     id: verify
     attributes:

@@ -9,7 +9,7 @@
 #   | live: <read-only kit command> (workstation only, skipped in CI) | manual: <text> (reported, not run).
 # effort: S (hours), M (days), L (a week or more).
 version: 1
-kit_version: 3.0.1 + Unreleased (phase 2, rounds 3 and 4)
+kit_version: 4.0.0
 assessed: '2026-11-26'
 controls:
 - id: WS-AI-001
@@ -1738,11 +1738,11 @@ controls:
   - docs/adr/0018-supply-chain-pinning-and-signed-releases.md
   check:
   - bash tests/supply-kit-update.sh
-  gap: allowed_signers ships no key yet, so every update is refused (exit 11) until the maintainer adds the release key;
+  gap: None since 4.0.0, which ships the maintainer's release key in allowed_signers and is the first signed tag;
     --allow-unsigned remains for forks.
   risk: 'high: likelihood low (requires compromise of the maintainer''s GitHub account or token); impact high (code that
     runs outside the sandbox on every installation of a public kit).'
-  remediation: Generate the release-signing key, add it to allowed_signers and sign the next tag (runbook, Signing a release).
+  remediation: Keep signing every release tag; rotate the key as in the runbook (Rotating secrets) if it is exposed.
   effort: M
 - id: WS-SEC-016
   title: Third-party tool and plugin pinning
