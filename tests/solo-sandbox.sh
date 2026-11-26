@@ -42,17 +42,21 @@ chmod +x "$F/tmux"
 run() { env FAKE_DIR="$F" PATH="$F:$BIN:$PATH" "$@"; }
 
 echo "1) the solo profile"
-check "solo keeps the sandbox on and only auto-allows sandboxed commands" \
-  jq -e '. == {sandbox: {enabled: true, autoAllowBashIfSandboxed: true}}' "$ROOT/files/home/.config/claude-solo/settings.json"
-check "ws-audit expects exactly that profile" grep -qF 'want = {"sandbox": {"enabled": True, "autoAllowBashIfSandboxed": True}}' "$BIN/ws-audit"
+check "solo keeps the sandbox on, only auto-allows sandboxed commands and refuses unsandboxed retries" \
+  jq -e '. == {sandbox: {enabled: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false}}' "$ROOT/files/home/.config/claude-solo/settings.json"
+check "ws-audit expects exactly that profile" \
+  grep -qF 'want = {"sandbox": {"enabled": True, "autoAllowBashIfSandboxed": True, "allowUnsandboxedCommands": False}}' "$BIN/ws-audit"
 
 echo "2) tmux-solo"
 : > "$F/log"; t0="$(date +%s)"
 run bash "$BIN/tmux-solo" this %1 >/dev/null 2>&1
 check "this: restarts Claude in auto mode with the generated solo profile" \
   grep -qF -- "send-keys -t %1 -l claude-resume --permission-mode auto --settings '$WS_LEVELS_DIR/solo.json'" "$F/log"
-check "  which is the solo settings plus the normal level's exclusions (the user settings are strict)" \
-  jq -e '.sandbox.enabled and .sandbox.autoAllowBashIfSandboxed and (.sandbox.excludedCommands | index("gh *"))' "$WS_LEVELS_DIR/solo.json"
+check "  which keeps the sandbox and excludes NO command from it (ADR-022)" \
+  jq -e '.sandbox.enabled and .sandbox.autoAllowBashIfSandboxed and (.sandbox.allowUnsandboxedCommands == false) and (.sandbox | has("excludedCommands") | not)' "$WS_LEVELS_DIR/solo.json"
+n_ex="$(jq '.sandbox.excludedCommands | length' "$ROOT/files/home/.config/claude-levels/normal-adds.json")"
+check "  and makes every command normal excludes an ask rule, so the classifier cannot approve it" \
+  jq -e --argjson n "$n_ex" '(.permissions.ask | index("Bash(gh *)")) and (.permissions.ask | index("Bash(git push *)")) and (.permissions.ask | index("Bash(az *)")) and ([.permissions.ask[] | select(startswith("Bash("))] | length) == $n' "$WS_LEVELS_DIR/solo.json"
 until="$(sed -n 's/.*set -w -t @1 @csolo 1 ; set -w -t @1 @csolo_until \([0-9]*\).*/\1/p' "$F/log")"
 check "marks the tab and its expiry, 4 h by default" bash -c "[[ -n '$until' ]] && (( $until - $t0 >= 14390 && $until - $t0 <= 14410 ))"
 check "solo-on is recorded in the audit log" bash -c "grep -h '\"ev\":\"solo-on\"' '$CLAUDE_AUDIT_DIR'/*.jsonl | grep -q '4 h'"
@@ -62,9 +66,21 @@ check "@csolo_hours sets the default expiry" bash -c "u=\$(sed -n 's/.*@csolo_un
 check "an expiry over 24 h is refused" not grep -q 'send-keys' "$F/log"
 : > "$F/log"; run bash "$BIN/tmux-solo" this %1 --unsandboxed >/dev/null 2>&1
 check "--unsandboxed uses a generated sandbox-off profile" bash -c "grep -qF -- \"--settings '$WS_LEVELS_DIR/solo-unsandboxed.json'\" '$F/log' && jq -e '.sandbox.enabled == false' '$WS_LEVELS_DIR/solo-unsandboxed.json'"
+check "  built like the other solo profiles: the network tools still ask" \
+  jq -e '(.permissions.ask | index("Bash(gh *)")) and (.permissions.ask | index("Bash(kubectl *)")) and .sandbox.autoAllowBashIfSandboxed' "$WS_LEVELS_DIR/solo-unsandboxed.json"
 check "and is visible: 🔓 in the tab name, @csolo_nosb and an audit event" bash -c "grep -q 'rename-window -t @1 🔓🤖api' '$F/log' && grep -q '@csolo_nosb 1' '$F/log' && grep -hq '\"ev\":\"solo-unsandboxed\"' '$CLAUDE_AUDIT_DIR'/*.jsonl"
+: > "$F/log"; run bash "$BIN/tmux-solo" this %1 --with-network-tools >/dev/null 2>&1
+check "--with-network-tools: the normal exclusions come back, each one asking" \
+  jq -e '.sandbox.enabled and (.sandbox.excludedCommands | index("gh *")) and (.permissions.ask | index("Bash(gh *)")) and (.permissions.ask | index("Bash(git push *)"))' "$WS_LEVELS_DIR/solo-net.json"
+check "  started with that profile, marked 🌐 and @csolo_net, audited as solo-network-tools" \
+  bash -c "grep -qF -- \"--settings '$WS_LEVELS_DIR/solo-net.json'\" '$F/log' && grep -q 'rename-window -t @1 🌐🤖api' '$F/log' && grep -q '@csolo_net 1' '$F/log' && grep -hq '\"ev\":\"solo-network-tools\"' '$CLAUDE_AUDIT_DIR'/*.jsonl"
+check "  time-boxed: 1 h by default" bash -c "u=\$(sed -n 's/.*@csolo_until \([0-9]*\).*/\1/p' '$F/log'); (( u - $(date +%s) <= 3610 && u - $(date +%s) >= 3590 ))"
+: > "$F/log"; run bash "$BIN/tmux-solo" this %1 --with-network-tools --hours 5 >/dev/null 2>&1
+check "  and 4 h at most" not grep -q 'send-keys' "$F/log"
+: > "$F/log"; run bash "$BIN/tmux-solo" this %1 --with-network-tools --unsandboxed >/dev/null 2>&1
+check "  never together with --unsandboxed" not grep -q 'send-keys' "$F/log"
 : > "$F/log"; run bash "$BIN/tmux-solo" normal %1 >/dev/null 2>&1
-check "normal: back to the normal level and every solo mark removed" bash -c "grep -qF -- \"-l claude-resume --settings '$WS_LEVELS_DIR/normal.json'\" '$F/log' && grep -q 'set -wu -t @1 @csolo_until' '$F/log' && grep -q 'set -wu -t @1 @csolo_nosb' '$F/log'"
+check "normal: back to the normal level and every solo mark removed" bash -c "grep -qF -- \"-l claude-resume --settings '$WS_LEVELS_DIR/normal.json'\" '$F/log' && grep -q 'set -wu -t @1 @csolo_until' '$F/log' && grep -q 'set -wu -t @1 @csolo_nosb' '$F/log' && grep -q 'set -wu -t @1 @csolo_net' '$F/log'"
 R="$T/repo"; git init -q "$R" && git -C "$R" commit -q --allow-empty -m "chore: init"
 : > "$F/log"; run bash "$BIN/tmux-solo" new "$R" >/dev/null 2>&1
 check "new in a git repo: its own worktree and branch by default" bash -c "ls -d '$R'.wt/solo-* && git -C '$R' branch --list 'solo/*' | grep -q solo/ && grep -q 'new-window .* -c $R.wt/solo-' '$F/log'"
