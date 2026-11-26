@@ -57,7 +57,9 @@ check "an audit folder readable by the group fails" grep -q $'^fail\tpermissions
 check "unattended-upgrades not enabled warns" grep -q $'^warn\tautomatic security updates' "$T/out"
 check "a running sshd warns" grep -q $'^warn\tsshd\trunning' "$T/out"
 check "a 2-minute clock skew warns" grep -q $'^warn\tclock skew against Windows: 1[12][0-9] s' "$T/out"
-rm "$B/powershell.exe"
+# Interop unavailable: a failing stub, not a removed one, so a real powershell.exe later in PATH (a WSL session with
+# Windows interop) cannot answer in its place.
+fake powershell.exe 'exit 127'
 run env FAKE_NTP=no > "$T/out"
 check "without interop, an unsynchronised clock warns through timedatectl" grep -q $'^warn\tclock synchronised (NTP): no' "$T/out"
 chmod 755 "$HOME"
