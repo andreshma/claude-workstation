@@ -1,0 +1,307 @@
+#!/usr/bin/env python3
+"""ws-mcp-tools — the owner's view of the MCP tool-definition pins (rug-pull detection, ADR-027, WS-AI-031).
+
+ws-mcp-filter pins the definition of every tool of each local server (name, title, description, schemas,
+annotations) under the kit lock identity of the server's code, and withholds a tool whose definition changes while
+that identity does not. Remote (HTTP) servers do not go through the filter: `check-remote` lists their tools over
+MCP Streamable HTTP and compares them with the same pins (detection only: Claude Code talks to them directly).
+
+Usage:
+  ws-mcp-tools status                 every pinned server: tools, identity, when and how; pending changes
+  ws-mcp-tools diff NAME              what changed: tools added, removed and changed, with the definition diff
+  ws-mcp-tools approve NAME           shows the diff and, after you answer y, pins the new definitions (the
+                                      filter serves them from the next listing). Yours only: it refuses inside
+                                      Claude (CLAUDECODE) and without a terminal, and guard.sh blocks it
+  ws-mcp-tools forget NAME            drops a server's pins (the next listing pins on first use); same rules
+  ws-mcp-tools check-remote [NAME]... [--url NAME=URL]...
+                                      the HTTP servers of ~/.claude.json (or the given URLs): first use pins, a
+                                      change is stored as pending and reported (exit 1)
+Exit: 0 ok · 1 a change is pending or a remote check found one · 2 usage · 3 refused (not the owner's terminal)
+"""
+
+from __future__ import annotations
+
+import difflib
+import json
+import os
+import subprocess  # nosec B404 — audit.sh only
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+sys.path.insert(1, str(Path.home() / ".local/lib"))
+import ws_mcp_policy as pol
+
+H = Path.home()
+TIMEOUT = float(os.environ.get("WS_MCP_TOOLS_TIMEOUT") or 20)
+PROTOCOL = "2025-06-18"
+
+
+def audit(ev: str, reason: str) -> None:
+    a = H / ".claude/hooks/audit.sh"
+    if os.access(a, os.X_OK):
+        try:
+            subprocess.run(
+                [str(a), ev, reason[:400]],
+                input=b'{"cwd":"/"}',
+                cwd="/",
+                timeout=10,  # nosec B603
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
+def owner_only(what: str) -> None:
+    if os.environ.get("CLAUDECODE"):
+        print(f"✖ ws-mcp-tools {what} is yours to run, in a terminal: not from inside Claude", file=sys.stderr)
+        sys.exit(3)
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print(f"✖ ws-mcp-tools {what} needs your terminal (it asks you to confirm)", file=sys.stderr)
+        sys.exit(3)
+
+
+def pending_of(name: str):
+    return pol.read_json(pol.PENDING / f"{name}.json")
+
+
+def status() -> int:
+    pins = pol.load_pins()["servers"]
+    rc = 0
+    if not pins:
+        print("No MCP tool pins yet: each server is pinned on its first tools/list (ws-mcp-filter).")
+    for n in sorted(pins):
+        r = pins[n]
+        p = pending_of(n)
+        mark = ""
+        if isinstance(p, dict) and p.get("digest") != r.get("digest"):
+            d = p.get("diff") or {}
+            mark = (
+                f"  ⚠ CHANGE PENDING since {p.get('seen', '?')}: +{len(d.get('added', []))} "
+                f"~{len(d.get('changed', []))} -{len(d.get('removed', []))} → ws-mcp-tools diff {n}"
+            )
+            rc = 1
+        print(
+            f"{n:18} {len(r.get('tools') or {}):3} tools  {r.get('how', '?'):11} {r.get('pinned', '?')}  "
+            f"{r.get('identity', '?')}{mark}"
+        )
+    return rc
+
+
+def show_diff(name: str) -> int:
+    rec = pol.load_pins()["servers"].get(name)
+    p = pending_of(name)
+    if not isinstance(p, dict):
+        print(f"{name}: nothing pending")
+        return 0
+    if rec and p.get("digest") == rec.get("digest"):
+        print(f"{name}: the pending definitions are already the pinned ones")
+        return 0
+    old = (rec or {}).get("definitions") or {}
+    new = p.get("definitions") or {}
+    d = p.get("diff") or pol.compare(rec, {k: pol.tool_hash(v) for k, v in new.items()})
+    print(f"{name}: seen {p.get('seen', '?')} · server {p.get('serverVersion') or '?'} · identity {p.get('identity')}")
+    for k in ("added", "changed", "removed"):
+        if d.get(k):
+            print(f"  {k}: {', '.join(d[k])}")
+    for t in d.get("added", []) + d.get("changed", []):
+        a = json.dumps(old.get(t, {}), indent=1, sort_keys=True, ensure_ascii=False).splitlines()
+        b = json.dumps(new.get(t, {}), indent=1, sort_keys=True, ensure_ascii=False).splitlines()
+        print(f"\n--- {t}")
+        for line in difflib.unified_diff(a, b, "pinned", "now", lineterm="", n=2):
+            print("  " + line)
+    print(
+        "\nDescriptions are what the model reads as instructions: a new «always call this first», an exfiltration "
+        "hint or a wider schema is the attack this check exists for."
+    )
+    return 1
+
+
+def approve(name: str) -> int:
+    owner_only("approve")
+    p = pending_of(name)
+    if not isinstance(p, dict) or not isinstance(p.get("definitions"), dict):
+        print(f"{name}: nothing pending to approve")
+        return 0
+    show_diff(name)
+    try:
+        ans = input(f"\nPin these definitions for {name}? Only if you trust the change [y/N] ").strip().lower()
+    except EOFError:
+        ans = ""
+    if ans not in ("y", "yes"):
+        print("Not approved: the changed tools stay withheld.")
+        return 1
+    tools = list(p["definitions"].values())
+    rec = pol.pin(name, p.get("identity", ""), p.get("serverVersion", ""), tools, "approved")
+    try:
+        (pol.PENDING / f"{name}.json").unlink()
+    except OSError:
+        pass
+    audit("mcp_tools_approved", f"{name}: {len(rec['tools'])} tools, digest {rec['digest'][:16]}")
+    print(f"✔ {name}: pinned. Run /mcp → Reconnect (or restart the tab) to see the tools.")
+    return 0
+
+
+def forget(name: str) -> int:
+    owner_only("forget")
+    try:
+        ans = input(f"Drop every pin of {name}? Its next listing is trusted on first use [y/N] ").strip().lower()
+    except EOFError:
+        ans = ""
+    if ans not in ("y", "yes"):
+        return 1
+    with pol.locked(pol.PINS):
+        data = pol.load_pins()
+        data["servers"].pop(name, None)
+        pol.write_json(pol.PINS, data)
+    audit("mcp_tools_forgotten", name)
+    print(f"✔ {name}: pins dropped")
+    return 0
+
+
+# ---------------------------------------------------------------------------------------------------- remote
+class Http:
+    """A minimal MCP Streamable HTTP client: JSON or SSE answers, the session header, nothing else."""
+
+    def __init__(self, url: str):
+        if not url.startswith(("https://", "http://127.0.0.1", "http://localhost")):
+            raise ValueError(f"{url}: only https (or a loopback http for tests)")
+        self.url, self.session, self.n = url, "", 0
+
+    def post(self, msg: dict, want_id=None):
+        body = json.dumps(msg).encode()
+        h = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": PROTOCOL,
+            "User-Agent": "ws-mcp-tools",
+        }
+        if self.session:
+            h["Mcp-Session-Id"] = self.session
+        req = urllib.request.Request(self.url, data=body, headers=h, method="POST")
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:  # nosec B310 — https or loopback only (above)
+            self.session = r.headers.get("Mcp-Session-Id") or self.session
+            ctype = r.headers.get("Content-Type", "")
+            raw = r.read(16 * 1024 * 1024)
+        if want_id is None:
+            return None
+        if "text/event-stream" in ctype:
+            for block in raw.decode("utf-8", "replace").split("\n\n"):
+                data = "\n".join(x[5:].lstrip() for x in block.splitlines() if x.startswith("data:"))
+                if not data:
+                    continue
+                try:
+                    m = json.loads(data)
+                except ValueError:
+                    continue
+                if isinstance(m, dict) and m.get("id") == want_id:
+                    return m
+            raise ValueError("no answer in the event stream")
+        return json.loads(raw)
+
+    def call(self, method: str, params: dict) -> dict:
+        self.n += 1
+        m = self.post({"jsonrpc": "2.0", "id": self.n, "method": method, "params": params}, want_id=self.n)
+        if not isinstance(m, dict) or "error" in m:
+            raise ValueError(f"{method}: {(m or {}).get('error')}")
+        return m.get("result") or {}
+
+    def tools(self) -> tuple[str, list[dict]]:
+        init = self.call(
+            "initialize",
+            {"protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": {"name": "ws-mcp-tools", "version": "1"}},
+        )
+        self.post({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        out, cursor = [], None
+        for _ in range(50):
+            res = self.call("tools/list", {"cursor": cursor} if cursor else {})
+            out += [t for t in res.get("tools") or [] if isinstance(t, dict)]
+            cursor = res.get("nextCursor")
+            if not cursor:
+                break
+        return str((init.get("serverInfo") or {}).get("version") or ""), out
+
+
+def remote_servers(names: list[str], urls: list[str]) -> dict:
+    found: dict = {}
+    for u in urls:
+        n, _, url = u.partition("=")
+        found[n.lower()] = url
+    if urls:
+        return found
+    cj = pol.read_json(H / ".claude.json") or {}
+    for n, s in (cj.get("mcpServers") or {}).items():
+        remote = isinstance(s, dict) and s.get("type") in ("http", "sse") and isinstance(s.get("url"), str)
+        if remote and (not names or n in names):
+            found[n] = s["url"]
+    return found
+
+
+def check_remote(args: list[str]) -> int:
+    names, urls, i = [], [], 0
+    while i < len(args):
+        if args[i] == "--url" and i + 1 < len(args):
+            urls.append(args[i + 1])
+            i += 2
+            continue
+        names.append(args[i].lower())
+        i += 1
+    rc = 0
+    pins = pol.load_pins()["servers"]
+    for n, url in sorted(remote_servers(names, urls).items()):
+        if not pol.NAME_RE.match(n):
+            continue
+        try:
+            version, tools = Http(url).tools()
+        except (OSError, ValueError, urllib.error.URLError) as e:
+            print(f"  ? {n}: could not list its tools ({str(e)[:120]})")
+            continue
+        ident = f"url:{url}"
+        hashes = {t["name"]: pol.tool_hash(t) for t in tools if isinstance(t.get("name"), str)}
+        rec = pins.get(n)
+        if not rec or rec.get("identity") != ident:
+            pol.pin(n, ident, version, tools, "first-use")
+            audit("mcp_tools_pinned", f"{n} (remote): first use, {len(hashes)} tools")
+            print(f"  ✔ {n}: {len(hashes)} tools pinned (first use)")
+        elif rec.get("digest") == pol.digest(hashes):
+            print(f"  ✔ {n}: {len(hashes)} tools, unchanged since {rec.get('pinned', '?')}")
+        else:
+            d = pol.compare(rec, hashes)
+            if pol.write_pending(n, ident, version, tools, d):
+                audit(
+                    "mcp_tools_changed", f"{n} (remote): +{len(d['added'])} ~{len(d['changed'])} -{len(d['removed'])}"
+                )
+            print(
+                f"  ✖ {n}: tool definitions changed (+{len(d['added'])} ~{len(d['changed'])} "
+                f"-{len(d['removed'])}): ws-mcp-tools diff {n}; if you do not trust it, claude mcp remove {n}"
+            )
+            rc = 1
+    return rc
+
+
+def main(argv: list[str]) -> int:
+    cmd = argv[0] if argv else "status"
+    if cmd in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
+    if cmd == "status":
+        return status()
+    if cmd == "check-remote":
+        return check_remote(argv[1:])
+    if cmd in ("diff", "approve", "forget") and len(argv) == 2 and pol.NAME_RE.match(argv[1].lower()):
+        n = argv[1].lower()
+        return {"diff": show_diff, "approve": approve, "forget": forget}[cmd](n)
+    print(
+        "usage: ws-mcp-tools status | diff NAME | approve NAME | forget NAME | check-remote [NAME]... "
+        "[--url NAME=URL]...",
+        file=sys.stderr,
+    )
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

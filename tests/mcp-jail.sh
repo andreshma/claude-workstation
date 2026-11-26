@@ -75,6 +75,12 @@ check "--ro of a Windows drive is refused" bash -c "[[ ! -d /mnt/c ]] || ! bash 
 check "--ro of the audit log is refused" not bash "$J" --print --ro "$HOME/.claude/audit" -- "$S"
 check "an AZURE_CONFIG_DIR outside ~/.azure and the profiles is refused" \
   not env AZURE_CONFIG_DIR="$HOME/.ssh" bash "$J" --print --azure-config -- "$S"
+# ~/.azure as a link to the Windows-side folder (shared with az.exe): accepted as ~/.azure, bound at its real target.
+mkdir -p "$T/win/.azure"; [[ -e "$HOME/.azure" ]] || ln -s "$T/win/.azure" "$HOME/.azure"
+out="$(env -u AZURE_CONFIG_DIR bash "$J" --print --name fake --azure-config -- "$S" 2>&1)"
+check "a ~/.azure that links elsewhere is accepted and bound at its target" \
+  grep -qF -- "--bind $T/win/.azure $T/win/.azure" <<<"$out"
+rm -f "$HOME/.azure"
 mkdir -p "$T/nobwrap"; printf '#!/bin/sh\nexit 1\n' > "$T/nobwrap/bwrap"; chmod 755 "$T/nobwrap/bwrap"
 PATH="$T/nobwrap:$PATH" bash "$J" -- "$S" </dev/null 2>"$T/err"; rc=$?
 check "without a usable bubblewrap the server is not started (exit 125, fail closed)" test "$rc" -eq 125
@@ -100,12 +106,13 @@ echo "4) registration (install.sh)"
 want() { bash -c 'source "$1/lib.sh"; mcp_want "$2" "$3" "$4"' _ "$ROOT" "$ROOT/files/mcp-servers.json" "$1" "$HOME"; }
 check "lib.sh has mcp_want" grep -q '^mcp_want()' "$ROOT/lib.sh"
 w="$(want azure)"
-check "azure is registered through ws-mcp-jail with the network and its Azure config (inside ws-mcp-keepalive, ADR-025)" \
-  jq -e --arg h "$HOME" '.command == ($h + "/.local/bin/ws-mcp-keepalive") and .args[3] == ($h + "/.local/bin/ws-mcp-jail")
-    and (.args[3:] as $j | ($j | index("--net")) and ($j | index("--azure-config")) and ($j[($j | index("--")) + 1] | endswith("azmcp")))' <<<"$w"
+check "azure is registered through ws-mcp-jail with the network and its Azure config (inside ws-mcp-keepalive and ws-mcp-filter, ADR-025, ADR-027)" \
+  jq -e --arg h "$HOME" '.command == ($h + "/.local/bin/ws-mcp-keepalive") and .args[3] == ($h + "/.local/bin/ws-mcp-filter")
+    and .args[7] == ($h + "/.local/bin/ws-mcp-jail")
+    and (.args[7:] as $j | ($j | index("--net")) and ($j | index("--azure-config")) and ($j[($j | index("--")) + 1] | endswith("azmcp")))' <<<"$w"
 check "  and the jail keys are not passed to claude mcp add-json" jq -e 'has("jail") or has("jailOptOut") | not' <<<"$w"
-check "mempalace is not jailed: a Windows executable, opted out with a reason (only the keepalive wraps it)" \
-  bash -c "jq -e '.args[3] | endswith(\"mempalace-mcp.exe\")' <<<'$(want mempalace)' && jq -e '.mempalace.jail == false and (.mempalace.jailOptOut | length > 20)' '$ROOT/files/mcp-servers.json'"
+check "mempalace is not jailed: a Windows executable, opted out with a reason (only the keepalive and the filter wrap it)" \
+  bash -c "jq -e '.args[7] | endswith(\"mempalace-mcp.exe\")' <<<'$(want mempalace)' && jq -e '.mempalace.jail == false and (.mempalace.jailOptOut | length > 20)' '$ROOT/files/mcp-servers.json'"
 check "every stdio server is jailed or opted out with a reason" \
   jq -e '[to_entries[] | select((.value.type // "stdio") == "stdio") | select((.value.jail | type) != "object" and ((.value.jail == false and (.value.jailOptOut // "" | length) > 0) | not))] | length == 0' "$ROOT/files/mcp-servers.json"
 jq -n --argjson a "$(want azure)" '{mcpServers: {azure: $a}}' > "$T/claude.json"

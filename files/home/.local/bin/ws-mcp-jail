@@ -14,15 +14,18 @@
 #     *ACCESS_KEY*) are removed unless --keep-env names them
 #   · --azure-config (the Azure MCP server): AZURE_CONFIG_DIR of the tab (its own profile's
 #     ~/.config/ws-agent/<name>/azure, or ~/.azure) is bound read-write, and nothing else of ws-agent
-#   · network: shared with --net (what the server needs to reach its API), none with --no-net (the default)
+#   · network: shared with --net (what the server needs to reach its API), none with --no-net (the default);
+#     --egress (ADR-028, with --net): the server gets NO network of its own, only a loopback, and reaches the hosts
+#     of its entry in ~/.config/ws-mcp/egress.json through ws-egress-proxy (serve outside the jail on a Unix socket
+#     in its state dir, bridge inside on 127.0.0.1 with HTTP(S)_PROXY set); mode «off» there shares the network
 # A Windows executable (a .exe reached through WSL interop, such as mempalace-mcp.exe) runs in Windows, outside every
 # Linux namespace: bubblewrap cannot confine it, so the wrapper refuses it (exit 126) instead of pretending. Register
 # such a server with "jail": false and a reason in files/mcp-servers.json; ws-audit reports it.
 # Fails closed: without a working bubblewrap the server does not start (exit 125) and says why.
 #
 # Usage:
-#   ws-mcp-jail [--name NAME] [--net|--no-net] [--azure-config] [--ro PATH]... [--rw PATH]... [--keep-env VAR]...
-#               -- COMMAND [ARG]...
+#   ws-mcp-jail [--name NAME] [--net|--no-net] [--egress] [--azure-config] [--ro PATH]... [--rw PATH]...
+#               [--keep-env VAR]... -- COMMAND [ARG]...
 #   ws-mcp-jail --print …same arguments…     prints the bubblewrap command instead of running it (tests, ws-audit)
 #   ws-mcp-jail --probe                       exit 0 if bubblewrap can create its namespaces on this machine
 # install.sh builds these arguments from the "jail" object of each server in files/mcp-servers.json.
@@ -33,12 +36,13 @@ die() { printf 'ws-mcp-jail: %s\n' "$1" >&2; exit "${2:-2}"; }
 probe() { command -v bwrap >/dev/null 2>&1 && bwrap --unshare-all --ro-bind / / true >/dev/null 2>&1; }
 [[ "${1:-}" == --probe ]] && { probe; exit $?; }
 
-name="" net=0 azure=0 print=0 ro=() rw=() keep=()
+name="" net=0 egress=0 azure=0 print=0 ro=() rw=() keep=()
 while (( $# )); do
   case "$1" in
     --name) name="${2:-}"; shift 2 || die "--name needs a value" ;;
     --net) net=1; shift ;;
     --no-net) net=0; shift ;;
+    --egress) egress=1; shift ;;
     --azure-config) azure=1; shift ;;
     --ro) ro+=("${2:?--ro needs a path}"); shift 2 ;;
     --rw) rw+=("${2:?--rw needs a path}"); shift 2 ;;
@@ -90,8 +94,18 @@ deny_list
 for i in "${!denied[@]}"; do denied[i]="$(realpath -m -- "${denied[i]}")"; done
 
 state="${XDG_STATE_HOME:-$H/.local/state}/ws-mcp/$name"
+# Egress through the proxy: only when the owner's egress.json has an enforce or audit entry for this server.
+emode=off
+if (( net && egress )); then
+  ec=("${WS_EGRESS_CONF:-$H/.config/ws-mcp/egress.json}")
+  # The owner's egress.local.json (Menu → Settings) wins over the kit's file for the mode.
+  [[ -s "$(dirname -- "${ec[0]}")/egress.local.json" ]] && ec+=("$(dirname -- "${ec[0]}")/egress.local.json")
+  emode="$(jq -rn --arg n "$name" '[inputs] | map(.[$n].mode // empty) | last // "enforce"
+            | if IN("enforce", "audit", "off") then . else "enforce" end' "${ec[@]}" 2>/dev/null)" || emode=enforce
+  [[ -n "$emode" ]] || emode=enforce
+fi
 a=(bwrap --unshare-all --die-with-parent --new-session --cap-drop ALL)
-(( net )) && a+=(--share-net)
+(( net )) && [[ "$emode" == off ]] && a+=(--share-net)
 a+=(--proc /proc --dev /dev --tmpfs /tmp --tmpfs /dev/shm --tmpfs /run --tmpfs /mnt --tmpfs "${H%/*}" --tmpfs "$H")
 # The system, read-only, as the host lays it out (a merged /usr has /bin, /lib… as links).
 for p in /usr /etc /opt /bin /sbin /lib /lib32 /lib64 /libx32; do
@@ -133,9 +147,12 @@ for p in "${rw[@]}"; do
   [[ -e "$p" ]] && a+=(--bind "$(realpath -e -- "$p")" "$(realpath -e -- "$p")")
 done
 if (( azure )); then
-  az="${AZURE_CONFIG_DIR:-$H/.azure}"; az="$(realpath -m -- "$az")"
-  [[ "$az" == "$H/.azure" || "$az" =~ ^"$H"/\.config/ws-agent/[a-z0-9][a-z0-9_-]{0,31}/azure$ ]] \
-    || die "--azure-config: AZURE_CONFIG_DIR=$az is neither ~/.azure nor a profile's ~/.config/ws-agent/<name>/azure"
+  # Judged as written (realpath -s, no link resolution), then bound at its real target: ~/.azure is often a link to
+  # the Windows-side %USERPROFILE%\.azure, shared with az.exe, and resolving it first refused the default.
+  az_lit="$(realpath -ms -- "${AZURE_CONFIG_DIR:-$H/.azure}")"
+  [[ "$az_lit" == "$H/.azure" || "$az_lit" =~ ^"$H"/\.config/ws-agent/[a-z0-9][a-z0-9_-]{0,31}/azure$ ]] \
+    || die "--azure-config: AZURE_CONFIG_DIR=$az_lit is neither ~/.azure nor a profile's ~/.config/ws-agent/<name>/azure"
+  az="$(realpath -m -- "$az_lit")"
   (( print )) || { mkdir -p "$az" && chmod 700 "$az"; }
   a+=(--bind "$az" "$az" --setenv AZURE_CONFIG_DIR "$az")
 fi
@@ -149,10 +166,21 @@ while IFS='=' read -r k _; do
   [[ "$k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && "$k" =~ (TOKEN|SECRET|PASSWORD|API_KEY|ACCESS_KEY|CREDENTIAL) ]] || continue
   [[ " ${keep[*]} " == *" $k "* ]] || a+=(--unsetenv "$k")
 done < <(env)
-a+=(-- "$real" "$@")
+if [[ "$emode" != off ]]; then
+  a+=(-- /usr/bin/python3 -I "$H/.local/bin/ws-egress-proxy" bridge --socket "$state/egress.sock" -- "$real" "$@")
+else
+  a+=(-- "$real" "$@")
+fi
 
 if (( print )); then printf '%q ' "${a[@]}"; printf '\n'; exit 0; fi
 probe || die "bubblewrap cannot create its namespaces here (sudo apt-get install bubblewrap; on Ubuntu 24.04 the AppArmor profile for unprivileged user namespaces). $name was NOT started: fail closed." 125
 mkdir -p "$state/config" "$state/cache" "$state/data" "$state/state" 2>/dev/null
-printf '%s\t%s\tnet=%s\tazure=%s\t%s\n' "$(date -Is)" "$name" "$net" "$azure" "$real" >> "${state%/*}/jail.log" 2>/dev/null || true
+printf '%s\t%s\tnet=%s\tegress=%s\tazure=%s\t%s\n' "$(date -Is)" "$name" "$net" "$emode" "$azure" "$real" >> "${state%/*}/jail.log" 2>/dev/null || true
+if [[ "$emode" != off ]]; then
+  # The proxy lives outside the jail and ends with it (it asks the kernel for SIGTERM when this process exits).
+  rm -f "$state/egress.sock"
+  python3 -I "$H/.local/bin/ws-egress-proxy" serve --name "$name" --socket "$state/egress.sock" </dev/null >/dev/null 2>&1 &
+  for _ in $(seq 50); do [[ -S "$state/egress.sock" ]] && break; sleep 0.05; done
+  [[ -S "$state/egress.sock" ]] || die "the egress proxy did not start: $name was NOT started (fail closed)" 125
+fi
 exec "${a[@]}"

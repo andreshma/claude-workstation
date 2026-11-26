@@ -1,0 +1,462 @@
+#!/usr/bin/env python3
+"""ws-mcp-filter — a policy filter in the stdio path of a local MCP server (ADR-027: WS-AI-031, WS-AI-011, WS-AI-012).
+
+Claude Code starts local MCP servers outside its sandbox and trusts what they say about their tools. MemPalace and
+recall are Windows executables (WSL interop): no Linux namespace can confine them (ADR-024). What the kit CAN control
+is the conversation with them, because every byte goes through this process. Registered by install.sh between the
+keepalive and the server (ws-mcp-keepalive → ws-mcp-filter → [ws-mcp-jail →] server), it reads each JSON-RPC line
+(MCP stdio framing: one message per line) and:
+
+  · tool allow list per tab: tools the policy (~/.config/ws-mcp/filter.json) does not allow at this tab's level
+    (WS_LEVEL: full, normal, bare, solo; set by tmux-level and tmux-solo) or profile (WS_PROFILE) are removed from
+    tools/list and a tools/call to them is answered with an error, never forwarded. Memory servers honour the tab's
+    memory mode (WS_MEMORY): off hides every tool, wing:W forces the wing on the tools that take one and hides the
+    rest, independently of the memory-gate hook
+  · tool-definition pinning (rug pull, WS-AI-031): the sha256 of every tool (name, title, description, input and
+    output schema, annotations) is pinned per server in ~/.local/share/ws-kit/mcp-tools.lock.json together with the
+    kit lock identity of the server's code (npm package-lock, local trust sha256). A tool that is new or whose
+    definition changed while that identity did not is withheld (not listed, calls refused), audited
+    (mcp_tools_changed) and reported once (ws-notify) until the owner reviews it with `ws-mcp-tools diff NAME` and
+    approves it with `ws-mcp-tools approve NAME` in a terminal; never from Claude. A change of identity (the kit
+    moved the pin, or the owner re-pinned a local executable with install.sh --mcp-accept) re-pins, audited. The
+    first listing of a server is pinned on first use. pinTools: block (default) | warn | off
+  · arguments: over maxArgBytes refused; recognisable secrets masked (the shapes of ws-redact); for the tools of a
+    memory server that write (writeTools), <private>…</private> content refused and provenance stamped by this
+    process, not by the model, in the fields the policy names, when the tool's input schema has them
+    (kg_add source_file, add_drawer added_by): «ws-mcp-filter:level=…;profile=…;session=…;ts=…»
+  · results: secrets masked; text over maxResultBytes truncated with a note, so one answer cannot flood the context
+Every refusal, redaction and pin event is a metadata-only line in the audit hash chain (audit.sh) and a line on
+stderr (the keepalive log). The filter changes nothing else, adds nothing to the environment and runs the command
+as given (no shell). It exits with the server's status when the server exits (the keepalive restarts both), and
+0 when the client closes stdin.
+
+Usage:
+  ws-mcp-filter --name NAME -- COMMAND [ARG]...
+Exit: the server's exit status · 0 client closed the connection · 2 usage · 126/127 the command cannot be run
+Policy: ~/.config/ws-mcp/filter.json (missing: built-in defaults, nothing hidden); WS_MCP_FILTER_CONF overrides
+the path (tests).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess  # nosec B404 — the server command as registered (no shell), audit.sh, ws-notify
+import sys
+import threading
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+sys.path.insert(1, str(Path.home() / ".local/lib"))
+import ws_mcp_policy as pol
+
+H = Path.home()
+WRAPPERS = ("ws-mcp-keepalive", "ws-mcp-jail", "ws-mcp-filter")
+GRACE = float(os.environ.get("WS_MCP_FILTER_GRACE") or 5)
+
+
+def real_command(argv: list[str]) -> list[str]:
+    a = list(argv)
+    while a and os.path.basename(a[0]) in WRAPPERS and "--" in a[1:]:
+        a = a[a.index("--", 1) + 1 :]
+    return a
+
+
+def size(v) -> int:
+    return len(pol.canonical(v))
+
+
+def redact_result(result: dict, n: list[int]) -> dict:
+    """Masks secrets in what a result carries as text (text items, embedded text resources, structured content);
+    base64 data of images, audio and blobs is left as it is (a pattern could match inside it and corrupt it)."""
+    out = dict(result)
+    items = []
+    for item in out.get("content") if isinstance(out.get("content"), list) else []:
+        if isinstance(item, dict) and item.get("type") == "text":
+            item = dict(item, text=pol.redact_tree(item.get("text"), n))
+        elif isinstance(item, dict) and item.get("type") == "resource" and isinstance(item.get("resource"), dict):
+            r = dict(item["resource"])
+            if "text" in r:
+                r["text"] = pol.redact_tree(r["text"], n)
+            item = dict(item, resource=r)
+        items.append(item)
+    if "content" in out:
+        out["content"] = items
+    if "structuredContent" in out:
+        out["structuredContent"] = pol.redact_tree(out["structuredContent"], n)
+    return out
+
+
+def cap_result(result: dict, limit: int) -> tuple[dict, int]:
+    """Truncates the text of a tools/call result to fit limit bytes. Returns (result, bytes removed)."""
+    total = size(result)
+    if total <= limit:
+        return result, 0
+    out = dict(result)
+    out.pop("structuredContent", None)  # duplicated in the text items by servers that send both
+    content = out.get("content") if isinstance(out.get("content"), list) else []
+    budget = max(1024, limit - 2048)
+    kept: list = []
+    for item in content:
+        if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+            t = item["text"]
+            room = max(0, budget - size(kept))
+            if len(t.encode()) > room:
+                t = t.encode()[:room].decode("utf-8", "ignore")
+                kept.append(dict(item, text=t))
+                break
+            kept.append(item)
+        elif size(kept) + size(item) <= budget:
+            kept.append(item)
+    kept.append({"type": "text", "text": f"[ws-mcp-filter: the result was {total} bytes; cut to the {limit}-byte cap]"})
+    out["content"] = kept
+    return out, total - size(out)
+
+
+class Filter:
+    def __init__(self, name: str, argv: list[str]):
+        self.name, self.argv = name, argv
+        self.policy, note = pol.load_policy()
+        self.ctx = pol.context()
+        self.rules = pol.server_rules(self.policy, name, self.ctx)
+        real = real_command(argv)
+        self.real = os.path.realpath(shutil.which(real[0]) or real[0]) if real else ""
+        self.identity = pol.lock_identity(name, self.real) if self.real else f"cmd:{argv[0]}"
+        self.server_version = ""
+        self.pending: dict[str, str] = {}  # request id → method (initialize, tools/list, tools/call)
+        self.calls: dict[str, str] = {}  # tools/call id → tool name
+        self.schemas: dict[str, dict] = {}  # tool → inputSchema (from the last listing)
+        self.withheld: dict[str, str] = {}  # tool → why (pin)
+        self.listing: list[dict] = []  # pages of the current tools/list
+        self.record = None
+        self.out_lock = threading.Lock()
+        self.proc: subprocess.Popen | None = None
+        self.write_re = re.compile(self.rules["writeTools"]) if self.rules.get("writeTools") else None
+        if note:
+            self.say(note)
+
+    # ------------------------------------------------------------------------------------------------ plumbing
+    def say(self, text: str) -> None:
+        try:
+            sys.stderr.write(f"ws-mcp-filter: {self.name}: {pol.redact(text)[0][:2000]}\n")
+            sys.stderr.flush()
+        except (OSError, ValueError):
+            pass
+
+    def audit(self, ev: str, reason: str) -> None:
+        a = H / ".claude/hooks/audit.sh"
+        if not os.access(a, os.X_OK):
+            return
+        try:
+            subprocess.run(
+                [str(a), ev, f"{self.name}: {reason}"[:400]],
+                input=b'{"cwd":"/"}',
+                cwd="/",  # nosec B603
+                timeout=10,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    def notify(self, title: str, text: str) -> None:
+        n = shutil.which("ws-notify") or str(H / ".local/bin/ws-notify")
+        if not os.access(n, os.X_OK):
+            return
+        try:
+            subprocess.run(
+                [n, title, text],
+                timeout=15,
+                stdin=subprocess.DEVNULL,  # nosec B603
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    def to_client(self, msg) -> None:
+        data = msg if isinstance(msg, bytes) else json.dumps(msg, separators=(",", ":"), ensure_ascii=False).encode()
+        with self.out_lock:
+            try:
+                sys.stdout.buffer.write(data.rstrip(b"\n") + b"\n")
+                sys.stdout.buffer.flush()
+            except (OSError, ValueError):
+                pass
+
+    def to_server(self, msg) -> None:
+        data = msg if isinstance(msg, bytes) else json.dumps(msg, separators=(",", ":"), ensure_ascii=False).encode()
+        try:
+            self.proc.stdin.write(data.rstrip(b"\n") + b"\n")
+            self.proc.stdin.flush()
+        except (OSError, ValueError, AttributeError):
+            pass
+
+    def refuse(self, rid, why: str, ev: str = "mcp_filter_block") -> None:
+        self.say(why)
+        self.audit(ev, why)
+        self.to_client(
+            {
+                "jsonrpc": "2.0",
+                "id": rid,
+                "result": {"content": [{"type": "text", "text": f"BLOCKED by ws-mcp-filter: {why}"}], "isError": True},
+            }
+        )
+
+    # ------------------------------------------------------------------------------------------------ client side
+    def memory_mode(self, tool: str, args: dict):
+        """(args, refusal) for a memory server under the tab's memory mode."""
+        mode = self.ctx["memory"]
+        if not self.rules["memory"] or mode in ("", "on"):
+            return args, ""
+        if mode == "off":
+            return args, f"this tab's memory is off (profile {self.ctx['profile'] or '?'}): {tool} is not used here"
+        wing = mode.split(":", 1)[1]
+        short = tool.split("_", 1)[1] if tool.startswith(self.name + "_") else tool
+        if tool not in self.rules["wingTools"] and short not in self.rules["wingTools"]:
+            return args, f"this tab's memory is limited to the wing {wing}, and {tool} cannot be limited to one wing"
+        return dict(args, wing=wing), ""
+
+    def stamp(self) -> str:
+        sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "") or "?"
+        return (
+            f"ws-mcp-filter:level={self.ctx['level']};profile={self.ctx['profile'] or '-'};"
+            f"session={sid[:64]};ts={time.strftime('%Y-%m-%dT%H:%M:%S%z')}"
+        )
+
+    def on_call(self, msg: dict):
+        """A tools/call: the message to forward, or None when it was answered here."""
+        rid = msg.get("id")
+        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+        tool = params.get("name") if isinstance(params.get("name"), str) else ""
+        args = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+        ok, why = pol.tool_allowed(self.rules, tool)
+        if not ok:
+            return self.refuse(rid, f"{tool} {why} (level {self.ctx['level']}, profile {self.ctx['profile'] or '-'})")
+        if tool in self.withheld:
+            return self.refuse(rid, f"{tool}: {self.withheld[tool]}", "mcp_tools_withheld")
+        if size(args) > self.rules["maxArgBytes"]:
+            return self.refuse(
+                rid, f"{tool}: arguments of {size(args)} bytes are over the {self.rules['maxArgBytes']}-byte cap"
+            )
+        args, why = self.memory_mode(tool, args)
+        if why:
+            return self.refuse(rid, why)
+        writes = bool(self.write_re and self.write_re.search(tool))
+        private = re.search(r"</?private>", json.dumps(args, ensure_ascii=False), re.IGNORECASE)
+        if writes and self.rules.get("blockPrivate") and private:
+            return self.refuse(rid, f"{tool}: the content has text the user marked <private>; leave it out")
+        if writes and self.rules["provenance"]:
+            props = (self.schemas.get(tool) or {}).get("properties") or {}
+            st = self.stamp()
+            for field, mode in self.rules["provenance"].items():
+                if field not in props:
+                    continue
+                old = args.get(field) if isinstance(args.get(field), str) else ""
+                if old.startswith("ws-mcp-filter:"):
+                    old = old.split(" | ", 1)[1] if " | " in old else ""
+                args[field] = st + (f" | {old}" if old and mode == "prefix" else "")
+            fields = ", ".join(f for f in self.rules["provenance"] if f in props) or "no field in its schema"
+            self.audit("mcp_filter_provenance", f"{tool} stamped ({fields})")
+        if self.rules.get("redactArgs"):
+            n = [0]
+            args = pol.redact_tree(args, n)
+            if n[0]:
+                self.say(f"{tool}: {n[0]} secret(s) masked in the arguments")
+                self.audit("mcp_filter_redacted", f"{tool} arguments: {n[0]} masked")
+        self.calls[pol.canonical(rid).decode()] = tool
+        return dict(msg, params=dict(params, arguments=args))
+
+    def on_client(self, line: bytes) -> None:
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            self.to_server(line)  # not ours to judge: the server answers a parse error
+            return
+        batch = isinstance(msg, list)
+        out = []
+        for m in msg if batch else [msg]:
+            if isinstance(m, dict) and "method" in m and "id" in m:
+                k = pol.canonical(m["id"]).decode()
+                if m["method"] == "tools/call":
+                    m = self.on_call(m)
+                    if m is None:
+                        continue
+                if m["method"] in ("initialize", "tools/list", "tools/call"):
+                    self.pending[k] = m["method"]
+            out.append(m)
+        if not out:
+            return
+        if batch or out[0] is not msg:
+            self.to_server(out if batch else out[0])
+        else:
+            self.to_server(line)
+
+    # ------------------------------------------------------------------------------------------------ server side
+    def pin_page(self, tools: list) -> list:
+        """Filters one page of tools/list: pinned-and-changed tools withheld, policy-denied tools hidden."""
+        mode = self.rules["pinTools"]
+        if self.record is None and mode != "off":
+            self.record = pol.load_pins()["servers"].get(self.name) or {}
+        pinned = (self.record or {}).get("tools") or {}
+        same_id = bool(self.record) and self.record.get("identity") == self.identity
+        keep = []
+        for t in tools:
+            if not isinstance(t, dict) or not isinstance(t.get("name"), str):
+                continue
+            n = t["name"]
+            self.listing.append(t)
+            if isinstance(t.get("inputSchema"), dict):
+                self.schemas[n] = t["inputSchema"]
+            if mode == "block" and same_id and pinned.get(n) != pol.tool_hash(t):
+                self.withheld[n] = (
+                    "its definition "
+                    + ("is new" if n not in pinned else "changed")
+                    + " since it was pinned and the server's code did not: the owner reviews it with "
+                    f"«ws-mcp-tools diff {self.name}» and approves it with «ws-mcp-tools approve "
+                    f"{self.name}» in a terminal"
+                )
+                continue
+            self.withheld.pop(n, None)
+            if pol.tool_allowed(self.rules, n)[0] and not self.memory_mode(n, {})[1]:
+                keep.append(t)
+        return keep
+
+    def end_listing(self) -> None:
+        tools, self.listing = self.listing, []
+        rec, self.record = self.record, None
+        if self.rules["pinTools"] == "off":
+            return
+        hashes = {t["name"]: pol.tool_hash(t) for t in tools}
+        try:
+            if not rec:
+                pol.pin(self.name, self.identity, self.server_version, tools, "first-use")
+                self.audit("mcp_tools_pinned", f"first use: {len(hashes)} tools, digest {pol.digest(hashes)[:16]}")
+            elif rec.get("identity") != self.identity:
+                pol.pin(self.name, self.identity, self.server_version, tools, "lock-change")
+                self.audit(
+                    "mcp_tools_repinned",
+                    f"code identity {rec.get('identity')} → {self.identity}: {len(hashes)} tools re-pinned",
+                )
+            elif rec.get("digest") != pol.digest(hashes):
+                diff = pol.compare(rec, hashes)
+                fresh = pol.write_pending(self.name, self.identity, self.server_version, tools, diff)
+                what = ", ".join(f"{k} {', '.join(v)}" for k, v in diff.items() if v)
+                verb = "withheld" if self.rules["pinTools"] == "block" else "NOT withheld (pinTools warn)"
+                self.say(f"tool definitions changed without a code change ({what}); changed and new tools {verb}")
+                if fresh:
+                    self.audit("mcp_tools_changed", f"{what[:300]}; {verb}")
+                    self.notify(
+                        f"MCP {self.name}: tool definitions changed",
+                        f"{what[:200]}. Review: ws-mcp-tools diff {self.name}",
+                    )
+        except OSError as e:
+            self.say(f"could not record the tool pins: {e}")
+
+    def on_server(self, line: bytes) -> None:
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            self.to_client(line)
+            return
+        if not (isinstance(msg, dict) and "id" in msg and "method" not in msg):
+            self.to_client(line)
+            return
+        k = pol.canonical(msg["id"]).decode()
+        method = self.pending.pop(k, "")
+        res = msg.get("result")
+        if method == "initialize" and isinstance(res, dict):
+            self.server_version = str((res.get("serverInfo") or {}).get("version") or "")[:64]
+        elif method == "tools/list" and isinstance(res, dict) and isinstance(res.get("tools"), list):
+            res = dict(res, tools=self.pin_page(res["tools"]))
+            if not res.get("nextCursor"):
+                self.end_listing()
+            msg = dict(msg, result=res)
+            line = b""
+        elif method == "tools/call" and isinstance(res, dict):
+            tool = self.calls.pop(k, "?")
+            if self.rules.get("redactResults"):
+                n = [0]
+                res = redact_result(res, n)
+                if n[0]:
+                    self.say(f"{tool}: {n[0]} secret(s) masked in the result")
+                    self.audit("mcp_filter_redacted", f"{tool} result: {n[0]} masked")
+                    line = b""
+            res, cut = cap_result(res, self.rules["maxResultBytes"])
+            if cut:
+                self.say(f"{tool}: result cut by {cut} bytes (cap {self.rules['maxResultBytes']})")
+                self.audit("mcp_filter_capped", f"{tool} result cut by {cut} bytes")
+                line = b""
+            msg = dict(msg, result=res)
+        self.to_client(line or msg)
+
+    # ------------------------------------------------------------------------------------------------ run
+    def server_reader(self) -> None:
+        for line in iter(self.proc.stdout.readline, b""):
+            self.on_server(line)
+        rc = self.proc.wait()
+        try:
+            sys.stdout.flush()
+        except (OSError, ValueError):
+            pass
+        os._exit(rc if rc >= 0 else 128 - rc)
+
+    def run(self) -> int:
+        try:
+            self.proc = subprocess.Popen(
+                self.argv,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,  # nosec B603
+                bufsize=0,
+                close_fds=True,
+            )
+        except FileNotFoundError:
+            self.say(f"{self.argv[0]}: command not found")
+            return 127
+        except OSError as e:
+            self.say(f"{self.argv[0]}: {e.strerror}")
+            return 126
+        threading.Thread(target=self.server_reader, daemon=True).start()
+        for line in iter(sys.stdin.buffer.readline, b""):
+            self.on_client(line)
+        try:
+            self.proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            self.proc.wait(timeout=GRACE)
+        except subprocess.TimeoutExpired:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+        return 0
+
+
+def main(argv: list[str]) -> int:
+    usage = "usage: ws-mcp-filter --name NAME -- COMMAND [ARG]..."
+    if argv[:1] in (["-h"], ["--help"]):
+        print(__doc__)
+        return 0
+    name = ""
+    if len(argv) >= 2 and argv[0] == "--name":
+        name, argv = argv[1].lower(), argv[2:]
+    if not argv or argv[0] != "--" or len(argv) < 2 or not pol.NAME_RE.match(name or "-"):
+        print(f"ws-mcp-filter: {usage}", file=sys.stderr)
+        return 2
+    return Filter(name, argv[1:]).run()
+
+
+if __name__ == "__main__":
+    code = main(sys.argv[1:])
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, ValueError):
+            pass
+    os._exit(code)

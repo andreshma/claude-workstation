@@ -106,9 +106,9 @@ check "  and the install says why" grep -q 'rogue is not in mcp-servers.lock.jso
 check "the local server is registered and pinned on first use" bash -c "jq -e '.mcpServers.loc' '$H/.claude.json' && grep -q '^loc' '$H/.local/share/ws-kit/mcp-trust.tsv'"
 check "the remote server in the lock is registered" reg microsoft-learn
 if grep -q 'new     chrome-devtools-mcp\|same    chrome-devtools-mcp' "$T/i1.log"; then
-  check "the npm server is registered at the pinned path, through ws-mcp-keepalive and ws-mcp-jail (ADR-024, ADR-025)" \
+  check "the npm server is registered at the pinned path, through ws-mcp-keepalive, ws-mcp-filter and ws-mcp-jail (ADR-024, ADR-025, ADR-027)" \
     jq -e --arg h "$H" '.mcpServers["chrome-devtools"] | .command == ($h + "/.local/bin/ws-mcp-keepalive")
-      and .args[3] == ($h + "/.local/bin/ws-mcp-jail") and (.args[3:] as $j
+      and .args[3] == ($h + "/.local/bin/ws-mcp-filter") and .args[7] == ($h + "/.local/bin/ws-mcp-jail") and (.args[7:] as $j
       | $j[($j | index("--")) + 1] == ($h + "/.local/share/ws-kit/npm/chrome-devtools-mcp/node_modules/.bin/chrome-devtools-mcp"))' \
     "$H/.claude.json"
 else skip "npm server install (registry unreachable)"; fi
@@ -118,8 +118,8 @@ inst > "$T/i2.log"
 check "a changed local executable is skipped with a warning" bash -c "! jq -e '.mcpServers.loc' '$H/.claude.json' && grep -q 'changed since it was pinned' '$T/i2.log'"
 inst --mcp-accept loc > "$T/i3.log"
 check "--mcp-accept re-pins it after review" reg loc
-check "a local server is registered through ws-mcp-keepalive (ADR-025)" \
-  jq -e --arg h "$H" --arg c "$LOC" '.mcpServers.loc | .command == ($h + "/.local/bin/ws-mcp-keepalive") and .args == ["--name", "loc", "--", $c]' "$H/.claude.json"
+check "a local server is registered through ws-mcp-keepalive and ws-mcp-filter (ADR-025, ADR-027)" \
+  jq -e --arg h "$H" --arg c "$LOC" '.mcpServers.loc | .command == ($h + "/.local/bin/ws-mcp-keepalive") and .args == ["--name", "loc", "--", ($h + "/.local/bin/ws-mcp-filter"), "--name", "loc", "--", $c]' "$H/.claude.json"
 jq --arg c "$LOC" '.mcpServers.loc = {type: "stdio", command: $c, args: [], env: {}}' "$H/.claude.json" > "$H/c" && mv "$H/c" "$H/.claude.json"
 inst > "$T/i3b.log"
 check "a registration of the same server without the wrappers is re-registered by itself (no --mcp-refresh)" \
@@ -130,7 +130,7 @@ inst > "$T/i4.log"
 check "an old npx registration is replaced by the kit's" bash -c "[[ \$(jq -r '.mcpServers[\"microsoft-learn\"].type' '$H/.claude.json') == http ]]"
 check "a hand-made difference is reported, not overwritten" bash -c "grep -q 'differs loc' '$T/i4.log' && jq -e '.mcpServers.loc.args == [\"--mine\"]' '$H/.claude.json'"
 inst --mcp-refresh > "$T/i5.log"
-check "--mcp-refresh re-registers it" jq -e --arg c "$LOC" '.mcpServers.loc.args == ["--name", "loc", "--", $c]' "$H/.claude.json"
+check "--mcp-refresh re-registers it" jq -e --arg c "$LOC" '.mcpServers.loc.args[-1] == $c and (.mcpServers.loc.args | index("--name")) == 0' "$H/.claude.json"
 jq '.servers["microsoft-learn"].url = "https://elsewhere.invalid/mcp"' "$K/files/mcp-servers.lock.json" > "$T/l" && mv "$T/l" "$K/files/mcp-servers.lock.json"
 jq 'del(.mcpServers["microsoft-learn"])' "$H/.claude.json" > "$H/c" && mv "$H/c" "$H/.claude.json"
 inst > "$T/i6.log"

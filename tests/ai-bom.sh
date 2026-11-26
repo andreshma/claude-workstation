@@ -54,6 +54,7 @@ reset
 sed -i '/ai-bom:begin tools/,/ai-bom:end tools/d' "$K/docs/governance/AI-BOM.md"
 check "a missing block fails the check" not gen
 check "…and is named" grep -q 'no «ai-bom:begin tools»' "$T/k"
+check "every external service has its retention and terms (WS-GOV-008)" bash -c "! grep -qi 'to fill' '$ROOT/docs/governance/AI-BOM.md'"
 
 printf '\n%d ok, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

@@ -126,6 +126,13 @@ RENDER="$(mktemp -d)"; trap 'rm -rf "$RENDER"' EXIT
 cp -a "$KIT/files/." "$RENDER/"
 render_templates "$RENDER" "$WU" "$HOME" "$(id -un)"
 FILES="$RENDER/home"; MCP_FILE="$RENDER/mcp-servers.json"; MCP_LOCK="$RENDER/mcp-servers.lock.json"
+# The owner's per-server choices made from Menu → Settings (ADR-028): ~/.config/ws-mcp/overrides.json may only turn
+# the keepalive of a kit server off or on ({"<name>": {"keepalive": false}}); any other key is ignored.
+if [[ -s "$HOME/.config/ws-mcp/overrides.json" ]] && jq -e 'type == "object"' "$HOME/.config/ws-mcp/overrides.json" >/dev/null 2>&1; then
+  jq --slurpfile o "$HOME/.config/ws-mcp/overrides.json" 'reduce ($o[0] | to_entries[]) as $e (.;
+      if has($e.key) and ($e.value.keepalive | type) == "boolean" then .[$e.key].keepalive = $e.value.keepalive else . end)' \
+    "$MCP_FILE" > "$RENDER/mcp-servers.ov.json" && mv "$RENDER/mcp-servers.ov.json" "$MCP_FILE"
+fi
 
 #######################################
 # Copies a file from the repo to $HOME, with a backup (backup_file) if it changes.

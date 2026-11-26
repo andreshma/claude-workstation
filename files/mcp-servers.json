@@ -43,7 +43,8 @@
     "env": {},
     "jail": {
       "net": true,
-      "azureConfig": true
+      "azureConfig": true,
+      "egress": true
     },
     "keepalive": true
   },

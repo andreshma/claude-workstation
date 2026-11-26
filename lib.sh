@@ -101,24 +101,31 @@ render_templates() {
 
 #######################################
 # The definition install.sh registers for an MCP server (ADR-024, ADR-025): a stdio server whose entry in
-# mcp-servers.json has a "jail" object runs through ~/.local/bin/ws-mcp-jail, with --net, --azure-config, --ro and
-# --rw taken from that object; "jail": false (with "jailOptOut", the reason) runs as written. Every stdio server then
-# runs through ~/.local/bin/ws-mcp-keepalive (restarted when it exits mid-session) unless it says "keepalive": false:
-# keepalive outside, jail inside. An HTTP server is registered as written. The kit's keys (jail, jailOptOut,
-# keepalive) are never passed to claude mcp add-json.
+# mcp-servers.json has a "jail" object runs through ~/.local/bin/ws-mcp-jail, with --net, --egress, --azure-config,
+# --ro and --rw taken from that object; "jail": false (with "jailOptOut", the reason) runs as written. Every stdio server then
+# runs through ~/.local/bin/ws-mcp-filter (ADR-027: tool allow list per level and profile, tool-definition pins,
+# redaction, size caps, provenance of memory writes) unless it says "filter": false, and then through
+# ~/.local/bin/ws-mcp-keepalive (restarted when it exits mid-session) unless it says "keepalive": false:
+# keepalive outside, then the filter, the jail innermost. An HTTP server is registered as written. The kit's keys
+# (jail, jailOptOut, keepalive, filter) are never passed to claude mcp add-json.
 # Arguments: mcp-servers.json, server name, home. Outputs: compact JSON.
 #######################################
 mcp_want() {
   jq -c --arg n "$2" --arg h "$3" '.[$n] as $s
-    | ($s | del(.jail, .jailOptOut, .keepalive)) as $d
+    | ($s | del(.jail, .jailOptOut, .keepalive, .filter)) as $d
     | (if (($s.type // "stdio") == "stdio") and (($s.jail | type) == "object") then
         $d + {command: ($h + "/.local/bin/ws-mcp-jail"),
               args: (["--name", $n] + (if $s.jail.net then ["--net"] else ["--no-net"] end)
+                     + (if $s.jail.egress then ["--egress"] else [] end)
                      + (if $s.jail.azureConfig then ["--azure-config"] else [] end)
                      + ([($s.jail.ro // [])[] | ["--ro", .]] | add // [])
                      + ([($s.jail.rw // [])[] | ["--rw", .]] | add // [])
                      + ["--", $s.command] + ($s.args // []))}
       else $d end)
+    | if (($s.type // "stdio") == "stdio") and ($s.filter != false) and (.command != null) then
+        .args = (["--name", $n, "--", .command] + (.args // []))
+        | .command = ($h + "/.local/bin/ws-mcp-filter")
+      else . end
     | if (($s.type // "stdio") == "stdio") and ($s.keepalive != false) and (.command != null) then
         .args = (["--name", $n, "--", .command] + (.args // []))
         | .command = ($h + "/.local/bin/ws-mcp-keepalive")
@@ -126,9 +133,10 @@ mcp_want() {
 }
 
 # The jq definition that takes a registration back to the server's own command and arguments: it strips the kit's
-# wrappers (ws-mcp-keepalive, then ws-mcp-jail), each up to its «--». Shared by mcp_unwrap and mcp_unwrap_merge.
+# wrappers (ws-mcp-keepalive, ws-mcp-filter, then ws-mcp-jail), each up to its «--». Shared by mcp_unwrap and
+# mcp_unwrap_merge.
 # shellcheck disable=SC2016
-MCP_UNWRAP_JQ='def unwrap: if ((.command // "") | test("/ws-mcp-(keepalive|jail)$"))
+MCP_UNWRAP_JQ='def unwrap: if ((.command // "") | test("/ws-mcp-(keepalive|filter|jail)$"))
       and (((.args // []) | index("--")) != null)
     then (.args | index("--")) as $i | .command = .args[$i + 1] | .args = .args[($i + 2):] | unwrap else . end;'
 
@@ -138,15 +146,16 @@ MCP_UNWRAP_JQ='def unwrap: if ((.command // "") | test("/ws-mcp-(keepalive|jail)
 mcp_unwrap() { jq -c "$MCP_UNWRAP_JQ unwrap"; }
 
 #######################################
-# The inverse of mcp_want for export.sh: a registration that runs through ws-mcp-keepalive or ws-mcp-jail goes back to
-# the server's own command and arguments, and keeps the kit's keys (jail, jailOptOut, keepalive).
+# The inverse of mcp_want for export.sh: a registration that runs through ws-mcp-keepalive, ws-mcp-filter or
+# ws-mcp-jail goes back to the server's own command and arguments, and keeps the kit's keys (jail, jailOptOut,
+# keepalive, filter).
 # Arguments: kit mcp-servers.json, ~/.claude.json. Outputs: the merged mcp-servers.json.
 #######################################
 mcp_unwrap_merge() {
   jq -s "$MCP_UNWRAP_JQ"' (.[0] // {}) as $k
     | ((.[1].mcpServers // {}) | to_entries | map(
         .key as $n | .value |= (unwrap
-          + ({jail: $k[$n].jail, jailOptOut: $k[$n].jailOptOut, keepalive: $k[$n].keepalive}
+          + ({jail: $k[$n].jail, jailOptOut: $k[$n].jailOptOut, keepalive: $k[$n].keepalive, filter: $k[$n].filter}
              | with_entries(select(.value != null)))))
        | from_entries) as $r
     | $k + $r' "$1" "$2"
@@ -156,7 +165,7 @@ mcp_unwrap_merge() {
 # The managed MCP allow list (WS-AI-010, ADR-024), as a managed-settings.d drop-in: one entry per kit server, matched
 # by what it runs, never by name (Claude Code's docs: «A serverName entry, in either list, is not a security
 # control»): serverCommand is the exact command and arguments install.sh registers (ws-mcp-keepalive and
-# ws-mcp-jail included), serverUrl the exact URL of an HTTP server. allowManagedMcpServersOnly makes Claude Code ignore allow lists in user, project
+# ws-mcp-filter and ws-mcp-jail included), serverUrl the exact URL of an HTTP server. allowManagedMcpServersOnly makes Claude Code ignore allow lists in user, project
 # and local settings, so a repository cannot widen it. Every other server is blocked, the claude.ai connectors and
 # plugin servers included, unless the owner lists them in the optional extra file (a JSON array of allowedMcpServers
 # entries, e.g. {"serverUrl": "https://mcp.example.com/*"}), reviewed when install.sh --managed prints it.

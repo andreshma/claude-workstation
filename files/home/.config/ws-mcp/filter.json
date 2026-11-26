@@ -1,0 +1,47 @@
+{
+  "_comment": "Policy of ws-mcp-filter (ADR-027), the filter in the stdio path of every local MCP server. Tools are named as the server names them (no mcp__server__ prefix); patterns are shell globs. Effective rules for a tab: defaults < server < levels.<WS_LEVEL> (levels.default when the tab's level has no entry) < profiles.<WS_PROFILE>; every allow list that applies must match and every deny list adds up, so a level or a profile only narrows. memory: true makes the server honour the tab's WS_MEMORY (off hides every tool; wing:W forces the wing on wingTools and hides the rest). writeTools is a regex on the tool name; for those, blockPrivate refuses <private> content and provenance stamps the named fields (prefix keeps the model's value after ' | ', set replaces it) when the tool's input schema has them. pinTools: block (a changed tool definition is withheld until 'ws-mcp-tools approve NAME') | warn | off. Yours to edit in a plain shell or from Menu > Settings; Claude cannot (guard.sh).",
+  "version": 1,
+  "defaults": {
+    "maxArgBytes": 262144,
+    "maxResultBytes": 2097152,
+    "redactArgs": true,
+    "redactResults": true,
+    "pinTools": "block",
+    "blockPrivate": false
+  },
+  "servers": {
+    "mempalace": {
+      "memory": true,
+      "writeTools": "(^|_)(add|write|update|put|mine|patch|submit|create|sync|checkpoint|append|ack|invalidate|supersede|delete|tunnel|hook_settings)(_|$)",
+      "blockPrivate": true,
+      "provenance": {"source_file": "prefix", "added_by": "set"},
+      "wingTools": ["mempalace_search", "mempalace_list_drawers", "mempalace_list_rooms", "mempalace_diary_read",
+                    "mempalace_diary_write", "mempalace_add_drawer"],
+      "maxArgBytes": 65536,
+      "maxResultBytes": 524288,
+      "deny": ["mempalace_hook_settings", "mempalace_mine", "mempalace_delete_by_source", "mempalace_delete_drawers"],
+      "levels": {
+        "full": {"allow": ["mempalace_search", "mempalace_get_*", "mempalace_list_*", "mempalace_kg_query",
+                           "mempalace_kg_stats", "mempalace_kg_timeline", "mempalace_graph_stats",
+                           "mempalace_find_tunnels", "mempalace_follow_tunnels", "mempalace_traverse",
+                           "mempalace_diary_read", "mempalace_status", "mempalace_check_duplicate",
+                           "mempalace_artifact_get", "mempalace_event_list", "mempalace_memories_filed_away"]},
+        "solo": {"allow": ["mempalace_search", "mempalace_get_*", "mempalace_list_*", "mempalace_kg_query",
+                           "mempalace_kg_stats", "mempalace_kg_timeline", "mempalace_graph_stats",
+                           "mempalace_find_tunnels", "mempalace_follow_tunnels", "mempalace_traverse",
+                           "mempalace_diary_read", "mempalace_status", "mempalace_check_duplicate",
+                           "mempalace_artifact_get", "mempalace_event_list", "mempalace_memories_filed_away"]}
+      }
+    },
+    "recall": {
+      "maxArgBytes": 16384,
+      "maxResultBytes": 524288
+    },
+    "azure": {
+      "maxResultBytes": 2097152
+    },
+    "chrome-devtools": {
+      "maxResultBytes": 8388608
+    }
+  }
+}

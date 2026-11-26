@@ -38,7 +38,7 @@ if command -v ws-pinned >/dev/null; then
           *) echo "  ✖ $name changed since it was pinned ($cmd): review it, then bash install.sh --mcp-accept $name" ;;
         esac ;;
     esac
-  done < <(jq -r 'def unwrap: if ((.command // "") | test("/ws-mcp-(keepalive|jail)$"))
+  done < <(jq -r 'def unwrap: if ((.command // "") | test("/ws-mcp-(keepalive|filter|jail)$"))
                       and (((.args // []) | index("--")) != null)
                     then (.args | index("--")) as $i | .command = .args[$i + 1] | .args = .args[($i + 2):] | unwrap
                     else . end;
