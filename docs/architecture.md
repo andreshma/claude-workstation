@@ -138,6 +138,7 @@ flowchart TB
 | Containment | `.claude/hooks/ws-runtime-gate.sh`, `ws-stop-all`, `ws-anomaly` | The emergency stop and the hard spend limit, held in every Claude by one hook; anomaly detection over the audit log and sandbox hits. |
 | Supply chain | `files/mcp-servers.lock.json`, `.local/lib/ws-npm/`, `ws-pinned`, `ws-kit-update`, `.config/ws-kit/allowed_signers`, `agent-browser` | Pinned MCP servers and agent tools; signed kit releases; the browser wrapper's safe defaults. |
 | MCP confinement | `ws-mcp-jail`, the `jail` keys of `files/mcp-servers.json`, `lib.sh` (`mcp_want`, `mcp_allowlist`) | Local Linux MCP servers run in bubblewrap with only their state dir writable; the managed `allowedMcpServers` drop-in ([ADR 0024](adr/0024-mcp-server-confinement-and-allow-list.md)). |
+| MCP keepalive | `ws-mcp-keepalive`, the `keepalive` keys of `files/mcp-servers.json`, `lib.sh` (`mcp_want`, `mcp_unwrap`) | Every local MCP server (outside its jail, if any) behind a stdio proxy that restarts it when it exits mid-session, replays the handshake and answers lost requests with an error; logs and audits each restart ([ADR 0025](adr/0025-mcp-server-keepalive.md)). |
 | Managed policy | `files/etc/claude-code/managed-settings.json` (installed by `install.sh --managed`) | The deny floor and the guard as a root-owned drop-in. |
 | Compliance | `.local/lib/ws_compliance.py` (`ws-audit --compliance`), `docs/compliance/`, `tests/compliance.sh`, `tests/ai-bom.sh` | Run the catalogue's machine-checkable checks; keep the catalogue, the assessment and the AI-BOM in step with the code. |
 | Routing | `.claude/hooks/ws-routing.sh`, `intent-route.sh`, `.local/lib/ws-routing.sh`, `cr`, `ws-routing-confirm` | Suggest a model per task and ask before switching. |
@@ -321,7 +322,7 @@ flowchart LR
     shell --> cr["claude-resume<br/>(normal level, --fenced settings)"]
     prefix --> cr
     cr --> claude["claude with CLAUDE_CONFIG_DIR,<br/>AZURE_CONFIG_DIR, GH_CONFIG_DIR,<br/>KUBECONFIG, WS_PROFILE, WS_MEMORY"]
-    claude --> mcp["Azure MCP server in ws-mcp-jail<br/>(inherits the env; only its state dir<br/>and AZURE_CONFIG_DIR in view;<br/>AZURE_TOKEN_CREDENTIALS=AzureCliCredential)"]
+    claude --> mcp["Azure MCP server: ws-mcp-keepalive → ws-mcp-jail<br/>(inherits the env; only its state dir<br/>and AZURE_CONFIG_DIR in view;<br/>AZURE_TOKEN_CREDENTIALS=AzureCliCredential)"]
     claude --> hooks["memory-filter.sh, memory-gate.sh<br/>(WS_MEMORY: off, on, wing:W)"]
 ```
 

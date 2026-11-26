@@ -142,6 +142,31 @@ registers the jailed form over an older one; `ws-audit` warns about a local serv
 out. To jail a server of your own, give it a `"jail": {"net": true}` object in `files/mcp-servers.json` (and its lock);
 to leave one out, `"jail": false` with a `"jailOptOut"` reason.
 
+**Restart after an exit** ([ADR 0025](adr/0025-mcp-server-keepalive.md)). Claude Code reconnects a remote (HTTP)
+server by itself, but in an interactive session a local (stdio) server whose process exits is marked as failed and
+stays down until `/mcp` → Reconnect ([Claude Code docs](https://code.claude.com/docs/en/mcp), «Stdio servers that
+exit or fail to start»). So every local server runs through `ws-mcp-keepalive`, outside the jail when there is one:
+
+```text
+Claude Code ──stdio──▶ ws-mcp-keepalive --name azure -- ws-mcp-jail --name azure --net --azure-config -- azmcp server start
+Claude Code ──stdio──▶ ws-mcp-keepalive --name mempalace -- /mnt/c/Users/<you>/.local/bin/mempalace-mcp.exe
+```
+
+| When the server… | What happens |
+|---|---|
+| exits while Claude is connected | the call it was answering gets an error (Claude never waits for it), and it starts again after 1 s, then 2, 4, 8… up to 30 s; the backoff starts over after 60 s of uptime |
+| comes back | the kit replays your session's `initialize` and `notifications/initialized` to it and tells Claude to refresh its tools (`notifications/tools/list_changed`, and prompts/resources if it has them); what Claude sent meanwhile is delivered then. Retry the call that failed |
+| exits 6 times within 5 minutes | it gives up: a Windows notification says so, the server shows as failed in `/mcp`, and you fix it and reconnect |
+| has a different executable than the one the session started | it is not restarted unless `ws-pinned local-check` vouches for it (review it, then `bash install.sh --mcp-accept NAME`) |
+
+Its log is `~/.local/state/ws-mcp/<name>.log`: the server's stderr (redacted, 1 MiB plus one old copy) and one line
+per start, restart and give-up; each restart is also an `mcp_restart` event in the audit log. `ws-audit` and
+`ws-health` report a local server registered without it and the restarts of the last 24 hours. `bash install.sh`
+re-registers a server that is registered without the kit's current wrappers by itself (the server inside does not
+change); restart Claude afterwards. To leave a server out, give it `"keepalive": false` in `files/mcp-servers.json`.
+If you use the managed allow list, regenerate it after that re-registration (`sudo bash install.sh --managed
+--mcp-allowlist`): it lists each server by its exact command, now the `ws-mcp-keepalive` form.
+
 ### Browser tools (optional)
 
 Two ways to let an agent drive a browser, both off until you install them:
@@ -174,7 +199,7 @@ your own files can change ([ADR 0019](adr/0019-strict-base-and-level-profiles.md
 | `/etc/claude-code/managed-settings.d/50-ws-kit.json` | The `deny` floor, `disableBypassPermissionsMode`, `enableAllProjectMcpServers: false` and the guard hook failing closed |
 | `/etc/claude-code/hooks/guard.sh` | A copy of the guard that the managed hook runs |
 | `/etc/claude-code/ws-credential-paths.txt` | The credential paths the guard also reads |
-| `/etc/claude-code/managed-settings.d/55-ws-mcp-allow.json` (only with `--mcp-allowlist`) | `allowedMcpServers`: the kit's servers by exact command (the `ws-mcp-jail` form included) or URL, plus `allowManagedMcpServersOnly: true` so no user, project or local setting can add to it |
+| `/etc/claude-code/managed-settings.d/55-ws-mcp-allow.json` (only with `--mcp-allowlist`) | `allowedMcpServers`: the kit's servers by exact command (the `ws-mcp-keepalive` and `ws-mcp-jail` form included) or URL, plus `allowManagedMcpServersOnly: true` so no user, project or local setting can add to it |
 
 It prints every command first; `--dry-run` only prints them. An organization's own `managed-settings.json` is left
 alone. Restart Claude afterwards (`/status` shows the managed source). After a kit update that changes `guard.sh`, run
@@ -1272,7 +1297,7 @@ The other `WS_*` variables follow the same pattern: the Spanish word became its 
 | Emergency stop and anomalies | `ws-stop-all`, `ws-anomaly` | [11](#emergency-stop-and-anomalies) |
 | Memory review | `ws-memory` | [12](#other) |
 | Dashboard and reports | `ws-telemetry` (`prompts`, `budgets --override`), `ws-report`, `ws-otel`, `ws-hooks`, `claude-report`, `ws-audit` (`--verify-log`, `--compliance`) | [12](#12-reports-and-telemetry) |
-| MCP servers, pinned packages, browser tools | `install.sh --mcp-opt-in/--mcp-accept/--mcp-refresh`, `ws-pinned`, `agent-browser` | [2](#mcp-servers) |
+| MCP servers, pinned packages, browser tools | `install.sh --mcp-opt-in/--mcp-accept/--mcp-refresh`, `ws-mcp-keepalive`, `ws-pinned`, `agent-browser` | [2](#mcp-servers) |
 | Managed policy | `install.sh --managed` | [2](#managed-policy-optional) |
 | Focus mode | `tmux-focus` | [12](#12-reports-and-telemetry) |
 | Telegram | `ws-telegram` | [13](#13-notifications-and-telegram) |

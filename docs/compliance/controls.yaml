@@ -2442,3 +2442,44 @@ controls:
   risk: 'low: slow hooks cost time and push the owner towards bare or solo, not a direct security loss.'
   remediation: Add a test that runs the whole PreToolUse chain of settings.json on a typical call and fails over 400 ms.
   effort: M
+- id: WS-GOV-015
+  title: Self-healing of local MCP servers
+  objective: A local (stdio) MCP server that exits mid-session comes back without the owner, a request it lost is
+    answered with an error instead of hanging, a crash loop ends visibly, and every restart is recorded; a restart
+    never runs an executable other than the one the session started.
+  maps_to:
+  - WAF-REL:RE:07
+  - WAF-REL:RE:10
+  - ISO25010:Reliability
+  - OWASP-ASI:ASI08
+  - MS-RAI:Reliability and Safety
+  status: implemented
+  evidence:
+  - files/home/.local/bin/ws-mcp-keepalive:376-401 (on an exit, errors for the requests in flight, exponential
+    backoff, give-up after 5 restarts in 300 s)
+  - files/home/.local/bin/ws-mcp-keepalive:403-441 (the executable must be unchanged or vouched for by ws-pinned;
+    the recorded initialize is replayed)
+  - files/home/.local/bin/ws-mcp-keepalive:443-456 (notifications/initialized, then list_changed to the client)
+  - files/home/.local/bin/ws-mcp-keepalive:230-251 (the whole process tree is ended; the proxy is a child subreaper)
+  - files/home/.local/bin/ws-mcp-keepalive:138-183 (stderr log 0600, redacted, capped, never through a link)
+  - files/home/.local/bin/ws-mcp-keepalive:322-330 (mcp_restart and mcp_giveup in the audit hash chain)
+  - lib.sh:111-127 (every stdio server registered through ws-mcp-keepalive, the jail inside; "keepalive" false opts
+    out)
+  - install.sh:328-331 (a registration of the same server without the wrappers is re-registered by itself)
+  - files/home/.local/bin/ws-audit:425-455 (a stdio server without the keepalive warns; restarts and give-ups of the
+    last 24 h)
+  - files/home/.local/bin/ws-health:43-61
+  - files/home/.claude/hooks/guard.sh:82 (the wrapper and its logs are hard roots)
+  - docs/adr/0025-mcp-server-keepalive.md
+  - docs/runbook.md#7-sandbox-solo-mode-and-patches (An MCP server is down)
+  check:
+  - bash tests/mcp-keepalive.sh
+  - jq -e 'all(.[]; if (.type // "stdio") == "stdio" then .keepalive != false else true end)' files/mcp-servers.json
+  - 'live: ws-test'
+  gap: Not exercised against the real MemPalace and recall through WSL interop (unreachable from the implementer's
+    sandbox); a Windows server's own child processes are outside Linux's reach on shutdown; state a server kept per
+    connection is lost on a restart.
+  risk: 'low: a drop now costs one failed call and a few seconds instead of a dead server until /mcp → Reconnect.'
+  remediation: On the owner's machine, end mempalace-mcp.exe from Task Manager during a session once and record the
+    log lines in the runbook; switch to Claude Code's own restart policy for stdio servers if one is documented.
+  effort: S

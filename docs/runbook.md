@@ -58,6 +58,7 @@ are written as you type them. The names used before 3.0 are listed in
 | Pinned npm packages | Locks in `~/.local/lib/ws-npm/<name>/`; installed trees in `~/.local/share/ws-kit/npm/<name>/`; local MCP executables pinned in `~/.local/share/ws-kit/mcp-trust.tsv` |
 | Release signing keys the kit trusts | `~/.config/ws-kit/allowed_signers` (kit) and `allowed_signers.local` (yours); update log `~/.local/state/ws-kit-update.log` |
 | Gate opt-outs | `~/.local/state/ws-gate/opt-outs.log` |
+| MCP server logs (stderr, restarts, give-ups) | `~/.local/state/ws-mcp/<name>.log` (`ws-mcp-keepalive`); jail starts: `~/.local/state/ws-mcp/jail.log` |
 | Managed policy (optional, root) | `/etc/claude-code/managed-settings.d/50-ws-kit.json`, `/etc/claude-code/hooks/guard.sh`, `/etc/claude-code/ws-credential-paths.txt` |
 | Compliance report (`ws-audit --compliance`) | `~/.local/share/ws-telemetry/compliance.json` |
 | Backups of files changed by `install.sh` | `~/.local/share/ws-kit/backup.<date>/<path under $HOME>` (newest 10 kept); copies left next to the files by versions before 3.0: `~/.local/share/ws-kit/backup.legacy/` after `bash install.sh --prune-backups` |
@@ -77,7 +78,7 @@ ws-audit                     # read-only audit by pillar; also: --verify-log, --
 | Check | Healthy when |
 |---|---|
 | `ws-check` | No line ends in `MISSING` |
-| `ws-health` | 15 % free on `/` and 50 GB free on `C:`; a recent tmux save and backup; the kit in sync |
+| `ws-health` | 15 % free on `/` and 50 GB free on `C:`; a recent tmux save and backup; every local MCP server kept alive and none given up in 24 h; the kit in sync |
 | `ws-verify` | No `FAIL` line; warnings are to be reviewed |
 | `ws-test` | The summary line reports no failed tests |
 | `ws-audit --verify-log` | Exit 0: no audit line was edited, deleted or reordered |
@@ -222,6 +223,22 @@ stay in clear and `ws-audit` fails; the first run with a key seals the clear cop
   and each start is logged in `~/.local/state/ws-mcp/jail.log`. A server that needs a path the jail does not show gets
   it through `"jail": {"ro": […]}` in `files/mcp-servers.json` and `bash install.sh --mcp-refresh`; credential stores,
   `~/.claude*`, the audit log and Windows drives are refused even then.
+- **An MCP server is down (`/mcp` shows it failed, its tools are missing, or a call said "stopped … being
+  restarted"):** local servers run through `ws-mcp-keepalive` ([ADR 0025](adr/0025-mcp-server-keepalive.md)), which
+  starts them again by itself; a call that was running when it stopped gets an error: retry it.
+  1. `tail -n 40 ~/.local/state/ws-mcp/<name>.log`: `restart … exit=N uptime=…` is each exit (`signal=9` = killed,
+     `exit=0` = the server ended by itself), `giveup` means it exited 6 times in 5 minutes and is down, `refused`
+     means its executable changed under the session; the lines in between are the server's own stderr.
+  2. Given up: fix the cause in the log (MemPalace or recall: run the command in a Windows terminal to see its error;
+     azure: `ws-mcp-jail --probe`), then `/mcp` → the server → Reconnect (or `/mcp reconnect all`).
+  3. Refused: review what changed (`ws-pinned verify`; for MemPalace or recall the new build), then
+     `bash install.sh --mcp-accept <name>` and Reconnect.
+  4. Not kept alive (`ws-audit` or `ws-health`: "registered without ws-mcp-keepalive"): `bash install.sh` re-registers
+     it, then restart Claude in the tab; with the managed allow list, `sudo bash install.sh --managed --mcp-allowlist`
+     too, or the new form is "blocked by policy".
+  5. Both Windows servers stop at once and the log shows `signal=` exits: WSL interop was interrupted (Windows sleep,
+     an update, `wsl --shutdown`); they come back within seconds once Windows is up. `ws-audit --verify-log` after a
+     crash of the whole VM shows a broken audit chain at that time (writes lost); that is the crash, not tampering.
 - **An MCP server is "blocked by policy" in `/mcp` after `install.sh --managed --mcp-allowlist`:** it is not in the
   managed allow list. A claude.ai connector or plugin server you keep goes into `~/.config/ws-mcp/allow-extra.json`
   (`[{"serverUrl": "https://…/*"}]`), then run the command again; a kit server whose definition changed needs the same
