@@ -36,6 +36,7 @@
 .local/bin/ws-tomd
 .config/tmux-claude/menu-claude.tmux
 .config/tmux-claude/menu-workstation.tmux
+.config/tmux-claude/menu-telegram.tmux
 .config/tmux-claude/menu-session.tmux
 .config/tmux-claude/menu-panes.tmux
 .config/tmux-claude/wsl-bridge.sh

@@ -8,10 +8,20 @@
 #   ws-telegram test           sends you a test message
 #   ws-telegram on|off|toggle  (also: Menu → Workstation → Telegram)
 #   ws-telegram approve risky|pin   PIN for approving risky dialogs only (default) or for every approval
+#   ws-telegram notify approvals|digest|all|off   what is sent (default approvals; ADR 0026, see below)
+#   ws-telegram digest 30m|1h|2h|4h|off|now      period of the digest (default 1h); now: send one now
+#   ws-telegram quiet HH:MM-HH:MM|off             quiet hours: only security alerts and approvals that block work
 #   ws-telegram forget         deletes token, chat and state
 #   ws-telegram notify <wait|done> <pane> <text>   (called by win-notify; not by hand)
 #   ws-telegram ensure         starts the service if it is not running (called by tmux-backup every minute)
 #   ws-telegram service [--once]   the service: sends notifications and handles your buttons
+#   (Menu → Workstation → Telegram has every setting, showing its current value.)
+#
+# Notification policy (ADR 0026): «approvals» sends at once only what needs you (permission dialogs, PIN requests,
+# routing questions, a question or a stop that blocks a tab, what you asked for with ws-notify --telegram) and the
+# security alerts; the rest (finished turns, context, usage, idle tabs) goes into one digest per period, sent only if
+# something changed. «digest» sends only digests and security alerts; «all» sends everything at once; «off» only
+# security alerts. Security alerts (someone else, wrong PINs, anomalies, a bad kit signature) always go out.
 #
 # Security (ADR-010):
 #   · Token only in the Windows Credential Manager (ws-secret); never in files or on curl's command line
@@ -20,8 +30,9 @@
 #     that expires in 10 min. Before sending the key the screen is read again: if the dialog changed, nothing
 #     is sent. There are only closed options (a number or Escape); never free text.
 #   · The screen text is redacted (tokens, keys, passwords) before it leaves the PC.
-#   · ▶ Run asks for your PIN: the button runs nothing, you reply with the PIN to the message it sends you (5 min,
-#     deleted from the chat). `ws-telegram run no-pin` makes it direct; `ws-telegram run pin` asks again.
+#   · ▶ Run asks for your PIN: the button runs nothing, you send the PIN (5 min, single use, deleted from the chat).
+#     With one PIN request pending a bare PIN is enough (a Reply to its messages or a new message); with several,
+#     Reply to the 🔐 message you mean. `ws-telegram run no-pin` makes it direct; `ws-telegram run pin` asks again.
 #     ▶ Run is offered only for read-only commands of an allow list (RUN_ALLOW); the block lists are a second check.
 #   · Approving a risky permission dialog (an ask rule, a command that runs outside the sandbox, an MCP tool or a
 #     dangerous command) asks for the PIN the same way; `ws-telegram approve pin` asks it for every approval.
@@ -51,7 +62,8 @@ log_event() {   # event detail [command] — the command (▶ Run) goes only to 
   jq -nc --arg e "$1" --arg d "${2:-}" '{ts: (now | todate), event: $e, detail: $d}' >> "$LOGD/$(date +%F).jsonl" 2>/dev/null || true
   case "$1" in
     approve_authorized|approve_blocked|approve_asks_pin|command_authorized|command_blocked|command_asks_pin|run|\
-    pin_wrong|unauthorized|refused_persistent|text_reply|text_rejected|text_off|action|invalid|command_expired)
+    pin_wrong|unauthorized|refused_persistent|text_reply|text_rejected|text_off|action|invalid|command_expired|\
+    pin_ambiguous|pin_unavailable|setting_changed)
       audit_tg "$1 ${2:-}" "${3:-}" ;;
   esac
   return 0
@@ -95,53 +107,207 @@ pin() {   # WS_TELEGRAM_PIN only for the isolated tests
 }
 
 #######################################
-# A text message from you. It only counts if it is a Reply to a live open question, from your chat, with text
-# replies turned on and starting with the PIN. It is pasted into that tab as "[Reply from Telegram] …" and sent;
-# your message (with the PIN) is deleted from the chat. 3 wrong PINs in 1 h turn text replies off.
+# The PIN in the service's memory, read lazily. It used to be read once when the service started: if Windows
+# interop was not ready yet (right after boot or a WSL restart) the PIN stayed empty for the life of the service and
+# every 🔐 said "none is set". Now an empty PIN is read again when it is needed (at most once every
+# WS_TELEGRAM_PIN_RETRY seconds, 60 by default), and the reason it could not be read is kept for the replies and for
+# `ws-telegram status` ($ST/pin-status holds only "loaded" or the reason, never the PIN).
+# Globals: PIN, PIN_TRIED, PIN_REASON. Returns: 0 if the service has a PIN.
 #######################################
+PIN="" PIN_TRIED=0 PIN_REASON="not read yet"
+load_pin() {
+  [[ -n "$PIN" ]] && return 0
+  local now out; now=$(date +%s)
+  (( now - PIN_TRIED >= ${WS_TELEGRAM_PIN_RETRY:-60} )) || return 1
+  PIN_TRIED=$now; out="$(pin)"
+  if [[ "$out" =~ ^[0-9]{4,6}$ ]]; then PIN="$out" PIN_REASON=""
+  elif [[ -n "$out" ]]; then PIN_REASON="the stored PIN is not 4 to 6 digits (ws-telegram text pin)"
+  elif [[ ! -x "$HOME/.local/bin/ws-secret" ]]; then PIN_REASON="ws-secret is missing"
+  else
+    "$HOME/.local/bin/ws-secret" has telegram-pin >/dev/null 2>&1; local rc=$?
+    # ws-secret has: 3 = not stored; 0 = stored but get failed; anything else = PowerShell did not run.
+    if (( rc == 3 )); then PIN_REASON="no PIN is set (on the PC: ws-telegram text pin)"
+    else PIN_REASON="the Windows Credential Manager did not answer (Windows interop not ready?); retried every minute"; fi
+  fi
+  unset out
+  mkdir -p "$ST"
+  if [[ -n "$PIN" ]]; then
+    printf '%s loaded\n' "$(date +%FT%T)" > "$ST/pin-status"; log_event pin_loaded ""; return 0
+  fi
+  printf '%s missing: %s\n' "$(date +%FT%T)" "$PIN_REASON" > "$ST/pin-status"
+  log_event pin_unavailable "$PIN_REASON"; return 1
+}
+
 # ▶ Run asks for your PIN (ADR-013): the button runs nothing; it answers with a message you reply to with the PIN.
 # `ws-telegram run no-pin` goes back to the direct button (less safe: whoever holds your unlocked phone can run).
 run_needs_pin() { [[ ! -f "$CFG/run-no-pin" && ! -f "$CFG/ejecutar-sin-pin" ]]; }
 
+# A bare PIN: 4 to 6 digits, optionally after "pin" / "PIN:", and nothing else but spaces or punctuation.
+BARE_PIN_RE='^[[:space:]]*([Pp][Ii][Nn][[:space:]:]*)?([0-9]{4,6})[[:space:][:punct:]]*$'
+# A message that starts with a PIN and goes on with words ("1234 ok"); the PIN counts, the words do not.
+PIN_FIRST_RE='^[[:space:]]*([Pp][Ii][Nn][[:space:]:]*)?([0-9]{4,6})([^0-9]|$)'
+del_msg() { tg deleteMessage "$(jq -nc --arg c "$CHAT" --arg m "$1" '{chat_id: $c, message_id: ($m | tonumber)}')" >/dev/null; }
+
+#######################################
+# Short answer to a message the bot does not act on (ADR 0026: never silent). Rate-limited: the same reason at most
+# once every 20 s, and 30 answers an hour in all, so a loop or a flood cannot turn the bot into a spammer.
+# Arguments: reason key, text, [message id to reply to]. Globals: CHAT.
+#######################################
+say() {
+  local k="$1" d="$ST/say" n
+  mkdir -p "$d"; find "$d" -type f -mmin +60 -delete 2>/dev/null
+  if [[ -f "$d/$k" ]] && (( $(date +%s) - $(stat -c %Y "$d/$k") < 20 )); then log_event said_limited "$k"; return 0; fi
+  n="$(find "$d" -type f -name 'n-*' | wc -l)"; (( n < 30 )) || { log_event said_limited "$k (30 an hour)"; return 0; }
+  : > "$d/$k"; : > "$d/n-$(date +%s%N)"
+  tg sendMessage "$(jq -nc --arg c "$CHAT" --arg t "$2" --arg r "${3:-}" '{chat_id: $c, text: $t}
+      + (if $r == "" then {} else {reply_parameters: {message_id: ($r | tonumber), allow_sending_without_reply: true}} end)')" >/dev/null
+  log_event said "$k"
+}
+
+# PIN requests (one file per "send your PIN" prompt: $ST/to-run/<prompt id>.json, with the notification's id in .j.mid).
+live_pin_requests() {   # paths of the requests that have not expired yet
+  local f now; now=$(date +%s)
+  for f in "$ST"/to-run/*.json; do
+    [[ -f "$f" ]] && (( now <= $(load_state "$f" | jq -r '.expires // 0') )) && printf '%s\n' "$f"
+  done
+  return 0
+}
+pin_request_for() {   # <message id> → the request whose prompt or notification is that message (live or expired)
+  local f
+  [[ "$1" =~ ^[0-9]+$ ]] || return 1
+  [[ -f "$ST/to-run/$1.json" ]] && { printf '%s\n' "$ST/to-run/$1.json"; return 0; }
+  for f in "$ST"/to-run/*.json; do
+    [[ -f "$f" ]] && [[ "$(load_state "$f" | jq -r '.j.mid // ""')" == "$1" ]] && { printf '%s\n' "$f"; return 0; }
+  done
+  return 1
+}
+
+#######################################
+# A message from you. In this order:
+#   1. the emergency stop is on → nothing is done (the message is deleted if it may hold your PIN);
+#   2. a bare PIN (or a PIN followed by words, as a Reply to a PIN request) → handle_pin: it never goes to the text
+#      path and is never counted as a wrong text reply;
+#   3. anything else as a Reply to a PIN request → the exact format expected;
+#   4. a text reply to an open question (text_reply).
+# Every message that is not acted on gets a short answer saying why and what to do (say).
+#######################################
 handle_message() {
-  local m="$1" from chat a mid txt oq p rest f fails rf
+  local m="$1" from chat a mid txt
   from="$(jq -r '.from.id // empty' <<<"$m")"; chat="$(jq -r '.chat.id // empty' <<<"$m")"
   mid="$(jq -r '.message_id' <<<"$m")"; a="$(jq -r '.reply_to_message.message_id // empty' <<<"$m")"
   txt="$(jq -r '.text // ""' <<<"$m")"
-  if [[ "$from" != "$CHAT" || "$chat" != "$CHAT" ]]; then log_event unauthorized "text from=$from"; alert_rl "sec-unauth" 10 && alert "🚨 Someone other than you wrote to your bot (id $from). Nothing was done."; return; fi
-  log_event message "from=$from reply_to=${a:-none} length=${#txt}"
-  reply() { tg sendMessage "$(jq -nc --arg c "$CHAT" --arg t "$1" --arg r "$mid" '{chat_id: $c, text: $t, reply_parameters: {message_id: ($r | tonumber), allow_sending_without_reply: true}}')" >/dev/null; }
-  if [[ -n "$a" && -f "$ST/to-run/$a.json" ]]; then   # reply with the PIN to "shall I run this?"
-    rf="$ST/to-run/$a.json"
-    tg deleteMessage "$(jq -nc --arg c "$CHAT" --arg m "$mid" '{chat_id: $c, message_id: ($m | tonumber)}')" >/dev/null   # removes the PIN from the chat
-    if (( $(date +%s) > $(load_state "$rf" | jq -r '.expires // 0') )); then
-      rm -f "$rf"; log_event command_expired "pin"; reply "It expired and nothing was done. Check on the PC."; return
-    fi
-    if [[ -n "$PIN" && "$txt" =~ ^[[:space:]]*([Pp][Ii][Nn][[:space:]:]*)?([0-9]{4,6})[[:space:]]*$ && "${BASH_REMATCH[2]}" == "$PIN" ]]; then
-      rest="$(load_state "$rf" | jq -c '.j')"
-      if [[ "$(jq -r '.kind // "run"' "$rf")" == approve ]]; then
-        local ch; ch="$(jq -r '.choice // ""' "$rf")"; rm -f "$rf" "$ST/pin-fails"; log_event approve_authorized "pin"
-        approve_now "$rest" "$ch"; return
-      fi
-      rm -f "$rf" "$ST/pin-fails"; log_event command_authorized "pin"
-      ( run_command "$rest" ) &
-      return
-    fi
-    f="$ST/pin-fails"; find "$f" -mmin +60 -delete 2>/dev/null; echo x >> "$f"; fails="$(wc -l < "$f")"
-    log_event pin_wrong "$fails run"; alert "🚨 Wrong PIN while trying to run a command or approve a dialog ($fails of 3 in 1 h)."
-    if (( fails >= 3 )); then
-      rm -f "$ST"/to-run/*.json "$f"; log_event command_blocked "3 wrong PINs"
-      reply "3 wrong PINs: I cancelled the pending commands. Do it on the PC."
-    else reply "Wrong PIN; it was not run. Reply with your PIN only."; fi
+  if [[ "$from" != "$CHAT" || "$chat" != "$CHAT" ]]; then
+    log_event unauthorized "text from=$from"
+    alert_rl "sec-unauth" 10 && alert "🚨 Someone other than you wrote to your bot (id $from). Nothing was done." "" "" sec
     return
   fi
-  if ! text_enabled || [[ -z "$PIN" ]]; then
-    log_event text_rejected "$(text_enabled && echo "no PIN in the service" || echo off)"
-    reply "Text replies are off or the service does not have your PIN. On the PC: ws-telegram text on"; return
+  log_event message "from=$from reply_to=${a:-none} length=${#txt}"
+  if [[ -e "$STOPMARK" ]]; then
+    [[ "$txt" =~ [0-9]{4} ]] && del_msg "$mid"
+    log_event command_blocked "stop-all message"
+    say stop "⛔ The emergency stop is on: nothing is run or answered from the phone. On the PC: ws-stop-all --clear, then ws-telegram on."
+    return
+  fi
+  if [[ -z "$txt" ]]; then
+    log_event message_ignored "no text"
+    say nontext "I only read text. To answer a dialog use its buttons; for 🔐 send only your PIN." "$mid"; return
+  fi
+  case "$txt" in
+    /start*|/help*) log_event message_ignored help; say help "$(help_text)" "$mid"; return ;;
+  esac
+  if [[ "$txt" =~ $BARE_PIN_RE ]]; then handle_pin "$a" "$mid" "${BASH_REMATCH[2]}"; return; fi
+  if [[ -n "$a" ]] && pin_request_for "$a" >/dev/null; then
+    if [[ "$txt" =~ $PIN_FIRST_RE ]]; then handle_pin "$a" "$mid" "${BASH_REMATCH[2]}"; return; fi
+    log_event message_ignored "format pin"
+    say format-pin "Nothing was done. To approve or run, send only your PIN (4 to 6 digits, e.g. 1234) as a Reply to the 🔐 message, or as a new message when it is the only one pending." "$mid"
+    return
+  fi
+  text_reply "$a" "$mid" "$txt"
+}
+
+help_text() {
+  printf '%s\n' "How to answer from Telegram:" \
+    "• Dialogs: tap the buttons of the notification." \
+    "• 🔐 (risky approval or ▶ Run): send only your PIN, e.g. 1234, as a Reply to the 🔐 message, or as a new message when it is the only one pending. It is deleted from the chat at once." \
+    "• Open questions (ws-telegram text on): Reply to the notification with your PIN, a space and the answer: 1234 use the opaque cursor." \
+    "Settings on the PC: Menu → Workstation → Telegram, or ws-telegram status."
+}
+
+#######################################
+# A PIN from you (handle_message). The message is deleted first, whatever happens: the PIN never stays in the chat.
+# Target: the request whose prompt or notification you replied to; without a Reply (or a Reply to something else),
+# the only live request; with several live requests, you are asked to Reply to the one you mean. The checks of the
+# request itself are unchanged: only your chat, 5 minutes, single use, 3 wrong PINs in 1 h cancel every request,
+# and an approval is sent only if the same dialog is still on screen (approve_now).
+# Arguments: id you replied to (or ""), your message id, the digits.
+#######################################
+handle_pin() {
+  local a="$1" mid="$2" digits="$3" rf="" kind ch rest pm f fails
+  local -a live=()
+  del_msg "$mid"   # removes the PIN from the chat
+  [[ -n "$a" ]] && rf="$(pin_request_for "$a")"
+  if [[ -z "$rf" ]]; then
+    mapfile -t live < <(live_pin_requests)
+    if (( ${#live[@]} == 1 )); then rf="${live[0]}"
+    elif (( ${#live[@]} > 1 )); then
+      log_event pin_ambiguous "${#live[@]}"
+      say pin-several "🔐 ${#live[@]} PIN requests are pending, so I did nothing. Reply (swipe the message to reply) to the 🔐 message of the one you mean, with only your PIN."
+      return
+    else
+      log_event pin_no_request "a=${a:-none}"
+      if [[ -n "$a" && -f "$ST/pin-done/$a" ]]; then
+        say pin-used "✔ That request was already done with your PIN at $(cat "$ST/pin-done/$a"). Nothing else to do."
+      else say pin-none "🔐 No PIN request is pending (they last 5 min and are used once), so nothing was done. Tap the 🔐 button again, then send only your PIN."; fi
+      return
+    fi
+  fi
+  pm="$(basename "$rf" .json)"
+  if (( $(date +%s) > $(load_state "$rf" | jq -r '.expires // 0') )); then
+    rm -f "$rf"; log_event command_expired "pin"
+    say pin-expired "⌛ That PIN request expired (5 min) and nothing was done. Tap the 🔐 button again, or do it on the PC." "$pm"; return
+  fi
+  if ! load_pin; then
+    log_event "$( [[ "$(jq -r '.kind // "run"' "$rf")" == approve ]] && echo approve_blocked || echo command_blocked )" "no PIN in the service"
+    say pin-unavailable "The service has no PIN, so nothing was done: $PIN_REASON. On the PC: ws-telegram status." "$pm"; return
+  fi
+  if [[ "$digits" == "$PIN" ]]; then
+    rest="$(load_state "$rf" | jq -c '.j')"; kind="$(jq -r '.kind // "run"' "$rf")"; ch="$(jq -r '.choice // ""' "$rf")"
+    local pt; pt="$(jq -r '.prompt // "🔐 PIN request"' "$rf")"
+    rm -f "$rf" "$ST/pin-fails"
+    mkdir -p "$ST/pin-done"; date +%H:%M | tee "$ST/pin-done/$pm" > "$ST/pin-done/$(jq -r '.mid // 0' <<<"$rest")"
+    if [[ "$kind" == approve ]]; then
+      log_event approve_authorized "pin"; approve_now "$rest" "$ch" "$pm" "$pt"; return
+    fi
+    log_event command_authorized "pin"
+    close_msg "$pm" "$pt" "✔ PIN accepted ($(date +%H:%M)): running it; the result arrives as a reply to the command."
+    ( run_command "$rest" ) &
+    return
+  fi
+  f="$ST/pin-fails"; find "$f" -mmin +60 -delete 2>/dev/null; echo x >> "$f"; fails="$(wc -l < "$f")"
+  log_event pin_wrong "$fails run"
+  alert "🚨 Wrong PIN while trying to run a command or approve a dialog ($fails of 3 in 1 h)." "" "" sec
+  if (( fails >= 3 )); then
+    rm -f "$ST"/to-run/*.json "$f"; log_event command_blocked "3 wrong PINs"
+    say pin-blocked "3 wrong PINs: I cancelled every pending PIN request. Do it on the PC." "$pm"
+  else say pin-wrong "Wrong PIN ($fails of 3 in 1 h); nothing was done. Send only your PIN again." "$pm"; fi
+}
+
+#######################################
+# A text reply to Claude's open question: only with text replies on (`ws-telegram text on`), as a Reply to a live
+# notification of that tab (or, without Reply, to the only open question), starting with your PIN. It is pasted
+# into that tab as "[Reply from Telegram] …" and sent; your message (with the PIN) is deleted from the chat. Text
+# without the PIN prefix is answered with the format and is not counted; a wrong PIN prefix is counted, and 3 wrong
+# PINs in 1 h turn text replies off. Arguments: id you replied to, your message id, the text.
+#######################################
+text_reply() {
+  local a="$1" mid="$2" txt="$3" oq="" n_open p rest f fails
+  if ! text_enabled; then
+    log_event text_rejected off
+    say text-off "Nothing was done: text replies are off. Dialogs: use their buttons; 🔐: send only your PIN. To answer questions with text, on the PC: ws-telegram text on" "$mid"
+    return
   fi
   # Target: (1) the open question you replied to; (2) any notification from a tab sent < 60 min ago;
   # (3) without Reply: the only live open question. If there is no clear one, nothing is sent.
-  local n_open; oq=""
   if [[ -n "$a" && -f "$ST/open/$a.json" ]]; then oq="$ST/open/$a.json"
   elif [[ -n "$a" && -f "$ST/messages/$a.json" ]] && (( $(date +%s) - $(stat -c %Y "$ST/messages/$a.json") < 3600 )); then oq="$ST/messages/$a.json"
   elif [[ -z "$a" ]]; then
@@ -150,50 +316,109 @@ handle_message() {
   fi
   if [[ -z "$oq" ]]; then
     log_event text_no_target "a=${a:-none}"
-    if [[ -n "$a" ]]; then reply "That message is not a notification from a Claude tab, or more than 1 h has passed. Nothing was sent."
-    else reply "Use Reply (swipe the message to the right) on the notification of the tab you are answering. Nothing was sent."; fi
+    [[ "$txt" =~ $PIN_FIRST_RE ]] && del_msg "$mid"
+    if [[ -n "$a" ]]; then say no-target "Nothing was sent: that message is not a live notification of a Claude tab (they last 1 h). Reply to the tab's latest notification: your PIN, a space and the answer." "$mid"
+    else say no-target "Nothing was sent: I do not know which tab it is for. Use Reply (swipe the message to reply) on the tab's notification: your PIN, a space and the answer (e.g. 1234 yes, go ahead)." "$mid"; fi
     return
   fi
   if (( $(date +%s) > $(load_state "$oq" | jq -r '.expires // 9999999999') )); then
-    rm -f "$oq"; log_event text_rejected "expired"; reply "That question expired (15 min). Check on the PC."; return
+    rm -f "$oq"; log_event text_rejected "expired"; [[ "$txt" =~ $PIN_FIRST_RE ]] && del_msg "$mid"
+    say text-expired "Nothing was sent: that question expired (15 min). Check on the PC." "$mid"; return
   fi
-  # PIN first: "4821 use an opaque cursor"
-  if [[ ! "$txt" =~ ^[[:space:]]*([Pp][Ii][Nn][[:space:]:]*)?([0-9]{4,6})[[:space:][:punct:]]+(.+)$ || "${BASH_REMATCH[2]}" != "$PIN" ]]; then
-    tg deleteMessage "$(jq -nc --arg c "$CHAT" --arg m "$mid" '{chat_id: $c, message_id: ($m | tonumber)}')" >/dev/null
-    f="$ST/pin-fails"; find "$f" -mmin +60 -delete 2>/dev/null; echo x >> "$f"; fails="$(wc -l < "$f")"
-    log_event pin_wrong "$fails"; alert "🚨 Wrong PIN in a text reply ($fails of 3 in 1 h)."
-    if (( fails >= 3 )); then
-      rm -f "$CFG/text" "$CFG/texto" "$f"; log_event text_off "3 wrong PINs"
-      reply "3 wrong PINs: I turned text replies off. To turn them back on, on the PC: ws-telegram text on"
-    else reply "Wrong or missing PIN; nothing was sent. Format: your PIN, a space and the answer."; fi
-    return
-  fi
-  rest="${BASH_REMATCH[3]}"; rest="${rest:0:2000}"
   p="$(load_state "$oq" | jq -r .pane)"
-  [[ -n "$p" && "$p" != null ]] || { log_event text_rejected "no tab"; reply "I do not know which tab it goes to. Nothing was sent."; return; }
+  [[ -n "$p" && "$p" != null ]] || { log_event text_rejected "no tab"; say no-tab "Nothing was sent: I do not know which tab it goes to." "$mid"; return; }
   # If that tab shows a dialog with options (permission), typing text there would pick options: it is not sent.
   # Only a real Claude dialog (with the ❯ cursor on an option); a numbered list in the answer does not count.
   if screen "$p" | tail -n 25 | grep -qE '^[[:space:]│]*❯[[:space:]]*[0-9]+\.'; then
     log_event text_rejected "dialog with options in $p"
-    tg deleteMessage "$(jq -nc --arg c "$CHAT" --arg m "$mid" '{chat_id: $c, message_id: ($m | tonumber)}')" >/dev/null
-    reply "In that tab Claude is waiting for you to pick an option: use the buttons on the notification. The text was not sent."; return
+    [[ "$txt" =~ $PIN_FIRST_RE ]] && del_msg "$mid"
+    say text-dialog "Nothing was sent: in that tab Claude is waiting for you to pick an option. Use the buttons of its notification; a 🔐 button then asks for your PIN (send only the PIN)." "$mid"
+    return
   fi
+  if ! load_pin; then
+    log_event text_rejected "no PIN in the service"; [[ "$txt" =~ $PIN_FIRST_RE ]] && del_msg "$mid"
+    say pin-unavailable "Nothing was sent: the service has no PIN ($PIN_REASON). On the PC: ws-telegram status." "$mid"; return
+  fi
+  # PIN first: "4821 use an opaque cursor"
+  if [[ ! "$txt" =~ ^[[:space:]]*([Pp][Ii][Nn][[:space:]:]*)?([0-9]{4,6})[[:space:][:punct:]]+(.+)$ ]]; then
+    log_event text_rejected "format"
+    say text-format "Nothing was sent. Format of a text reply: your PIN, a space and the answer (e.g. 1234 use the opaque cursor), as a Reply to the tab's notification." "$mid"
+    return
+  fi
+  if [[ "${BASH_REMATCH[2]}" != "$PIN" ]]; then
+    del_msg "$mid"
+    f="$ST/pin-fails"; find "$f" -mmin +60 -delete 2>/dev/null; echo x >> "$f"; fails="$(wc -l < "$f")"
+    log_event pin_wrong "$fails"; alert "🚨 Wrong PIN in a text reply ($fails of 3 in 1 h)." "" "" sec
+    if (( fails >= 3 )); then
+      rm -f "$CFG/text" "$CFG/texto" "$f"; log_event text_off "3 wrong PINs"
+      say text-blocked "3 wrong PINs: I turned text replies off. To turn them back on, on the PC: ws-telegram text on"
+    else say text-wrong "Wrong PIN ($fails of 3 in 1 h); nothing was sent. Format: your PIN, a space and the answer."; fi
+    return
+  fi
+  rest="${BASH_REMATCH[3]}"; rest="${rest:0:2000}"
   rm -f "$oq" "$ST/pin-fails"   # single use
-  tg deleteMessage "$(jq -nc --arg c "$CHAT" --arg m "$mid" '{chat_id: $c, message_id: ($m | tonumber)}')" >/dev/null   # removes the PIN from the chat
+  del_msg "$mid"   # removes the PIN from the chat
   target "$p"
   local tmp; tmp="$(mktemp)"; printf '[Reply from Telegram] %s' "$rest" > "$tmp"
   "${T_CMD[@]}" load-buffer -b ws-tg "$tmp" && "${T_CMD[@]}" paste-buffer -p -d -b ws-tg -t "$T_TGT"; rm -f "$tmp"
   sleep 0.3; "${T_CMD[@]}" send-keys -t "$T_TGT" Enter
-  reply "✔ Sent to Claude ($p): '$(cut -c1-80 <<<"$rest")'"
+  tg sendMessage "$(jq -nc --arg c "$CHAT" --arg t "✔ Sent to Claude ($p): '$(cut -c1-80 <<<"$rest")'" \
+     '{chat_id: $c, text: $t}')" >/dev/null
   log_event text_reply "$p ${#rest}"
 }
+
 #######################################
 # Calls the Telegram API. The token goes in a curl config file passed by descriptor, not in argv.
-# Arguments: $1 method, $2 JSON body. Globals: TOKEN. Outputs: JSON response.
+# api VAR method body → VAR = the JSON response; TG_REASON = why it failed ("" if ok): the curl exit code (network,
+# DNS, timeout, TLS), the HTTP status and Telegram's description, never the URL (it holds the token). TG_RETRY =
+# seconds Telegram asked to wait (429), 0 otherwise. The last failure is kept in $ST/last-error for the status.
+# Fakes in the tests may answer without the status line.
 #######################################
-tg() {
-  printf '%s' "$2" | "$CURL" -sS -m 30 -K <(printf 'url = "https://api.telegram.org/bot%s/%s"\n' "$TOKEN" "$1") \
-    -H 'Content-Type: application/json' --data-binary @- 2>/dev/null
+TG_REASON="" TG_RETRY=0
+api() {
+  local -n _out="$1"; local raw rc code=""
+  raw="$(printf '%s' "$3" | "$CURL" -sS -m 30 -K <(printf 'url = "https://api.telegram.org/bot%s/%s"\n' "$TOKEN" "$2") \
+    -H 'Content-Type: application/json' --data-binary @- -w '\n%{http_code}' 2>/dev/null)"; rc=$?
+  if [[ "$raw" == *$'\n'* && "${raw##*$'\n'}" =~ ^[0-9]{3}$ ]]; then code="${raw##*$'\n'}"; raw="${raw%$'\n'*}"
+  elif [[ "$raw" =~ ^[0-9]{3}$ ]]; then code="$raw"; raw=""; fi
+  _out="$raw"; TG_RETRY=0; TG_REASON=""
+  if [[ "$(jq -r '.ok // false' <<<"$raw" 2>/dev/null)" == true ]]; then return 0; fi
+  if [[ -z "$raw" ]] && [[ -z "$code" || "$code" == 000 ]]; then
+    case "$rc" in
+      6) TG_REASON="network: cannot resolve api.telegram.org (curl 6)" ;;
+      7) TG_REASON="network: cannot connect to api.telegram.org (curl 7)" ;;
+      28) TG_REASON="network: no answer within 30 s (curl 28)" ;;
+      35|60) TG_REASON="network: TLS handshake failed (curl $rc; a proxy?)" ;;
+      52|56) TG_REASON="network: connection dropped (curl $rc)" ;;
+      0) TG_REASON="empty answer" ;;
+      *) TG_REASON="network: curl exit $rc" ;;
+    esac
+  else
+    TG_RETRY="$(jq -r '.parameters.retry_after // 0' <<<"$raw" 2>/dev/null)"; [[ "$TG_RETRY" =~ ^[0-9]+$ ]] || TG_RETRY=0
+    TG_REASON="${code:+HTTP $code: }$(jq -r '.description // "not JSON"' <<<"$raw" 2>/dev/null | tr -d '\n' | cut -c1-120)"
+  fi
+  TG_REASON="$2: $TG_REASON"
+  mkdir -p "$ST" && printf '%s %s\n' "$(date +%FT%T)" "$TG_REASON" > "$ST/last-error"
+  return 1
+}
+tg() { local r; api r "$1" "$2"; printf '%s' "$r"; }   # the same, printing the response
+
+#######################################
+# Backoff of the service's polling after a failed call (error_api): Telegram's retry_after for a 429; otherwise
+# 5, 10, 20 … up to 300 s for network errors and 5xx, 60 s for 409 (another poller of this bot) and 300 s for 401.
+# It used to sleep a fixed 10 s (with curl's 30 s timeout: an error_api every 40 s while the network was down).
+# Globals: API_FAILS (consecutive failures), TG_REASON, TG_RETRY. Sets BACKOFF_S, the seconds to wait (not printed:
+# in a subshell the count of failures would be lost).
+#######################################
+API_FAILS=0 BACKOFF_S=0
+backoff() {
+  local s
+  API_FAILS=$(( API_FAILS + 1 ))
+  if (( TG_RETRY > 0 )); then s=$(( TG_RETRY < 299 ? TG_RETRY + 1 : 300 ))
+  elif [[ "$TG_REASON" == *"HTTP 401"* ]]; then s=300
+  elif [[ "$TG_REASON" == *"HTTP 409"* ]]; then s=60
+  else s=$(( 5 * (1 << (API_FAILS > 7 ? 6 : API_FAILS - 1)) )); (( s > 300 )) && s=300; fi
+  BACKOFF_S=$s
 }
 
 redact() {
@@ -424,8 +649,29 @@ sys.exit(1)'
 notify() {
   local full="${5:-}"
   configured && ! is_off || { [[ -n "$full" ]] && rm -f "$full"; return 0; }
-  local kind="$1" p="$2" body="$3" tp="${4:-$2}" title scr ops="" text h f is_open=false src="$3" risky=false
+  local kind="$1" p="$2" body="$3" tp="${4:-$2}" title scr ops="" text h f is_open=false src="$3" risky=false cls dest
   if [[ -n "$full" && -f "$full" ]]; then src="$(cat "$full")"; rm -f "$full"; fi
+  # Policy (ADR 0026): a permission dialog is an approval; a finished turn that asks you something blocks the tab (an
+  # open question, a `!` command for you to run, or what tmux-state.sh calls «waiting for you»: "run this", "let me
+  # know"… from the language packs); any other finished turn is information for the digest.
+  if [[ "$kind" == wait ]]; then cls=approval
+  elif [[ -n "${WS_TELEGRAM_CLASS:-}" ]]; then cls="$WS_TELEGRAM_CLASS"
+  elif tail -c 600 <<<"$src" | grep -qE -- "$(open_question_re)" || grep -qE '(^|[[:space:]`])![[:space:]]*[a-z./~]' <<<"$src" \
+       || { [[ -x "$HOME/.claude/hooks/tmux-state.sh" ]] && "$HOME/.claude/hooks/tmux-state.sh" --asks /nonexistent "$(tail -c 2000 <<<"$src")"; }; then
+    cls=blocked
+  else cls=info; fi
+  dest="$(route "$cls")"
+  if [[ "$dest" != now ]]; then   # nothing is sent now: one line for the digest, with no conversation text
+    if [[ "$dest" == digest ]]; then
+      if [[ "$kind" == wait ]]; then digest_add wait "$p" "⏸ waited for your approval: $(head -1 <<<"$body" | cut -c1-70)"
+      elif [[ "$kind" == alert ]]; then digest_add alert "$p" "🔔 $(head -1 <<<"$body" | cut -c1-80)"   # tmux-watch's own text
+      elif [[ "$cls" == blocked ]]; then digest_add question "$p" "👉 asked you something"
+      elif [[ "$body" =~ ^(Finished in [0-9]+m [0-9]+s) ]]; then digest_add "done" "$p" "✔ ${BASH_REMATCH[1],}"
+      else digest_add "done" "$p" "✔ finished a turn"; fi
+    fi
+    log_event "$( [[ $dest == digest ]] && echo deferred || echo suppressed )" "$kind $cls $p"
+    return 0
+  fi
   # Open question from Claude (ends in ?; with `ws-lang es`, also one opened with the inverted mark, key
   # telegram.question of the language packs): if text replies are on, it can be answered.
   [[ "$kind" == "done" ]] && text_enabled && tail -c 600 <<<"$src" | grep -qE -- "$(open_question_re)" && is_open=true
@@ -485,10 +731,9 @@ send_command() {
   else
     kb="$(jq -nc --arg c "$nonce" '[[{text: "▶ Run", callback_data: "\($c):r"}]]')"; body="$t"
   fi
-  r="$(tg sendMessage "$(jq -nc --arg c "$CHAT" --arg t "$body" --argjson n "$n16" --argjson kb "$kb" \
+  if api r sendMessage "$(jq -nc --arg c "$CHAT" --arg t "$body" --argjson n "$n16" --argjson kb "$kb" \
         '{chat_id: $c, text: $t, entities: [{type: "code", offset: 0, length: $n}], disable_web_page_preview: true}
-         + (if ($kb | length) > 0 then {reply_markup: {inline_keyboard: $kb}} else {} end)')")"
-  if [[ "$(jq -r '.ok // false' <<<"$r" 2>/dev/null)" == true ]]; then
+         + (if ($kb | length) > 0 then {reply_markup: {inline_keyboard: $kb}} else {} end)')"; then
     mid="$(jq -r .result.message_id <<<"$r")"
     if [[ "$kb" != "[]" ]]; then
       mkdir -p "$ST/pending"
@@ -497,7 +742,7 @@ send_command() {
     fi
     remember_message "$mid" "$(jq -r '.pane // ""' <<<"$j")"; rm -f "$f"; log_event sent "$mid"
   else
-    log_event error_send "$(jq -r '.description // "no answer"' <<<"$r" 2>/dev/null)"
+    send_failed
     (( $(date +%s) - $(stat -c %Y "$f") > 600 )) && rm -f "$f"
   fi
 }
@@ -551,6 +796,7 @@ run_command() {
 #######################################
 ask() {
   configured && ! is_off || return 1
+  [[ "$(route approval)" == now ]] || { log_event suppressed "ask $1"; return 1; }   # the popup waits on the PC
   local p="$1" text="$2" ops="" pair f
   [[ "$4" =~ /ws-routing/remote-[0-9]+$ ]] || return 1
   IFS=';' read -ra pairs <<<"$3"
@@ -578,13 +824,23 @@ ensure() {
   setsid "$0" service >/dev/null 2>&1 </dev/null &
 }
 
+# A send that failed: logged with its reason; a 429 holds every send for the time Telegram asked (SEND_HOLD), so the
+# rest of the queue is not fired into the limit. The message stays queued (retried; discarded after 10 min).
+SEND_HOLD=0
+send_failed() {
+  log_event error_send "$TG_REASON"
+  (( TG_RETRY > 0 )) && SEND_HOLD=$(( $(date +%s) + TG_RETRY + 1 ))
+  return 0
+}
+
 send_pending() {
   local f j nonce kb r mid
   for f in "$ST"/outbox/*.json; do
     [[ -f "$f" ]] || continue
+    (( $(date +%s) >= SEND_HOLD )) || break
     j="$(load_state "$f")"
     if [[ "$(jq -r '.type // ""' <<<"$j")" == command ]]; then send_command "$f" "$j"; continue; fi
-    if [[ "$(jq -r '.type // ""' <<<"$j")" == alert ]]; then send_alert "$f" "$j"; continue; fi
+    if [[ "$(jq -r '.type // ""' <<<"$j")" =~ ^(alert|digest)$ ]]; then send_alert "$f" "$j"; continue; fi
     nonce="$(head -c 5 /dev/urandom | od -An -tx1 | tr -d ' \n')"
     # Persistent allows are left out; approving a risky dialog is marked 🔐 (it asks for the PIN).
     kb="$(jq -c --arg c "$nonce" '(.risky // false) as $r | [.options[] | select((.p // false) | not)
@@ -594,9 +850,8 @@ send_pending() {
     [[ "$(jq -r '[.options[]? | select(.p // false)] | length' <<<"$j")" != 0 ]] && tx+=$'\n\n'"\"Don't ask again\" is answered only on the PC."
     [[ "$(jq -r '.risky // false' <<<"$j")" == true ]] && tx+=$'\n'"🔐 Approving asks for your PIN."
     [[ "$oq" == true ]] && tx+=$'\n\n'"↩ To answer Claude: Reply to this message, starting with your PIN (expires in 15 min)."
-    r="$(tg sendMessage "$(jq -nc --arg c "$CHAT" --arg t "$tx" --argjson kb "$kb" \
-           '{chat_id: $c, text: $t, disable_web_page_preview: true} + (if ($kb | length) > 0 then {reply_markup: {inline_keyboard: $kb}} else {} end)')")"
-    if [[ "$(jq -r '.ok // false' <<<"$r" 2>/dev/null)" == true ]]; then
+    if api r sendMessage "$(jq -nc --arg c "$CHAT" --arg t "$tx" --argjson kb "$kb" \
+           '{chat_id: $c, text: $t, disable_web_page_preview: true} + (if ($kb | length) > 0 then {reply_markup: {inline_keyboard: $kb}} else {} end)')"; then
       mid="$(jq -r .result.message_id <<<"$r")"
       if [[ "$oq" == true ]]; then   # the text reply is accepted only as a Reply to THIS message
         mkdir -p "$ST/open"
@@ -608,7 +863,7 @@ send_pending() {
       fi
       remember_message "$mid" "$(jq -r '.pane // ""' <<<"$j")"; rm -f "$f"; log_event sent "$mid"
     else
-      log_event error_send "$(jq -r '.description // "no answer"' <<<"$r" 2>/dev/null)"
+      send_failed
       # Retried on the next loop; discarded after 10 min.
       (( $(date +%s) - $(stat -c %Y "$f") > 600 )) && rm -f "$f"
     fi
@@ -642,29 +897,162 @@ alert_rl() {   # key minutes [old-key] → 0 if it is time to alert (and marks i
   done
   : > "$f"; return 0
 }
-alert() {   # text [actions "k=label;p=label"] [pane]
-  local acts="" pair f; mkdir -p "$ST/outbox"
+#######################################
+# NOTIFICATION POLICY (ADR 0026). Settings in ~/.config/ws-telegram/settings: notify=approvals|digest|all|off
+# (default approvals) · digest=30m|1h|2h|4h|off (default 1h) · quiet=HH:MM-HH:MM|off (default off) ·
+# dedup_hours=6 (the same alert for the same tab) · remind_min=5 (one reminder of a dialog still waiting; 0 = none).
+# Classes: sec (security: always at once, even in quiet hours and with notify off) · approval (permission dialog,
+# PIN request, routing question) · blocked (a tab waits for you: open question, `!` command, Claude stopped) ·
+# direct (you asked for it: ws-notify --telegram, ws-telegram test/send) · info (everything else).
+#######################################
+notify_mode() { local m; m="$(setting notify approvals)"; case "$m" in approvals|digest|all|off) echo "$m" ;; *) echo approvals ;; esac; }
+digest_min() { case "$(setting digest 1h)" in 30m) echo 30 ;; 1h) echo 60 ;; 2h) echo 120 ;; 4h) echo 240 ;; off) echo 0 ;; *) echo 60 ;; esac; }
+digest_label() { case "$(digest_min)" in 30) echo 30m ;; 60) echo 1h ;; 120) echo 2h ;; 240) echo 4h ;; *) echo off ;; esac; }
+dedup_min() { local h; h="$(setting dedup_hours 6)"; [[ "$h" =~ ^[0-9]+$ ]] || h=6; echo $(( h * 60 )); }
+QUIET_RE='^([01][0-9]|2[0-3]):([0-5][0-9])-([01][0-9]|2[0-3]):([0-5][0-9])$'
+in_quiet() {   # 0 inside the quiet hours (they may cross midnight); WS_TELEGRAM_NOW_HM=HH:MM fixes the clock (tests)
+  local q s e n; q="$(setting quiet off)"
+  [[ "$q" =~ $QUIET_RE ]] || return 1
+  s=$(( 10#${BASH_REMATCH[1]} * 60 + 10#${BASH_REMATCH[2]} )); e=$(( 10#${BASH_REMATCH[3]} * 60 + 10#${BASH_REMATCH[4]} ))
+  n="${WS_TELEGRAM_NOW_HM:-$(date +%H:%M)}"; n=$(( 10#${n%%:*} * 60 + 10#${n#*:} ))
+  if (( s == e )); then return 1; elif (( s < e )); then (( n >= s && n < e )); else (( n >= s || n < e )); fi
+}
+to_digest() { if (( $(digest_min) > 0 )); then echo digest; else echo drop; fi; }
+route() {   # class → now | digest | drop
+  local c="$1" m; m="$(notify_mode)"
+  [[ "$c" == sec ]] && { echo now; return; }
+  [[ "$m" == off ]] && { echo drop; return; }
+  if in_quiet; then
+    if [[ "$c" == approval && "$m" != digest ]]; then echo now; else to_digest; fi
+    return
+  fi
+  case "$m:$c" in
+    all:*|approvals:approval|approvals:blocked|approvals:direct) echo now ;;
+    *) to_digest ;;
+  esac
+}
+
+#######################################
+# DIGEST. One message per period with every Claude tab (name, project, state, context, cost) and the last notable
+# event of each, plus what happened elsewhere; sent only if something changed since the last one, never during the
+# quiet hours, with a 🔎 button per tab for its detail. It holds no conversation text: the events are the kit's own
+# one-liners ("✔ finished in 3m 2s", "🧠 context at 85%"), redacted like the rest of the kit.
+#######################################
+digest_add() {   # kind pane text
+  mkdir -p "$ST/digest"
+  jq -nc --arg k "$1" --arg p "$2" --arg t "$(redact <<<"$3" | head -1 | cut -c1-100)" \
+    '{ts: (now | floor), kind: $k, pane: $p, text: $t}' >> "$ST/digest/events.jsonl"
+}
+tab_state() {   # @cphase → working | waiting | idle
+  case "$1" in
+    thinking|tool|compacting) echo "⏳ working" ;;
+    permission|question|yourturn) echo "👉 waiting for you" ;;
+    *) echo "💤 idle" ;;
+  esac
+}
+#######################################
+# Builds the digest. Arguments: [--force] (send even if nothing changed). Queues it as an alert with the 🔎 buttons
+# (pending type "digest"). Returns 1 if nothing changed (and nothing was queued).
+#######################################
+digest_build() {
+  local force="${1:-}" ev="$ST/digest/events.jsonl" last since now t tlines="" other="" fp fpsrc="" acts="" n=0 tabs="[]"
+  local p w name dir phase ctx cost st proj e
+  now=$(date +%s); mkdir -p "$ST/digest"
+  last="$(cat "$ST/digest/last" 2>/dev/null)"; [[ "$last" =~ ^[0-9]+$ ]] || last=$(( now - $(digest_min) * 60 ))
+  since="$(date -d "@$last" +%H:%M 2>/dev/null)"
+  while IFS=$'\t' read -r p w name dir; do
+    [[ -n "$p" ]] || continue
+    phase="$(tmux show -wqv -t "$w" @cphase 2>/dev/null)"; ctx="$(tmux show -wqv -t "$w" @cctx 2>/dev/null)"
+    cost="$(tmux show -wqv -t "$w" @ccost 2>/dev/null)"; ctx="${ctx%%[!0-9]*}"
+    st="$(tab_state "$phase")"; proj="${dir##*/}"; name="$(redact <<<"$name")"; proj="$(redact <<<"$proj")"
+    e="$(jq -r --arg p "$p" 'select(.pane == $p) | "\(.text) (\(.ts | strflocaltime("%H:%M")))"' "$ev" 2>/dev/null | tail -1)"
+    n=$(( n + 1 )); fpsrc+="$p|$name|$st|$(( ${ctx:-0} / 5 ));"; (( n <= 8 )) || continue
+    tlines+=$'\n'"• $name$([[ -n "$proj" && "$name" != *"$proj"* ]] && echo " · $proj") — $st${ctx:+ · ctx ${ctx}%}${cost:+ · \$$cost}"
+    [[ -n "$e" ]] && tlines+=$'\n'"   last: $e"
+    acts+="d$n=🔎 ${name%% *};"
+    tabs="$(jq -c --arg n "d$n" --arg w "$w" --arg p "$p" --arg name "$name" '. + [{n: $n, w: $w, p: $p, name: $name}]' <<<"$tabs")"
+  done < <(claude_panes)
+  # Events of panes that are not a Claude tab any more, and of no tab (usage, budgets, backups…): the latest of each
+  # kind, at most 6.
+  other="$(jq -rs --argjson tabs "$tabs" '[.[] | select(.pane as $p | ($tabs | map(.p) | index($p)) | not)]
+           | group_by(.kind + (.text | .[0:24])) | map(last) | sort_by(.ts) | .[-6:][]
+           | "• \(.text) (\(.ts | strflocaltime("%H:%M")))"' "$ev" 2>/dev/null)"
+  local count=0; [[ -f "$ev" ]] && count="$(wc -l < "$ev")"
+  # Only on change: any new event, or a tab that opened, closed or changed state or context (in steps of 5 %).
+  fp="$(printf '%s' "$fpsrc" | sha256sum | cut -c1-16)"
+  if [[ -z "$force" ]] && (( count == 0 )) && [[ "$fp" == "$(cat "$ST/digest/fp" 2>/dev/null)" ]]; then
+    printf '%s' "$now" > "$ST/digest/last"; log_event digest_unchanged ""; return 1
+  fi
+  t="📋 Digest $(date +%H:%M) · since $since · $n Claude tab$([[ $n == 1 ]] || echo s)"
+  [[ -n "$tlines" ]] && t+="$tlines" || t+=$'\n'"No Claude tab is open."
+  (( n > 8 )) && t+=$'\n'"… and $(( n - 8 )) more (Menu → Session on the PC)."
+  [[ -n "$other" ]] && t+=$'\n\n'"Elsewhere:"$'\n'"$other"
+  local done_n alerts_n; done_n="$(jq -s '[.[] | select(.kind == "done")] | length' "$ev" 2>/dev/null || echo 0)"
+  alerts_n="$(jq -s '[.[] | select(.kind != "done" and .kind != "wait" and .kind != "question")] | length' "$ev" 2>/dev/null || echo 0)"
+  t+=$'\n\n'"Since $since: ${done_n:-0} turns finished · ${alerts_n:-0} alerts held for this digest."
+  t+=$'\n'"Mode: $(notify_mode), digest every $(digest_label)$([[ "$(setting quiet off)" =~ $QUIET_RE ]] && echo ", quiet $(setting quiet off)") (Menu → Workstation → Telegram)."
+  printf '%s' "$fp" > "$ST/digest/fp"; printf '%s' "$now" > "$ST/digest/last"
+  [[ -f "$ev" ]] && mv "$ev" "$ST/digest/events.prev.jsonl"
+  DIGEST_TABS="$tabs" alert "$(redact <<<"$t")" "${acts%;}" "" sec-digest
+  log_event digest "$n tabs ${count} events"
+}
+digest_due() {   # time for a digest? Not in quiet hours, not with notify off or digest off; the first one waits a period
+  local per last now; per="$(digest_min)"; now=$(date +%s)
+  (( per > 0 )) && [[ "$(notify_mode)" != off ]] && ! in_quiet || return 1
+  [[ "$(notify_mode)" == all && ! -s "$ST/digest/events.jsonl" ]] && return 1   # «all»: only what quiet hours held
+  last="$(cat "$ST/digest/last" 2>/dev/null)"
+  [[ "$last" =~ ^[0-9]+$ ]] || { mkdir -p "$ST/digest"; printf '%s' "$now" > "$ST/digest/last"; return 1; }
+  (( now - last >= per * 60 ))
+}
+digest_detail() {   # pending digest JSON, choice dN → metadata of that tab (no prompts or answers), as a reply
+  local j="$1" c="$2" w name t mid
+  w="$(jq -r --arg n "$c" '.tabs[]? | select(.n == $n) | .w' <<<"$j")"; name="$(jq -r --arg n "$c" '.tabs[]? | select(.n == $n) | .name' <<<"$j")"
+  mid="$(jq -r .mid <<<"$j")"
+  [[ "$w" =~ ^@[0-9]+$ ]] || return 0
+  t="$("$HOME/.local/bin/tmux-summary" --text "$w" 2>/dev/null | grep -E '^ (Branch|Claude|Conversation) |^ [^ ].*   /|What we are doing' \
+        | sed -E 's/^ +//; s/ +\(first request of the conversation\)//' | head -6)"
+  [[ -n "$t" ]] || t="No details: the tab is gone or has no Claude."
+  tg sendMessage "$(jq -nc --arg c "$CHAT" --arg m "$mid" --arg t "🔎 $name"$'\n'"$(redact <<<"$t" | cut -c1-300)" \
+     '{chat_id: $c, text: $t, reply_parameters: {message_id: ($m | tonumber), allow_sending_without_reply: true}}')" >/dev/null
+  log_event digest_detail "$w"
+}
+
+alert() {   # text [actions "k=label;p=label"] [pane] [class: sec|approval|blocked|direct|info (default)]
+  local acts="" pair f cls="${4:-info}" dest
+  if [[ "$cls" == sec-digest ]]; then dest=now   # the digest itself (already routed by digest_due)
+  else dest="$(route "$cls")"; fi
+  if [[ "$dest" != now ]]; then
+    [[ "$dest" == digest ]] && digest_add "$cls" "${3:-}" "$(head -1 <<<"$1")"
+    log_event "$( [[ $dest == digest ]] && echo deferred || echo suppressed )" "$cls $(head -c 60 <<<"$1" | tr '\n' ' ')"
+    return 0
+  fi
+  mkdir -p "$ST/outbox"
   if [[ -n "${2:-}" ]]; then IFS=';' read -ra pairs <<<"$2"; for pair in "${pairs[@]}"; do acts+="${pair%%=*}"$'\t'"${pair#*=}"$'\n'; done; fi
   f="$ST/outbox/$(date +%s%N)_a.json"
-  jq -nc --arg t "${1:0:3500}" --arg o "$acts" --arg p "${3:-}" \
-    '{type: "alert", pane: $p, text: $t, options: ($o | split("\n") | map(select(length > 0) | split("\t") | {n: .[0], t: .[1]}))}' > "$f.tmp" && mv "$f.tmp" "$f"
+  jq -nc --arg t "${1:0:3500}" --arg o "$acts" --arg p "${3:-}" --argjson tabs "${DIGEST_TABS:-null}" \
+    '{type: (if $tabs == null then "alert" else "digest" end), pane: $p, text: $t,
+      options: ($o | split("\n") | map(select(length > 0) | split("\t") | {n: .[0], t: .[1]}))}
+     + (if $tabs == null then {} else {tabs: $tabs} end)' > "$f.tmp" && mv "$f.tmp" "$f"
   log_event alert "$(head -c 60 <<<"$1" | tr '\n' ' ')"
 }
 send_alert() {
-  local f="$1" j="$2" nonce kb r mid
+  local f="$1" j="$2" nonce kb r mid life="$EXPIRES"
   nonce="$(head -c 5 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  kb="$(jq -c --arg c "$nonce" '[.options[] | [{text: .t, callback_data: "\($c):\(.n)"}]]' <<<"$j")"
-  r="$(tg sendMessage "$(jq -nc --arg c "$CHAT" --arg t "$(jq -r .text <<<"$j")" --argjson kb "$kb" \
-        '{chat_id: $c, text: $t, disable_web_page_preview: true} + (if ($kb | length) > 0 then {reply_markup: {inline_keyboard: $kb}} else {} end)')")"
-  if [[ "$(jq -r '.ok // false' <<<"$r" 2>/dev/null)" == true ]]; then
+  # A digest's 🔎 buttons go four to a row and live for one digest period.
+  kb="$(jq -c --arg c "$nonce" '[.options[] | {text: .t, callback_data: "\($c):\(.n)"}]
+         | if $ARGS.named.d == "1" then [range(0; length; 4) as $i | .[$i:$i + 4]] else map([.]) end' \
+         --arg d "$([[ "$(jq -r .type <<<"$j")" == digest ]] && echo 1)" <<<"$j")"
+  if [[ "$(jq -r .type <<<"$j")" == digest ]]; then life=$(( $(digest_min) * 60 )); (( life > EXPIRES )) || life=$EXPIRES; fi
+  if api r sendMessage "$(jq -nc --arg c "$CHAT" --arg t "$(jq -r .text <<<"$j")" --argjson kb "$kb" \
+        '{chat_id: $c, text: $t, disable_web_page_preview: true} + (if ($kb | length) > 0 then {reply_markup: {inline_keyboard: $kb}} else {} end)')"; then
     mid="$(jq -r .result.message_id <<<"$r")"
     if [[ "$kb" != "[]" ]]; then
       mkdir -p "$ST/pending"
-      jq -c --arg m "$mid" --argjson v "$(( $(date +%s) + EXPIRES ))" '{type: "alert", pane, options, text, mid: $m, expires: $v}' <<<"$j" > "$ST/pending/$nonce.json"
+      jq -c --arg m "$mid" --argjson v "$(( $(date +%s) + life ))" '{type, pane, options, text, mid: $m, expires: $v} + (if .tabs then {tabs} else {} end)' <<<"$j" > "$ST/pending/$nonce.json"
     fi
     remember_message "$mid" "$(jq -r '.pane // ""' <<<"$j")"; rm -f "$f"; log_event sent "$mid"
   else
-    log_event error_send "$(jq -r '.description // "no answer"' <<<"$r" 2>/dev/null)"
+    send_failed
     (( $(date +%s) - $(stat -c %Y "$f") > 600 )) && rm -f "$f"
   fi
 }
@@ -696,45 +1084,65 @@ last_progress() {   # epoch of the last write to that folder's transcripts (suba
   find "$d" -name '*.jsonl' -printf '%T@\n' 2>/dev/null | sort -n | tail -1 | cut -d. -f1
 }
 
+#######################################
+# armed <key> <value> <threshold> — "once per threshold crossing" (ADR 0026): 0 the first time value reaches the
+# threshold; then nothing until it falls 10 points below (after /compact, or when the usage window resets), which
+# re-arms it. It replaces the 30-minute rate limit that sent the same context alert all night.
+#######################################
+armed() {
+  local f="$ST/alerts/cross-$1"; mkdir -p "$ST/alerts"
+  if (( $2 >= $3 )); then [[ -f "$f" ]] && return 1; : > "$f"; return 0; fi
+  (( $2 < $3 - 10 )) && rm -f "$f"
+  return 1
+}
+
 check_alerts() {
   [[ "$(setting alerts on)" == on ]] || return 0
-  local p w name dir scr busy line ctx progress min now; now=$(date +%s)
+  local p w name dir scr busy line ctx progress min now dd; now=$(date +%s); dd="$(dedup_min)"
+  local -A seen=()
   while IFS=$'\t' read -r p w name dir; do
     [[ -n "$p" ]] || continue
+    seen["${w#@}-${p#%}"]=1
     scr="$(screen "$p")"; busy=0; grep -q 'esc to interrupt' <<<"$scr" && busy=1
-    # 1. Claude stopped because of an error or a usage limit
+    # 1. Claude stopped because of an error or a usage limit (it blocks the tab: sent at once in «approvals»)
     if (( ! busy )); then
       line="$(tail -n 15 <<<"$scr" | grep -iE 'usage limit|limit reached|resets? (at|in) |API Error|Overloaded|rate[ _-]?limit|Credit balance|quota' | tail -1 | sed 's/^[[:space:]│⎿]*//' | cut -c1-160)"
-      if [[ -n "$line" ]] && alert_rl "error-${p#%}" 30; then
+      if [[ -n "$line" ]] && alert_rl "error-${p#%}" 30 && alert_rl "error-${p#%}-$(md5sum <<<"$line" | cut -c1-8)" "$dd"; then
         if grep -qiE 'limit|resets?|quota|Credit' <<<"$line"; then
-          alert "⛔ Claude stopped in $name: $(redact <<<"$line")" "p=🔁 Switch this tab to the other account" "$p"
-        else alert "⛔ Claude error in $name: $(redact <<<"$line")" "" "$p"; fi
+          alert "⛔ Claude stopped in $name: $(redact <<<"$line")" "p=🔁 Switch this tab to the other account" "$p" blocked
+        else alert "⛔ Claude error in $name: $(redact <<<"$line")" "" "$p" blocked; fi
       fi
     fi
     # 3. Stalled: working and not writing to its transcript (or its subagents') for more than N min
     min="$(setting stalled_min 10)"
     if (( busy )); then
       progress="$(last_progress "$dir")"
-      if [[ -n "$progress" ]] && (( now - progress > min * 60 )) && alert_rl "stalled-${p#%}" 30; then
+      if [[ -n "$progress" ]] && (( now - progress > min * 60 )) && alert_rl "stalled-${p#%}" "$dd"; then
         alert "⏳ $name has been working for $(( (now - progress) / 60 )) min with no progress (a long or hung command?)." "" "$p"
       fi
     fi
-    # 5. High context
+    # 5. High context: once per crossing of the threshold, per tab
     ctx="$(tmux show -wqv -t "$w" @cctx 2>/dev/null)"; ctx="${ctx%%[!0-9]*}"
-    if [[ -n "$ctx" ]] && (( ctx >= $(setting context_pct 80) )) && alert_rl "ctx-${w#@}" 30; then
+    if [[ -n "$ctx" ]] && armed "ctx-${w#@}-${p#%}" "$ctx" "$(setting context_pct 80)"; then
       alert "🧠 Context at ${ctx}% in $name: better to compact before quality drops." "k=🗜 Send /compact" "$p"
     fi
   done < <(claude_panes)
+  # Crossing markers of tabs that are gone (a new tab may reuse the ids)
+  local cf key
+  for cf in "$ST"/alerts/cross-ctx-*; do
+    [[ -f "$cf" ]] || continue; key="${cf##*/cross-ctx-}"; [[ -n "${seen[$key]:-}" ]] || rm -f "$cf"
+  done
 
-  # 2. Reminder of pending approvals (every 3 min while the dialog stays the same)
-  local f j created ops
+  # 2. One reminder of a dialog still waiting (remind_min, 5 by default; 0 = none), only while approvals go out now
+  local f j created ops rmin; rmin="$(setting remind_min 5)"; [[ "$rmin" =~ ^[0-9]+$ ]] || rmin=5
   for f in "$ST"/pending/*.json; do
+    (( rmin > 0 )) && [[ "$(route approval)" == now ]] && ! in_quiet || break
     [[ -f "$f" ]] || continue; j="$(load_state "$f")"
     [[ -z "$(jq -r '.type // ""' <<<"$j")" && "$(jq -r '.file // ""' <<<"$j")" == "" ]] || continue
-    created=$(( $(jq -r .expires <<<"$j") - EXPIRES )); (( now - created >= 180 )) || continue
+    created=$(( $(jq -r .expires <<<"$j") - EXPIRES )); (( now - created >= rmin * 60 )) || continue
     p="$(jq -r .pane <<<"$j")"; ops="$(options <<<"$(screen "$p")")"
     [[ "$(fingerprint "$p" "$ops")" == "$(jq -r .hash <<<"$j")" ]] || continue
-    alert_rl "remind-$(basename "$f" .json)" 3 || continue
+    alert_rl "remind-$(basename "$f" .json)" 100000 || continue
     tg sendMessage "$(jq -nc --arg c "$CHAT" --arg m "$(jq -r .mid <<<"$j")" --arg t "⏰ Still waiting for your decision, for $(( (now - created) / 60 )) min now." \
        '{chat_id: $c, text: $t, reply_parameters: {message_id: ($m | tonumber), allow_sending_without_reply: true}}')" >/dev/null
     log_event reminder "$p"
@@ -743,16 +1151,17 @@ check_alerts() {
   # 10. Plan usage limit (5 h or weekly) when getting close, before Claude stops
   local lb l5 l7 lmax
   lb="${WS_BURN_DIR:-/tmp/claude-burn-$(id -u)}"   # written by statusline.sh; WS_BURN_DIR as there (tests)
-  if read -r l5 l7 < "$lb/limits" 2>/dev/null && [[ "$l5" =~ ^-?[0-9]+$ && "$l7" =~ ^-?[0-9]+$ ]]; then
+  if [[ -r "$lb/limits" ]] && read -r l5 l7 < "$lb/limits" && [[ "$l5" =~ ^-?[0-9]+$ && "$l7" =~ ^-?[0-9]+$ ]]; then
     lmax=$(( l5 > l7 ? l5 : l7 ))
-    if (( lmax >= $(setting limit_pct 90) )) && alert_rl "limit-$(date +%F-%H)" 120; then
+    # Once per crossing (the key used to change every hour, so it alerted hourly while over the threshold).
+    if armed limit "$lmax" "$(setting limit_pct 90)"; then
       alert "⚠️ Claude usage at ${lmax}% (5 h: ${l5}%, week: ${l7}%). Before it stops: Menu → Claude → Switch this tab to the work/personal account (same conversation)."
     fi
   fi
 
   # 4. High usage
   local usd; usd="$(ws-telemetry rate 2>/dev/null | jq -r '.usd_h // 0' 2>/dev/null)"
-  if [[ -n "$usd" ]] && awk -v u="$usd" -v m="$(setting usage_usd_h 15)" 'BEGIN { exit !(u >= m) }' && alert_rl usage 30; then
+  if [[ -n "$usd" ]] && awk -v u="$usd" -v m="$(setting usage_usd_h 15)" 'BEGIN { exit !(u >= m) }' && alert_rl usage "$dd"; then
     alert "💸 High usage: \$${usd}/h API equivalent (last 10 min). Check which tabs are working." 
   fi
 
@@ -785,7 +1194,7 @@ check_alerts() {
       if (( rcv == 10 )) && alert_rl "version-$(head -1 <<<"$newver" | md5sum | cut -c1-8)" 100000; then
         alert "⬆️ $newver"$'\n\n'"On the PC: ws-kit-update (tests everything and rolls back if something fails)."
       elif (( rcv == 11 )) && alert_rl "version-bad-$(head -1 <<<"$newver" | md5sum | cut -c1-8)" 100000; then
-        alert "🚨 $newver"$'\n\n'"A kit release whose signature does not verify: it is not installed. Check the repository on the PC."
+        alert "🚨 $newver"$'\n\n'"A kit release whose signature does not verify: it is not installed. Check the repository on the PC." "" "" sec
       fi
     fi
   fi
@@ -808,7 +1217,7 @@ check_alerts() {
     while IFS=$'\t' read -r ases an akinds aproj apane; do
       [[ -n "$ases" ]] && alert_rl "anomaly-${ases//[^A-Za-z0-9_-]/_}" 30 || continue
       alert "🚨 $an blocked or denied actions in $(setting anomaly_min 10) min in $aproj ($akinds). An agent may be probing for a way out." \
-        "${apane:+h=⛔ Stop this tab}" "$apane"
+        "${apane:+h=⛔ Stop this tab}" "$apane" sec
     done < <(ws-anomaly --tsv --threshold "$(setting anomaly_n 5)" --minutes "$(setting anomaly_min 10)" 2>/dev/null)
   fi
   # 15. Approval fatigue (WS-AI-006), hourly
@@ -819,9 +1228,9 @@ check_alerts() {
     done < <(timeout 120 ws-telemetry prompts --alerts --rate "$(setting prompts_rate 30)" 2>/dev/null)
   fi
 
-  # 8. Daily summary
+  # 8. Daily summary: only with notify=all (in «approvals» and «digest» the digest replaces it)
   local hour; hour="$(setting summary_hour 20)"
-  if (( 10#$(date +%H) >= 10#$hour )) && alert_rl "summary-$(date +%F)" 1440 "resumen-$(date +%F)"; then daily_summary; fi
+  if [[ "$(notify_mode)" == all ]] && (( 10#$(date +%H) >= 10#$hour )) && alert_rl "summary-$(date +%F)" 1440 "resumen-$(date +%F)"; then daily_summary; fi
 }
 
 # Patch 51: weekly summary and budgets. Settings: weekly_day=1 (Monday) · weekly_hour=9 · budgets=on
@@ -866,7 +1275,7 @@ daily_summary() {
     l="$("$HOME/.local/bin/tmux-summary" --text "$w" 2>/dev/null | grep -E '^[[:space:]]*(▶|Claude:)' | head -2 | cut -c1-140)"
     t+=$'\n'"• $name · $(tmux show -wqv -t "$w" @cs 2>/dev/null)"$'\n'"$(redact <<<"$l")"
   done < <(claude_panes)
-  alert "$t"
+  alert "$t" "" "" direct
   log_event summary "$(date +%F)"
 }
 
@@ -879,13 +1288,21 @@ handle_button() {
   data="$(jq -r '.data // empty' <<<"$cq")"
   if [[ "$from" != "$CHAT" || "$chat" != "$CHAT" ]]; then
     answer_cb "$id" "Not authorized"; log_event unauthorized "from=$from"
-    alert_rl "sec-unauth" 10 && alert "🚨 Someone other than you pressed a button of your bot (id $from). Nothing was done."; return
+    alert_rl "sec-unauth" 10 && alert "🚨 Someone other than you pressed a button of your bot (id $from). Nothing was done." "" "" sec; return
   fi
   [[ -e "$STOPMARK" ]] && { answer_cb "$id" "Emergency stop is on: nothing is sent"; log_event command_blocked stop-all; return; }
-  [[ "$data" =~ ^([0-9a-f]{10}):([1-9snxrkph]|esc)$ ]] || { answer_cb "$id" "Invalid button"; log_event invalid ""; return; }
+  [[ "$data" =~ ^([0-9a-f]{10}):([1-9snxrkph]|esc|d[1-8])$ ]] || { answer_cb "$id" "Invalid button"; log_event invalid ""; return; }
   nonce="${BASH_REMATCH[1]}"; choice="${BASH_REMATCH[2]}"; pend="$ST/pending/$nonce.json"
   [[ -f "$pend" ]] || { answer_cb "$id" "Already answered or expired"; return; }
-  local j; j="$(load_state "$pend")"; rm -f "$pend"   # single use
+  local j; j="$(load_state "$pend")"
+  if [[ "$(jq -r '.type // ""' <<<"$j")" == digest ]]; then   # 🔎 of a digest: read-only, may be pressed again
+    if [[ "$choice" == d[1-8] ]] && (( $(date +%s) <= $(jq -r .expires <<<"$j") )); then
+      answer_cb "$id" "Details below"; digest_detail "$j" "$choice"
+    else answer_cb "$id" "That digest is old: wait for the next one"; fi
+    return
+  fi
+  [[ "$choice" == d* ]] && { answer_cb "$id" "Invalid button"; log_event invalid "d on $(jq -r '.type // "dialog"' <<<"$j")"; return; }
+  rm -f "$pend"   # single use
   p="$(jq -r .pane <<<"$j")"
   if (( $(date +%s) > $(jq -r .expires <<<"$j") )); then
     answer_cb "$id" "Expired (10 min). Check on the PC."; close_msg "$(jq -r .mid <<<"$j")" "$(jq -r .text <<<"$j")" "⌛ Expired with no answer"
@@ -943,43 +1360,59 @@ handle_button() {
 
 #######################################
 # Asks for the PIN before running a command (▶ Run) or approving a risky dialog: the button sends nothing; a
-# message asks you to Reply with the PIN. Expires in 5 min, or with the dialog if that comes first.
+# message asks for the PIN. Expires in 5 min, or with the dialog if that comes first. The PIN may come as a Reply to
+# this message or to the notification, or (when it is the only request pending) as a plain message (handle_pin).
 # Arguments: callback id, pending JSON, kind (run|approve), option number (approve).
 #######################################
 ask_pin() {
-  local id="$1" j="$2" kind="$3" choice="$4" pm txt v
-  if [[ -z "$PIN" ]]; then
-    log_event "$( [[ $kind == run ]] && echo command_blocked || echo approve_blocked )" "no PIN"
-    answer_cb "$id" "This needs your PIN, and none is set. On the PC: ws-telegram text pin"; return
+  local id="$1" j="$2" kind="$3" choice="$4" pm txt v tab
+  if ! load_pin; then
+    log_event "$( [[ $kind == run ]] && echo command_blocked || echo approve_blocked )" "no PIN: $PIN_REASON"
+    answer_cb "$id" "This needs your PIN and the service has none: $PIN_REASON"
+    say pin-unavailable "🔐 Nothing was done: this needs your PIN and the service has none ($PIN_REASON). On the PC: ws-telegram status." "$(jq -r .mid <<<"$j")"
+    return
   fi
-  if [[ "$kind" == run ]]; then txt="🔐 To run it, reply to THIS message with your PIN (5 min)."
-  else txt="🔐 To approve option $choice, reply to THIS message with your PIN (5 min). The dialog must still be on screen."; fi
-  pm="$(tg sendMessage "$(jq -nc --arg c "$CHAT" --arg r "$(jq -r .mid <<<"$j")" --arg t "$txt" \
-          '{chat_id: $c, text: $t, reply_parameters: {message_id: ($r | tonumber), allow_sending_without_reply: true}}')" | jq -r '.result.message_id // empty')"
+  tab="$(jq -r '.text // ""' <<<"$j" | head -1 | sed 's/^Claude · //' | cut -c1-40)"
+  if [[ "$kind" == run ]]; then txt="🔐 To run it${tab:+ in $tab}, send your PIN (only the digits; 5 min)."
+  else txt="🔐 To approve option $choice${tab:+ in $tab}, send your PIN (only the digits; 5 min). The dialog must still be on screen."; fi
+  txt+=$'\n'"Reply to this message, or just send it if this is the only PIN request. It is deleted from the chat at once."
+  local r
+  if ! api r sendMessage "$(jq -nc --arg c "$CHAT" --arg r "$(jq -r .mid <<<"$j")" --arg t "$txt" \
+          '{chat_id: $c, text: $t, reply_parameters: {message_id: ($r | tonumber), allow_sending_without_reply: true}}')"; then
+    log_event error_send "$TG_REASON"; answer_cb "$id" "Could not ask for the PIN: try again"; return
+  fi
+  pm="$(jq -r '.result.message_id // empty' <<<"$r")"
   [[ -n "$pm" ]] || { answer_cb "$id" "Could not ask for the PIN"; return; }
   v=$(( $(date +%s) + 300 ))
   if [[ "$kind" == approve ]] && (( $(jq -r '.expires // 0' <<<"$j") < v )); then v="$(jq -r .expires <<<"$j")"; fi
   mkdir -p "$ST/to-run"
-  jq -nc --argjson j "$j" --argjson v "$v" --arg k "$kind" --arg ch "$choice" '{j: $j, expires: $v, kind: $k, choice: $ch}' > "$ST/to-run/$pm.json"
+  jq -nc --argjson j "$j" --argjson v "$v" --arg k "$kind" --arg ch "$choice" --arg pt "$txt" \
+    '{j: $j, expires: $v, kind: $k, choice: $ch, prompt: $pt}' > "$ST/to-run/$pm.json"
   chmod 600 "$ST/to-run/$pm.json"
   log_event "$( [[ $kind == run ]] && echo command_asks_pin || echo approve_asks_pin )" "$(jq -r .pane <<<"$j")"
   answer_cb "$id" "Reply with your PIN"
 }
 
-# approve_now <pending JSON> <option> — after the right PIN: sends the key only if the same dialog is still on screen.
+#######################################
+# After the right PIN: sends the key only if the same dialog is still on screen. The outcome is written on the
+# notification AND on the PIN prompt (the message you are looking at): before, only the notification far up the
+# chat changed, so a correct PIN looked like nothing happened and was sent again.
+# Arguments: pending JSON, option, [PIN prompt id], [PIN prompt text].
+#######################################
 approve_now() {
-  local j="$1" choice="$2" p mid t label
+  local j="$1" choice="$2" pm="${3:-}" pt="${4:-🔐 PIN request}" p mid t label
   p="$(jq -r .pane <<<"$j")"; mid="$(jq -r .mid <<<"$j")"; t="$(jq -r .text <<<"$j")"
   label="$(jq -r --arg n "$choice" '.options[] | select(.n == $n) | .t' <<<"$j")"
-  if [[ ! "$choice" =~ ^[1-9]$ ]] || is_persistent "$label"; then close_msg "$mid" "$t" "✖ Not sent"; return; fi
+  outcome() { close_msg "$mid" "$t" "$1"; [[ -n "$pm" ]] && close_msg "$pm" "$pt" "$1"; return 0; }
+  if [[ ! "$choice" =~ ^[1-9]$ ]] || is_persistent "$label"; then outcome "✖ Not sent"; return; fi
   if [[ -e "$STOPMARK" ]]; then   # the stop may have started while you typed the PIN
-    close_msg "$mid" "$t" "⛔ Emergency stop is on: nothing was sent"; log_event command_blocked "$p stop-all"; return
+    outcome "⛔ Emergency stop is on: nothing was sent"; log_event command_blocked "$p stop-all"; return
   fi
   if [[ "$(fingerprint "$p" "$(options <<<"$(screen "$p")")")" != "$(jq -r .hash <<<"$j")" ]]; then
-    close_msg "$mid" "$t" "↺ The screen changed; nothing was sent"; log_event changed "$p"; return
+    outcome "↺ PIN accepted, but the screen changed: nothing was sent"; log_event changed "$p"; return
   fi
   send_key "$p" "$choice"
-  close_msg "$mid" "$t" "✔ You approved with your PIN: $choice · $label ($(date +%H:%M))"
+  outcome "✔ PIN accepted: approved $choice · $label ($(date +%H:%M))"
   log_event reply "$p $choice pin"; audit_tg "reply $p $choice approve pin"
 }
 
@@ -992,6 +1425,9 @@ clean_expired() {
   find "$ST/to-run" -type f -mmin +6 -delete 2>/dev/null || true
   find "$ST/proposed" -type f -mmin +60 -delete 2>/dev/null || true
   find "$ST/messages" -type f -mmin +120 -delete 2>/dev/null || true
+  find "$ST/open" -type f -mmin +30 -delete 2>/dev/null || true      # they expire in 15 min; they used to pile up
+  find "$ST/pin-done" -type f -mmin +60 -delete 2>/dev/null || true
+  find "$ST/alerts" -type f -name 'cross-*' -mtime +7 -delete 2>/dev/null || true
 }
 
 service() {
@@ -1005,10 +1441,13 @@ service() {
   fi
   configured || exit 0
   CHAT="$(chat_id)"; TOKEN="$(token)"; [[ -n "$TOKEN" ]] || { log_event error "no token"; exit 1; }
-  PIN="$(pin)"   # in the service's memory (▶ Run, risky approvals, text replies); it lives in the Windows Credential Manager
+  # The PIN stays in the service's memory (▶ Run, risky approvals, text replies); it lives in the Windows Credential
+  # Manager. Read now and, if Windows interop is not ready yet, again when it is needed (load_pin).
+  load_pin >/dev/null
   log_event service start
+  publish_settings
   local version; version="$(stat -c %Y "$0" 2>/dev/null)"
-  local offset r u
+  local offset r u wait_s
   offset="$(cat "$ST/offset" 2>/dev/null || echo 0)"
   while :; do
     is_off && { log_event service off; exit 0; }
@@ -1018,10 +1457,14 @@ service() {
     fi
     (( once )) || tmux has-session 2>/dev/null || { log_event service "no tmux"; exit 0; }
     send_pending
-    r="$(tg getUpdates "$(jq -nc --argjson o "$offset" '{offset: $o, timeout: 3, allowed_updates: ["callback_query", "message"]}')")"
-    if [[ "$(jq -r '.ok // false' <<<"$r" 2>/dev/null)" != true ]]; then
-      log_event error_api "$(jq -r '.description // "no answer"' <<<"$r" 2>/dev/null)"; (( once )) && break; sleep 10; continue
+    if ! api r getUpdates "$(jq -nc --argjson o "$offset" '{offset: $o, timeout: 3, allowed_updates: ["callback_query", "message"]}')"; then
+      backoff; wait_s=$BACKOFF_S
+      log_event error_api "$TG_REASON; attempt $API_FAILS, next in ${wait_s} s"
+      (( once )) && break
+      sleep "$wait_s"; continue
     fi
+    (( API_FAILS > 0 )) && log_event api_recovered "after $API_FAILS failures"
+    API_FAILS=0
     while IFS= read -r u; do
       [[ -n "$u" ]] || continue
       offset=$(( $(jq -r .update_id <<<"$u") + 1 ))
@@ -1030,7 +1473,7 @@ service() {
     done < <(jq -c '.result[]' <<<"$r")
     echo "$offset" > "$ST/offset"
     clean_expired
-    (( once )) || (( $(date +%s) - ${last_check:-0} < 60 )) || { check_alerts; last_check=$(date +%s); }
+    (( once )) || (( $(date +%s) - ${last_check:-0} < 60 )) || { check_alerts; digest_due && digest_build; last_check=$(date +%s); }
     (( once )) && break
   done
 }
@@ -1108,25 +1551,87 @@ selftest() {   # no network: options and redaction (used by ws-test)
   dialog_risky $' Bash command\n   sudo rm -rf /var/x\n Do you want to proceed?\n ❯ 1. Yes\n   2. No' || { echo "risky: dangerous"; return 1; }
   dialog_risky $' Tool use\n   azure - keyvault_secret_get (MCP)\n Do you want to proceed?\n ❯ 1. Yes' || { echo "risky: MCP"; return 1; }
   ! dialog_risky $' Bash command\n   npm test\n Do you want to proceed?\n ❯ 1. Yes\n   2. No' || { echo "not risky: npm test"; return 1; }
+  # Backoff of error_api (ADR 0026): exponential for network errors, Telegram's retry_after for a 429.
+  local seq="" i; API_FAILS=0 TG_RETRY=0 TG_REASON="getUpdates: network: no answer within 30 s (curl 28)"
+  for i in 1 2 3 4 5 6 7 8; do backoff; seq+="$BACKOFF_S "; done
+  [[ "$seq" == "5 10 20 40 80 160 300 300 " ]] || { echo "backoff (network): $seq"; return 1; }
+  TG_RETRY=7 TG_REASON="getUpdates: HTTP 429: Too Many Requests: retry after 7"; backoff
+  [[ "$BACKOFF_S" == 8 ]] || { echo "backoff (429): $BACKOFF_S"; return 1; }
+  TG_RETRY=0 TG_REASON="getUpdates: HTTP 409: Conflict"; backoff; [[ "$BACKOFF_S" == 60 ]] || { echo "backoff (409)"; return 1; }
+  # PINs: a bare PIN is recognised, words after it are not a bare PIN.
+  [[ "4821" =~ $BARE_PIN_RE && "pin 4821" =~ $BARE_PIN_RE && " PIN: 4821. " =~ $BARE_PIN_RE ]] || { echo "bare PIN"; return 1; }
+  [[ ! "4821 yes" =~ $BARE_PIN_RE && ! "48210000" =~ $BARE_PIN_RE && ! "123" =~ $BARE_PIN_RE ]] || { echo "not a bare PIN"; return 1; }
   echo "ok"
+}
+
+#######################################
+# Settings from the command line and the menu (Menu → Workstation → Telegram). They live in the guarded settings
+# file (Claude cannot edit it: guard.sh and the deny rules), each change is logged and audited (setting_changed),
+# and the current values are published as tmux options (@tg_*) so the menu shows them.
+#######################################
+set_setting() {   # key value — the old line is removed, so the file keeps one line per key
+  mkdir -p "$CFG"; touch "$CFG/settings"; sed -i -E "/^$1=/d" "$CFG/settings"; echo "$1=$2" >> "$CFG/settings"
+  log_event setting_changed "$1=$2"
+}
+tell() {   # a message: in the status line when run from the menu (tmux, no terminal), otherwise printed
+  if [[ -n "${TMUX:-}" && ! -t 1 ]]; then tmux display-message "$1" 2>/dev/null || echo "$1"; else echo "$1"; fi
+}
+quiet_label() { local q; q="$(setting quiet off)"; [[ "$q" =~ $QUIET_RE ]] && echo "$q" || echo off; }
+publish_settings() {   # current values as global tmux options for the menu; silent without tmux
+  local on=on; is_off && on=off; configured || on="not set up"
+  tmux set -g @tg_on "$on" \; set -g @tg_mode "$(notify_mode)" \; set -g @tg_digest "$(digest_label)" \
+       \; set -g @tg_quiet "$(quiet_label)" \; set -g @tg_text "$(text_enabled && echo on || echo off)" \
+       \; set -g @tg_approve "$(approve_mode)" \; set -g @tg_run "$(run_needs_pin && echo pin || echo no-pin)" >/dev/null 2>&1
+  return 0
+}
+mode_text() {
+  case "$1" in
+    approvals) echo "only what needs you (approvals, PINs, blocked tabs) and security alerts; the rest in the digest (every $(digest_label))" ;;
+    digest) echo "only the digest (every $(digest_label)) and security alerts" ;;
+    all) echo "everything at once" ;;
+    off) echo "only security alerts" ;;
+  esac
 }
 
 case "${1:-}" in
   setup) setup ;;
-  notify) shift; notify "$@" ;;
+  notify)   # ws-telegram notify approvals|digest|all|off — and, from win-notify, notify wait|done <pane> <text> …
+    case "${2:-}" in
+      approvals|digest|all|off) set_setting notify "$2"; publish_settings; tell "Telegram sends: $(mode_text "$2")" ;;
+      "") echo "Usage: ws-telegram notify approvals|digest|all|off"; echo "Status: $(notify_mode) — $(mode_text "$(notify_mode)")" ;;
+      *) shift; notify "$@" ;;
+    esac ;;
+  digest)   # ws-telegram digest 30m|1h|2h|4h|off|now
+    case "${2:-}" in
+      30m|1h|2h|4h|off) set_setting digest "$2"; publish_settings
+                        tell "Telegram digest: $([[ $2 == off ]] && echo off || echo "every $2")" ;;
+      now) configured || die "first: ws-telegram setup"; digest_build --force; ensure; tell "Digest queued; it arrives in a few seconds." ;;
+      tick) configured || exit 0; digest_due && digest_build ;;   # internal (tests): a digest if one is due
+      "") echo "Usage: ws-telegram digest 30m|1h|2h|4h|off|now"; echo "Status: $(digest_label)" ;;
+      *) tell "✖ digest: use 30m, 1h, 2h, 4h, off or now"; exit 2 ;;
+    esac ;;
+  quiet)   # ws-telegram quiet HH:MM-HH:MM|off
+    case "${2:-}" in
+      off) set_setting quiet off; publish_settings; tell "Telegram quiet hours: off" ;;
+      "") echo "Usage: ws-telegram quiet HH:MM-HH:MM|off"; echo "Status: $(quiet_label)$(in_quiet && echo " (now: quiet)")" ;;
+      *) if [[ "$2" =~ $QUIET_RE && "${2%-*}" != "${2#*-}" ]]; then
+           set_setting quiet "$2"; publish_settings; tell "Telegram quiet hours: $2 (only security alerts and approvals that block work)"
+         else tell "✖ quiet hours: use HH:MM-HH:MM (24 h, e.g. 22:00-07:00) or off"; exit 2; fi ;;
+    esac ;;
+  menu-sync) publish_settings ;;   # the Telegram menu runs it before it opens
   ask) shift; ask "$@" ;;
   active) configured && ! is_off ;;
   check) configured || exit 0; CHAT="$(chat_id)"; TOKEN="$(token)"; check_alerts ;;   # one check (tests)
-  alert-test) configured && alert "Alert test" "k=🗜 Send /compact" "${2:-}" ;;   # internal (ws-test)
-  send) configured && ! is_off || exit 0; alert "${2:-}"; ensure ;;   # one-off notification (ws-kit-update and other scripts)
+  alert-test) configured && alert "Alert test" "k=🗜 Send /compact" "${2:-}" direct ;;   # internal (ws-test)
+  send) configured && ! is_off || exit 0; alert "${2:-}" "" "" direct; ensure ;;   # one-off notification (ws-kit-update and other scripts)
   summary) configured || die "first: ws-telegram setup"; daily_summary; ensure; echo "Summary queued; it arrives in a few seconds." ;;
   alerts)   # ws-telegram alerts on|off
     mkdir -p "$CFG"; touch "$CFG/settings"; sed -i -E "/^(alerts|alertas)=/d" "$CFG/settings"; echo "alerts=${2:-on}" >> "$CFG/settings"; echo "Alerts: ${2:-on}" ;;
   approve)   # PIN for risky approvals only (default) or for every approval
     mkdir -p "$CFG"; touch "$CFG/settings"
     case "${2:-}" in
-      pin|risky) sed -i -E "/^approve=/d" "$CFG/settings"; echo "approve=$2" >> "$CFG/settings"
-                 echo "Approvals from Telegram: $([[ $2 == pin ]] && echo "every approval asks for your PIN" || echo "risky dialogs ask for your PIN")" ;;
+      pin|risky) set_setting approve "$2"; publish_settings
+                 tell "Approvals from Telegram: $([[ $2 == pin ]] && echo "every approval asks for your PIN" || echo "risky dialogs ask for your PIN")" ;;
       *) echo "Usage: ws-telegram approve risky|pin"; echo "Status: $(approve_mode)"; exit 0 ;;
     esac ;;
   run)   # ▶ Run from Telegram: with PIN (default) or direct
@@ -1134,8 +1639,9 @@ case "${1:-}" in
     case "${2:-}" in
       pin) rm -f "$CFG/run-no-pin" "$CFG/ejecutar-sin-pin"
            ws-secret has telegram-pin 2>/dev/null || [[ -n "${WS_TELEGRAM_PIN:-}" ]] || echo "You have no PIN yet: ws-telegram text pin"
-           echo "▶ Run: asks for your PIN" ;;
-      no-pin) : > "$CFG/run-no-pin"; echo "▶ Run: no PIN (whoever holds your unlocked phone can run)" ;;
+           log_event setting_changed "run=pin"; publish_settings; tell "▶ Run: asks for your PIN" ;;
+      no-pin) : > "$CFG/run-no-pin"; log_event setting_changed "run=no-pin"; publish_settings
+              tell "▶ Run: no PIN (whoever holds your unlocked phone can run)" ;;
       *) echo "Usage: ws-telegram run pin|no-pin"; run_needs_pin && echo "Status: asks for PIN" || echo "Status: no PIN"; exit 0 ;;
     esac
     service_alive && { kill "$(cat "$ST/service.pid")" 2>/dev/null; true; } ;;   # the service reads the PIN at startup; tmux brings it back up
@@ -1157,30 +1663,40 @@ case "${1:-}" in
         tmux display-message "Telegram, text replies: $m" 2>/dev/null || echo "$m" ;;
       *) echo "Usage: ws-telegram text on|off|pin|toggle"; text_enabled && echo "Status: on" || echo "Status: off" ;;
     esac
-    # The service reads the PIN at startup: restart it so it picks up the change.
+    [[ "${2:-}" =~ ^(on|off|toggle|pin)$ ]] && log_event setting_changed "text ${2}: $(text_enabled && echo on || echo off)"
+    publish_settings
+    # The service keeps the PIN in memory: restart it so it picks up a new one.
     pkill -f "$HOME/.local/bin/ws-telegram service" 2>/dev/null; ensure ;;
   ensure) ensure ;;
   service) shift; service "$@" ;;
   selftest) selftest ;;
-  off) mkdir -p "$CFG"; : > "$CFG/off"; echo "Telegram: off" ;;
-  on) rm -f "$CFG/off" "$CFG/apagado"; ensure; echo "Telegram: on" ;;
+  off) mkdir -p "$CFG"; : > "$CFG/off"; log_event setting_changed "telegram off"; publish_settings; tell "Telegram: off" ;;
+  on) rm -f "$CFG/off" "$CFG/apagado"; log_event setting_changed "telegram on"; publish_settings; ensure; tell "Telegram: on" ;;
   toggle)   # used by the menu
     if is_off; then rm -f "$CFG/off" "$CFG/apagado"; ensure; m="on"; else mkdir -p "$CFG"; : > "$CFG/off"; m="off"; fi
+    log_event setting_changed "telegram $m"; publish_settings
     configured || m="not configured (run: ws-telegram setup)"
     tmux display-message "Telegram: $m" 2>/dev/null || echo "Telegram: $m" ;;
   test)
     configured || die "first: ws-telegram setup"
-    notify "done" "${TMUX_PANE:-%0}" "Test message from the workstation ✔"; echo "Queued; it should arrive in a few seconds." ;;
+    WS_TELEGRAM_CLASS=direct notify "done" "${TMUX_PANE:-%0}" "Test message from the workstation ✔"
+    tell "Test queued; it should arrive in a few seconds." ;;
   status)
     if configured; then echo "Configured: bot @$(sed -n 's/^bot=//p' "$CFG/config") · $(is_off && echo off || echo on)"
     else echo "Not configured (ws-telegram setup)"; fi
     if service_alive; then echo "Service: running (PID $(cat "$ST/service.pid"))"; else echo "Service: stopped (ws-telegram ensure)"; fi
-    echo "Pending an answer: $(find "$ST/pending" -name '*.json' 2>/dev/null | wc -l)"
+    echo "Sends: $(notify_mode) — $(mode_text "$(notify_mode)")"
+    echo "Digest: $(digest_label)$([[ -s "$ST/digest/last" ]] && echo " · last $(date -d "@$(cat "$ST/digest/last")" +%H:%M 2>/dev/null)") · quiet hours: $(quiet_label)$(in_quiet && echo " (now: quiet)")"
+    echo "Pending an answer: $(find "$ST/pending" -name '*.json' 2>/dev/null | wc -l) · PIN requests: $(live_pin_requests | wc -l)"
+    # Never the PIN: only whether the running service has it (written by the service, see load_pin).
+    if [[ -s "$ST/pin-status" ]]; then echo "PIN in the service: $(cut -d' ' -f2- "$ST/pin-status" | sed 's/^loaded$/yes (loaded)/; s/^missing: /no — /') (at $(cut -d' ' -f1 "$ST/pin-status"))"
+    else echo "PIN in the service: not known yet (the service reads it when it starts)"; fi
     echo "Text replies: $(text_enabled && echo "on (with PIN)" || echo off)"
     echo "▶ Run: $(run_needs_pin && echo "asks for your PIN" || echo "no PIN") · approvals: PIN for $( [[ $(approve_mode) == pin ]] && echo every one || echo risky dialogs)"
+    echo "Last Telegram API error: $(cat "$ST/last-error" 2>/dev/null || echo none)"
     tail -n 5 "$LOGD/$(date +%F).jsonl" 2>/dev/null ;;
   forget)
     read -rp "Delete Telegram token, chat and state? [y/N] " r; [[ "$r" =~ ^([yY]|[yY][eE][sS]|[sS]|[sS][iIíÍ])$ ]] || exit 0
     ws-secret delete telegram-bot-token 2>/dev/null; rm -rf "$CFG" "$ST"; echo "Deleted. Revoke the bot in @BotFather (/revoke) if you will no longer use it." ;;
-  *) sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '3p;5,/^#$/p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

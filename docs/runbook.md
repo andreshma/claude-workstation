@@ -527,8 +527,33 @@ The cost: `code`, `explorer.exe`, `clip.exe`, `pwsh.exe` and every other Windows
 - **Set up (once):** `ws-telegram setup`. Create the bot in @BotFather, paste the token (it is stored in Windows
   Credential Manager as `ws/telegram-bot-token`) and send `/start` to your bot.
 - **Notifications do not arrive:** `ws-telegram status` (configured, turned on, service running) and
-  `ws-telegram test`. tmux starts the service every minute; by hand: `ws-telegram ensure`. If the company network
-  blocks `api.telegram.org`, the status shows `error_api`.
+  `ws-telegram test`. tmux starts the service every minute; by hand: `ws-telegram ensure`. With `notify approvals`
+  (the default) only what needs you goes out at once; finished turns and most alerts wait for the digest (see "Too
+  many Telegram messages" below for the modes). «Last Telegram API error» in the status says why a call failed:
+  `network: no answer within 30 s (curl 28)` or `cannot resolve` (no network, sleep, VPN, a proxy blocking
+  `api.telegram.org`), `HTTP 429` (too many messages: the service waits what Telegram asks), `HTTP 401` (the token
+  was revoked: `ws-telegram setup`), `HTTP 409` (two services poll the bot: `pkill -f 'ws-telegram service'`, tmux
+  starts one again). The service backs off (5 s … 5 min) while the network is down.
+- **The PIN does not work:**
+  1. Send only the digits (`1234` or `pin 1234`). With one 🔐 request pending, a new message or a Reply to the 🔐
+     message or to the dialog's notification all work; with several pending, Reply to the 🔐 message you mean. The
+     bot always answers: read what it says.
+  2. "No PIN request is pending": the request expired (5 min) or was used; tap the 🔐 button again.
+  3. "The service has no PIN": `ws-telegram status` → «PIN in the service». «no PIN is set» → `ws-telegram text pin`.
+     «the Windows Credential Manager did not answer» → Windows interop was not ready; it is retried every minute; check
+     `ws-secret has telegram-pin; echo $?` (0 = stored) and, if it keeps failing, `wsl --shutdown` from Windows.
+  4. "Wrong PIN (n of 3)": 3 in 1 h cancel every request (and, for text replies, turn text replies off:
+     `ws-telegram text on`). Change the PIN: `ws-telegram text pin` (or Menu → Workstation → Telegram).
+  5. The 🔐 message shows the outcome: "PIN accepted: approved …" or "the screen changed: nothing was sent" (the dialog
+     is gone or different: answer on the PC).
+  6. The log has the metadata: `tail ~/.local/share/ws-telemetry/telegram/$(date +%F).jsonl` (`approve_asks_pin`,
+     `approve_authorized`, `pin_ambiguous`, `pin_no_request`, `pin_unavailable`, `pin_wrong`; never the PIN).
+- **Too many Telegram messages:** Menu → Workstation → Telegram, or:
+  `ws-telegram notify approvals` (only what needs you, plus the digest), `ws-telegram notify digest` (only digests and
+  security alerts), `ws-telegram digest 2h` (30m, 1h, 2h, 4h, off), `ws-telegram quiet 22:00-07:00` (only security
+  alerts and approvals that block work at night). A repeated alert is deduplicated: the context alert once per
+  crossing of `context_pct` (again after `/compact`), others at most every `dedup_hours` (6) per tab, one reminder
+  of a waiting dialog after `remind_min` (5) minutes. Too few instead? `ws-telegram notify all`.
 - **A button says "The screen changed; I sent nothing":** the dialog is no longer the same (you answered on the PC or
   Claude moved on); nothing was sent. Buttons expire after 10 min.
 - **`!` commands from Telegram:** each command arrives in a code message (tap it to copy it). "▶ Run" is offered only
@@ -548,9 +573,11 @@ The cost: `code`, `explorer.exe`, `clip.exe`, `pwsh.exe` and every other Windows
   question (the ones that show ↩), starting with the PIN: `4821 use an opaque cursor`. Change the PIN:
   `ws-telegram text pin`. If it was turned off because of wrong PINs: `ws-telegram text on` on the PC.
 - **Alerts and daily summary:** adjusted in `~/.config/ws-telegram/settings` (`summary_hour`, `usage_usd_h`,
-  `context_pct`, `stalled_min`, `alerts=on|off`). Test the summary: `ws-telegram summary`. Every alert is rate
-  limited (30 min per tab; reminders every 3 min). Buttons: `/compact` and switch account.
-- **Turn off:** Menu → "Workstation" → "Telegram: turn notifications on or off", or `ws-telegram off`.
+  `context_pct`, `stalled_min`, `alerts=on|off`, `dedup_hours`, `remind_min`). Test the summary: `ws-telegram
+  summary` (the daily summary is sent on its own only with `notify all`; otherwise the digest replaces it:
+  `ws-telegram digest now`). Buttons: `/compact` and switch account; a digest has a 🔎 button per tab.
+- **Turn off:** Menu → "Workstation" → "Telegram" → "Notifications", or `ws-telegram off` (security alerts stop too;
+  `ws-telegram notify off` keeps only the security alerts).
 - **Lost phone or compromised Telegram account:** `ws-telegram forget` and, in @BotFather, `/revoke` the bot. Without
   the token, nobody can send keys to your tabs.
 

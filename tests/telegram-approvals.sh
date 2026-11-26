@@ -93,14 +93,14 @@ WS_TELEGRAM_PIN=4821 tg notify wait %1 "perm"; WS_TELEGRAM_PIN=4821 tg service -
 echo "42 1" > "$G/cb"; WS_TELEGRAM_PIN=4821 tg service --once
 dialog "Bash command" "something else"
 echo "42 7 4821" > "$G/msg"; WS_TELEGRAM_PIN=4821 tg service --once
-check "an ask rule after && is risky too, and a changed screen sends nothing after the PIN" bash -c "! test -s '$G/keys' && grep -q 'The screen changed' '$G/calls'"
+check "an ask rule after && is risky too, and a changed screen sends nothing after the PIN" bash -c "! test -s '$G/keys' && grep -q 'screen changed' '$G/calls'"
 reset; printf ' Tool use\n   azure - keyvault_secret_get (MCP)\n Do you want to proceed?\n ❯ 1. Yes\n   2. No (esc)\n' > "$G/screen"
 WS_TELEGRAM_PIN=4821 tg notify wait %1 "perm"; check "an MCP tool dialog is risky" jq -e '.risky == true' "$G"/st/outbox/*.json
 reset; dialog "Bash command" "gh pr create --fill"
 WS_TELEGRAM_PIN=4821 tg notify wait %1 "perm"; check "an excluded command (runs outside the sandbox) is risky" jq -e '.risky == true' "$G"/st/outbox/*.json
 reset; dialog "Bash command" "terraform apply"; tg notify wait %1 "perm"; tg service --once
 echo "42 1" > "$G/cb"; tg service --once
-check "without a PIN configured a risky approval is refused" bash -c "! test -s '$G/keys' && grep -q 'none is set' '$G/calls'"
+check "without a PIN configured a risky approval is refused" bash -c "! test -s '$G/keys' && grep -q 'has none' '$G/calls'"
 
 echo "3) approve pin: every approval asks"
 reset; tg approve pin >/dev/null; dialog "Bash command" "npm test"

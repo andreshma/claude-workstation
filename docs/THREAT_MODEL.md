@@ -349,7 +349,9 @@ Optional (`ws-telegram setup`). A local service polls the Bot API, sends notific
 | The bot token leaks | The token is read from the Credential Manager and passed to `curl` through a file descriptor, not argv. |
 | Screen text with secrets leaves the machine | Outgoing text and command output pass through the redaction filter. A proposed command that changes when redacted gets no button. |
 | A command proposed by the model is run from the phone | ▶ Run is offered only for read-only commands of an allow list (`RUN_ALLOW` in `ws-telegram`: git read commands, listings, versions, `az account show`, `gh pr view`, `kubectl get`…), with shell syntax, `--output` and `.exe` refused and the block lists as a second check; it asks for the PIN by default. It is never offered or executed in a tab in `bare` or solo mode. |
-| A remote action during an incident | While the emergency stop marker exists, no button answer is sent and nothing is run; `ws-stop-all` also turns the service off. Anomaly alerts carry a "Stop this tab" button (`ws-stop-all --pane`). |
+| A remote action during an incident | While the emergency stop marker exists, no button answer, PIN or text reply is acted on and nothing is run; `ws-stop-all` also turns the service off. Anomaly alerts carry a "Stop this tab" button (`ws-stop-all --pane`). |
+| A PIN guessed or left in the chat (ADR 0026) | A bare PIN counts only for a live 🔐 request the owner started with a tap (with one pending, any message; with several, only a Reply to its prompt); it is deleted from the chat on every path; 3 wrong PINs in an hour cancel every request; only a PIN for a real request is counted, so a correct PIN is never punished as a wrong text reply. |
+| Approval fatigue and alert noise (ADR 0026) | `notify approvals` (default) sends at once only approvals, PIN requests, blocked tabs, explicit requests and security alerts; the rest goes to a digest per period sent only on change; quiet hours; deduplicated alerts. Security alerts go out in every mode. Claude cannot change the policy (protected settings file, ask rules). |
 
 Residual:
 
@@ -361,6 +363,9 @@ Residual:
 - `ws-telegram run no-pin` turns the PIN off for ▶ Run.
 - The Bot API is a third party: notification text, after redaction, is stored by Telegram.
 - Events are logged locally without screen text; that log is not part of the audit hash chain.
+- A bare PIN with one request pending authorises that request even when sent as a Reply to an unrelated message.
+- In `approvals` mode information (finished turns, context) arrives up to a digest period late; a request Claude
+  words in a way the detectors miss is not sent at once (`ws-telegram notify all` sends everything).
 
 #### Telemetry and audit data
 
