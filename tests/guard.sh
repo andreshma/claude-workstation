@@ -208,6 +208,13 @@ mempalace.exe mine ~/notes
 mempalace kg add x y z
 git config ws.gate.allowNoGitleaks true
 git -c ws.gate.allowNoGitleaks=true commit -m x
+git config --global ws.gate.allowNoOsv true
+echo x >> ~/.local/lib/ws-tools.lock
+sed -i s/a/b/ ~/.config/tmux-claude/plugins.lock
+rm -rf ~/.tmux/plugins/tmux-resurrect
+echo x > ~/.local/lib/ws-mirror.sh
+WS_TOOLS_ALLOW_UNVERIFIED=1 ws-tools install gate
+export WS_PLUGINS_ALLOW_UNPINNED=1
 EOF
 # Not blocked: reads of the configuration, mentions in quoted text, heredoc bodies, ordinary work.
 while IFS= read -r c; do [[ -n "$c" ]] && expect 0 "$c"; done <<'EOF'
@@ -286,6 +293,77 @@ for c in 'AZURE_CONFIG_DIR=~/.azure-user az group list' 'export KUBECONFIG=/tmp/
   if [[ "$r" == 2 ]]; then ok=$((ok + 1)); else bad=$((bad + 1)); echo "  FAIL  agent identity: $c should be blocked (got $r)"; fi
 done
 expect 0 'gh auth login'
+# Per-tab profiles (ADR-021). exit_profile <profile> <command> — the guard's exit code with WS_PROFILE set.
+exit_profile() { jq -nc --arg c "$2" --arg d "$H/r" '{tool_name: "Bash", cwd: $d, tool_input: {command: $c}}' | HOME="$H" WS_PROFILE="$1" bash "$G" >/dev/null 2>&1; echo $?; }
+expect_profile() {   # <code> <profile> <command>
+  local r; r="$(exit_profile "$2" "$3")"
+  if [[ "$r" == "$1" ]]; then ok=$((ok + 1)); else bad=$((bad + 1)); printf '  FAIL  profile %s: expected %s and got %s: %s\n' "$2" "$1" "$r" "$3"; fi
+}
+# In a custom profile's tab: no switching Claude or the CLIs to other credentials, no logins.
+while IFS= read -r c; do [[ -n "$c" ]] && expect_profile 2 acme "$c"; done <<'EOF'
+CLAUDE_CONFIG_DIR=~/.claude claude -p "summarise the client repo"
+export CLAUDE_CONFIG_DIR=/tmp/other
+unset CLAUDE_CONFIG_DIR AZURE_CONFIG_DIR
+env -u CLAUDE_CONFIG_DIR claude -p x
+env -i bash -c 'claude -p x'
+env --ignore-environment claude -p x
+AZURE_CONFIG_DIR=~/.azure az group list
+AZURE_TOKEN_CREDENTIALS=VisualStudioCodeCredential claude
+export KUBECONFIG=~/.kube/config
+GH_CONFIG_DIR=~/.config/gh gh repo list
+az login
+az logout
+az account clear
+gh auth switch
+gh auth logout
+claude auth login
+claude auth logout
+claude setup-token
+EOF
+# The same commands in a built-in profile's tab (your own sessions) keep today's behaviour.
+for c in 'az login' 'gh auth switch' 'claude auth login' 'env -u CLAUDE_CONFIG_DIR claude auth status'; do expect_profile 0 work "$c"; expect_profile 0 personal "$c"; done
+expect_profile 0 acme 'az group list -o table'
+expect_profile 0 acme 'kubectl get pods -n app'
+# In ANY tab: the memory mode and the profile variables, and the commands that switch or create profiles.
+while IFS= read -r c; do [[ -n "$c" ]] && expect_profile 2 work "$c" && expect 2 "$c"; done <<'EOF'
+WS_MEMORY=on claude -p x
+export WS_PROFILE=work
+unset WS_MEMORY
+env -u WS_MEMORY claude -p x
+ws-profile tab work
+ws-profile use acme
+ws-profile new evil --no-login
+ws-profile project acme .
+ws-profile remove acme
+ws-profile login acme claude
+ws-profile setup acme
+claude-account tab
+claude-account use personal
+claude-account project personal .
+EOF
+for c in 'ws-profile list' 'ws-profile status' 'ws-profile show acme' 'ws-profile projects' 'claude-account status' \
+         'eval "$(ws-profile --export acme)"' 'echo "set WS_MEMORY=off in the profile"'; do expect 0 "$c"; done
+# Every profile's credentials and config: reads of the logins are blocked (the glob line of the credential list
+# expands to each profile), and so are writes to the profile config and the Claude dirs.
+mkdir -p "$H/.claude-profiles/acme/hooks" "$H/.config/ws-agent/acme/azure" "$H/.config/ws-profiles/acme"
+touch "$H/.claude-profiles/acme/.credentials.json" "$H/.config/ws-agent/acme/azure/msal_token_cache.json" "$H/.config/ws-profiles/acme/profile.conf"
+while IFS= read -r c; do [[ -n "$c" ]] && expect 2 "$c"; done <<'EOF'
+cat ~/.claude-profiles/acme/.credentials.json
+base64 $HOME/.claude-profiles/acme/.credentials.json
+cat ~/.claude-profiles/*/.cred*
+cat ~/.config/ws-agent/acme/azure/msal_token_cache.json
+sed -i s/memory=off/memory=on/ ~/.config/ws-profiles/acme/profile.conf
+echo memory=on >> ~/.config/ws-profiles/acme/profile.conf
+rm -rf ~/.config/ws-profiles
+cp /tmp/x ~/.claude-profiles/acme/settings.json
+echo '{}' > ~/.claude-profiles/acme/.claude.json
+echo x > ~/.local/lib/ws-profile.sh
+EOF
+expect_tool 2 "$(file_tool Write "$H/.config/ws-profiles/acme/profile.conf")" "Write profile.conf"
+expect_tool 2 "$(file_tool Edit "$H/.claude-profiles/acme/settings.json")" "Edit a profile's settings.json"
+expect_tool 2 "$(file_tool Write "$H/.local/lib/ws-profile.sh")" "Write the profile library the hooks source"
+expect_tool 2 "$(jq -nc --arg f "$H/.claude-profiles/acme/.credentials.json" '{tool_name: "Read", tool_input: {file_path: $f}}')" "Read a profile's Claude login"
+expect_tool 0 "$(jq -nc --arg f "$H/.config/ws-profiles/acme/profile.conf" '{tool_name: "Read", tool_input: {file_path: $f}}')" "Read profile.conf (not a secret)"
 # Speed: a typical command stays well under the hook budget (average of 10 runs).
 t0=$(date +%s%N)
 for _ in 1 2 3 4 5 6 7 8 9 10; do exit_code 'ls -la /tmp && git status --short | head -20' >/dev/null; done

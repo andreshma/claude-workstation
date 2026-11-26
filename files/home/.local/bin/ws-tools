@@ -2,18 +2,22 @@
 #
 # ws-tools — inventory of the workstation's tools in WSL (what is there, which version, what
 # is missing) and installation per tool or per group from official sources: apt (signed
-# repos), pipx (PyPI), GitHub binaries verified against the checksum of their release, or npm packages pinned with
-# a committed package-lock.json (ws-pinned: exact version and sha512 of every tarball, install scripts off).
+# repos), pipx (PyPI, pinned versions), GitHub binaries pinned by version and sha256 in ~/.local/lib/ws-tools.lock
+# and, where upstream signs its release, verified with cosign (WS-SEC-016), or npm packages pinned with a committed
+# package-lock.json (ws-pinned: exact version and sha512 of every tarball, install scripts off).
 #
 # Usage:
 #   ws-tools                                 inventory
-#   ws-tools install <group|tool>...         groups: base cloud aws containers quality
-#                                            python web rust sql dev
+#   ws-tools install <group|set|tool>...     groups: base cloud aws containers quality python web rust sql dev
+#                                            sets: gate (gitleaks, osv-scanner, checkov: the git gate's scanners)
 #   ws-tools install --force ...             installs even if C: has less than 10 GB free
+#   ws-tools pins                            the pinned versions (ws-tools.lock)
+# A download whose sha256 or signature does not match is refused (fail closed). WS_TOOLS_ALLOW_UNVERIFIED=1 installs
+# it anyway: each use is logged in ~/.local/state/ws-tools/overrides.log and in the audit log (ws-audit --verify-log).
 set -uo pipefail
 MIN_FREE_GB=10
-AGG_VER=v1.9.0
-AGG_SHA=ddcbf6ca044c8ac3a434dcb9ee89fb9e3be87209982b7c2adb55f782e8f0f390
+LOCK="${WS_TOOLS_LOCK:-$HOME/.local/lib/ws-tools.lock}"
+GH="${WS_TOOLS_GH_BASE:-https://github.com}"   # tests: a local file:// mirror of the release downloads
 
 # name|group|version command|how to install (apt:package, pipx:package, fn:function, manual:text)
 # The version command cannot contain "|" (it is the field separator).
@@ -53,10 +57,11 @@ TOOLS=(
   "compose|containers|docker compose version|manual:comes with Docker Desktop"
   "scout|containers|docker scout --help >/dev/null 2>&1 && echo available|manual:comes with Docker Desktop (docker scout cves <image>)"
   "hadolint|containers|hadolint --version|fn:hadolint"
-  "checkov|quality|checkov --version|pipx:checkov"
+  "checkov|quality|checkov --version|fn:checkov"
   "pre-commit|quality|pre-commit --version|pipx:pre-commit"
   "k6|quality|k6 version|fn:k6"
   "osv-scanner|quality|osv-scanner --version|fn:osv"
+  "cosign|quality|cosign version|fn:cosign"
   "markitdown|quality|markitdown --version|pipx:markitdown[all]"
   "pandoc|quality|pandoc --version|apt:pandoc"
   "pdfimages|quality|pdfimages -v 2>&1|apt:poppler-utils"
@@ -112,19 +117,89 @@ apt_repo() { # apt_repo <name> <key url> <deb line with KEYRING>
   echo "${3//KEYRING/$kr}" | sudo tee "/etc/apt/sources.list.d/$1.list" >/dev/null
   sudo apt-get update -qq
 }
-gh_latest() { # gh_latest <repo> <asset> <checksums file> <destination>
-  local base="https://github.com/$1/releases/latest/download" d exp act; d="$(mktemp -d)"
-  if ! curl -fsSL -o "$d/$2" "$base/$2" || ! curl -fsSL -o "$d/sums" "$base/$3"; then echo "  could not download $2"; rm -rf "$d"; return 1; fi
-  exp="$(awk -v f="$2" '$2 == f || $2 == "*" f { print $1; exit }' "$d/sums")"
-  [[ -n "$exp" ]] || exp="$(awk 'NF == 1 { print $1; exit }' "$d/sums")"
-  act="$(sha256sum "$d/$2" | cut -d' ' -f1)"
-  if [[ -z "$exp" || "$exp" != "$act" ]]; then echo "  checksum of $2 does not match; not installing"; rm -rf "$d"; return 1; fi
-  cp "$d/$2" "$4"; rm -rf "$d"
+# pin_of <tool> — its row of ws-tools.lock: version source asset sha256 sig (empty when not pinned).
+pin_of() { awk -v n="$1" '!/^#/ && $1 == n { print $2, $3, $4, $5, $6; exit }' "$LOCK" 2>/dev/null; }
+
+#######################################
+# Records an override of a refused download (WS_TOOLS_ALLOW_UNVERIFIED=1) in ~/.local/state/ws-tools/overrides.log
+# and in the audit hash chain through audit.sh. Arguments: tool, reason.
+#######################################
+audit_override() {
+  local d="${XDG_STATE_HOME:-$HOME/.local/state}/ws-tools"
+  mkdir -p "$d" && printf '%s\t%s\t%s\n' "$(date -Is)" "$1" "$2" >> "$d/overrides.log"
+  if [[ -x "$HOME/.claude/hooks/audit.sh" ]]; then
+    jq -nc --arg c "ws-tools install $1" '{tool_name: "ws-tools", tool_input: {command: $c}}' \
+      | (cd / && "$HOME/.claude/hooks/audit.sh" override "ws-tools unverified $1: $2") >/dev/null 2>&1
+  fi
+  return 0
 }
-fn_agg() {
-  local f; f="$(mktemp)"
-  curl -fsSL -o "$f" "https://github.com/asciinema/agg/releases/download/$AGG_VER/agg-x86_64-unknown-linux-musl" &&
-    echo "$AGG_SHA  $f" | sha256sum -c --quiet && install -m 755 "$f" "$HOME/.local/bin/agg"; rm -f "$f"
+# refuse <tool> <reason> — fail closed unless WS_TOOLS_ALLOW_UNVERIFIED=1 (audited). Returns: 0 only when overridden.
+refuse() {
+  if [[ "${WS_TOOLS_ALLOW_UNVERIFIED:-}" == 1 ]]; then
+    echo "  ! $1: $2; installed anyway (WS_TOOLS_ALLOW_UNVERIFIED=1, logged and audited)"
+    audit_override "$1" "$2"; return 0
+  fi
+  echo "  ✖ $1: $2; not installing (WS_TOOLS_ALLOW_UNVERIFIED=1 overrides it, audited)"; return 1
+}
+
+#######################################
+# cosign keyless verification of a release's checksum file: <file>.keyless.sig and <file>.pem, a certificate GitHub
+# Actions issued to a workflow of the same repository; the checksum file must also list the pinned sha256.
+# Arguments: tool, repo, version, checksum file, pinned sha256, asset, work folder. Returns: 0 if verified.
+#######################################
+verify_cosign() {
+  local n="$1" repo="$2" sums="$4" sha="$5" asset="$6" d="$7" base="$GH/$2/releases/download/$3" f
+  for f in "$sums" "$sums.keyless.sig" "$sums.pem"; do
+    curl -fsSL -o "$d/$f" "$base/$f" || { refuse "$n" "could not download $f to check the signature"; return; }
+  done
+  awk -v h="$sha" -v a="$asset" '$1 == h && ($2 == a || $2 == "*" a) { f = 1 } END { exit !f }' "$d/$sums" \
+    || { refuse "$n" "the signed $sums does not list the pinned sha256"; return; }
+  if ! command -v cosign >/dev/null; then
+    echo "  · $n is signed upstream: installing the pinned cosign first"; fn_cosign >/dev/null || true
+  fi
+  command -v cosign >/dev/null \
+    || { refuse "$n" "cosign is missing, so the signature cannot be checked (ws-tools install cosign)"; return; }
+  cosign verify-blob --certificate "$d/$sums.pem" --signature "$d/$sums.keyless.sig" \
+      --certificate-identity-regexp "^https://github[.]com/${repo//./[.]}/" \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com "$d/$sums" >/dev/null 2>&1 \
+    || { refuse "$n" "the cosign signature of $sums does not verify"; return; }
+  echo "  ✔ $n: cosign signature of $sums verified ($repo)"
+}
+
+#######################################
+# Downloads a pinned GitHub release asset: the exact version of ws-tools.lock, its sha256 compared with the pin (not
+# with a checksum file of the same release) and, for upstreams that sign, the cosign signature.
+# Arguments: tool, destination file. Returns: 0 if it is in place.
+#######################################
+gh_pinned() {
+  local n="$1" out="$2" v src asset sha sig repo d act
+  read -r v src asset sha sig <<<"$(pin_of "$n")"
+  [[ -n "$v" && "$src" == github:* ]] || { echo "  ✖ $n: no pin in $LOCK"; return 1; }
+  repo="${src#github:}"; d="$(mktemp -d)"
+  if ! curl -fsSL -o "$d/$asset" "$GH/$repo/releases/download/$v/$asset"; then
+    echo "  could not download $asset"; rm -rf "$d"; return 1
+  fi
+  act="$(sha256sum "$d/$asset" | cut -d' ' -f1)"
+  if [[ "$act" != "$sha" ]]; then
+    refuse "$n" "the sha256 of $asset $v is $act, the pin is $sha" || { rm -rf "$d"; return 1; }
+  fi
+  case "$sig" in
+    cosign:*) verify_cosign "$n" "$repo" "$v" "${sig#cosign:}" "$sha" "$asset" "$d" || { rm -rf "$d"; return 1; } ;;
+  esac
+  cp "$d/$asset" "$out"; rm -rf "$d"
+}
+# bin_pinned <tool> — a single-file pinned binary into ~/.local/bin. Returns: the status of the download.
+bin_pinned() {
+  local f rc; f="$(mktemp)"
+  gh_pinned "$1" "$f" && install -m 755 "$f" "$HOME/.local/bin/$1"; rc=$?
+  rm -f "$f"; return "$rc"
+}
+fn_agg()    { bin_pinned agg; }
+fn_cosign() { bin_pinned cosign; }
+fn_checkov() {
+  local v; v="$(pin_of checkov | cut -d' ' -f1)"
+  [[ -n "$v" ]] || { echo "  ✖ checkov: no pin in $LOCK"; return 1; }
+  pipx install "checkov==$v"
 }
 fn_az()        { curl -fsSL https://aka.ms/InstallAzureCLIDeb -o /tmp/az-install.sh && sudo bash /tmp/az-install.sh; }
 fn_bicep()     { az bicep install; }
@@ -151,24 +226,24 @@ fn_k6() {
 }
 fn_tflint() {
   local d; d="$(mktemp -d)"
-  gh_latest terraform-linters/tflint tflint_linux_amd64.zip checksums.txt "$d/t.zip" &&
-    unzip -o -q "$d/t.zip" -d "$d" && install -m 755 "$d/tflint" "$HOME/.local/bin/tflint"; rm -rf "$d"
+  gh_pinned tflint "$d/t.zip" &&
+    unzip -o -q "$d/t.zip" -d "$d" && install -m 755 "$d/tflint" "$HOME/.local/bin/tflint"; local rc=$?; rm -rf "$d"; return "$rc"
 }
 fn_k9s() {
   local d; d="$(mktemp -d)"
-  gh_latest derailed/k9s k9s_linux_amd64.deb checksums.sha256 "$d/k9s.deb" && sudo apt-get install -y "$d/k9s.deb"; rm -rf "$d"
+  gh_pinned k9s "$d/k9s.deb" && sudo apt-get install -y "$d/k9s.deb"; local rc=$?; rm -rf "$d"; return "$rc"
 }
-fn_hadolint() { gh_latest hadolint/hadolint hadolint-Linux-x86_64 hadolint-Linux-x86_64.sha256 "$HOME/.local/bin/hadolint" && chmod 755 "$HOME/.local/bin/hadolint"; }
+fn_hadolint() { gh_pinned hadolint "$HOME/.local/bin/hadolint" && chmod 755 "$HOME/.local/bin/hadolint"; }
 fn_awscli() {
   local d; d="$(mktemp -d)"
   curl -fsSL -o "$d/aws.zip" https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip &&
-    unzip -q "$d/aws.zip" -d "$d" && sudo "$d/aws/install" --update; rm -rf "$d"
+    unzip -q "$d/aws.zip" -d "$d" && sudo "$d/aws/install" --update; local rc=$?; rm -rf "$d"; return "$rc"
 }
-fn_osv() { gh_latest google/osv-scanner osv-scanner_linux_amd64 osv-scanner_SHA256SUMS "$HOME/.local/bin/osv-scanner" && chmod 755 "$HOME/.local/bin/osv-scanner"; }
+fn_osv() { gh_pinned osv-scanner "$HOME/.local/bin/osv-scanner" && chmod 755 "$HOME/.local/bin/osv-scanner"; }
 fn_starship() {
   local d; d="$(mktemp -d)"
-  gh_latest starship/starship starship-x86_64-unknown-linux-musl.tar.gz starship-x86_64-unknown-linux-musl.tar.gz.sha256 "$d/s.tgz" &&
-    tar -xzf "$d/s.tgz" -C "$d" && install -m 755 "$d/starship" "$HOME/.local/bin/starship"; rm -rf "$d"
+  gh_pinned starship "$d/s.tgz" &&
+    tar -xzf "$d/s.tgz" -C "$d" && install -m 755 "$d/starship" "$HOME/.local/bin/starship"; local rc=$?; rm -rf "$d"; return "$rc"
 }
 fn_ruff() { uv tool install ruff; }
 fn_rustup() {
@@ -206,9 +281,15 @@ fn_chrome_devtools_mcp() {
 fn_azd() { curl -fsSL https://aka.ms/install-azd.sh -o /tmp/install-azd.sh && bash /tmp/install-azd.sh; }
 
 install_tools() {
-  local force=0 want=() t n g how apt=() pipx=() fns=() manual=()
-  for a in "$@"; do [[ "$a" == --force ]] && force=1 || want+=("$a"); done
-  (( ${#want[@]} )) || { echo "Give groups or tools: base cloud quality dev | terraform helm …"; return 2; }
+  local force=0 want=() t n g how apt=() pipx=() fns=() manual=() rc=0
+  for a in "$@"; do
+    case "$a" in
+      --force) force=1 ;;
+      gate) want+=(gitleaks osv-scanner checkov) ;;   # the git gate's scanners (ws-gate, WS-SEC-004)
+      *) want+=("$a") ;;
+    esac
+  done
+  (( ${#want[@]} )) || { echo "Give groups, sets or tools: base cloud quality dev gate | terraform helm …"; return 2; }
   local free; free="$(df -BG --output=avail /mnt/c 2>/dev/null | tail -1 | tr -dc 0-9)"
   if (( force == 0 && ${free:-0} < MIN_FREE_GB )); then
     echo "C: has ${free:-?} GB free (minimum $MIN_FREE_GB). The Ubuntu disk grows on C:; free up space or use --force."
@@ -227,14 +308,16 @@ install_tools() {
   done
   (( ${#apt[@]} ))  && { echo "==> apt: ${apt[*]}"; sudo apt-get install -y "${apt[@]}"; }
   (( ${#pipx[@]} )) && { echo "==> pipx: ${pipx[*]}"; for p in "${pipx[@]}"; do pipx install "$p"; done; pipx ensurepath >/dev/null; }
-  for f in "${fns[@]}"; do echo "==> $f"; "fn_$f" || echo "  $f failed"; done
+  for f in "${fns[@]}"; do echo "==> $f"; "fn_$f" || { echo "  $f failed"; rc=1; }; done
   (( ${#manual[@]} )) && { echo "==> By hand:"; printf '  %s\n' "${manual[@]}"; }
-  echo; inventory
+  [[ -n "${WS_TOOLS_NO_INVENTORY:-}" ]] || { echo; inventory; }   # tests skip the inventory
+  return "$rc"
 }
 
 case "${1:-}" in
   ""|inventory|check) inventory ;;
-  install) shift; install_tools "$@" ;;
-  -h|--help) sed -n '3,11p' "$0" ;;
-  *) echo "usage: ws-tools [install <group|tool>...]" >&2; exit 2 ;;
+  install) shift; install_tools "$@"; exit $? ;;
+  pins) grep -v '^#' "$LOCK" | awk 'NF { printf "%-13s %-9s %-36s %s\n", $1, $2, $3, $6 }' ;;
+  -h|--help) sed -n '3,16p' "$0" ;;
+  *) echo "usage: ws-tools [install <group|set|tool>... | pins]" >&2; exit 2 ;;
 esac

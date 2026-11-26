@@ -136,7 +136,14 @@ def local_and_remote(root):
 def ws_tools(root):
     """The TOOLS table of ws-tools: name|group|version command|how to install."""
     text = (root / "files/home/.local/bin/ws-tools").read_text(encoding="utf-8")
-    pinned = dict(re.findall(r"^([A-Z]+)_VER=(\S+)$", text, re.MULTILINE))
+    # Pins of ws-tools.lock: name version source asset sha256 sig (WS-SEC-016).
+    pins = {}
+    lock = root / "files/home/.local/lib/ws-tools.lock"
+    if lock.is_file():
+        for line in lock.read_text(encoding="utf-8").splitlines():
+            f = line.split()
+            if len(f) >= 6 and not line.lstrip().startswith("#"):
+                pins[f[0]] = f
     comps = []
     for name, group, _cmd, how in re.findall(
         r'^\s+"([^|"]+)\|([^|"]+)\|([^|"]*)\|([^"]+)"$', text, re.MULTILINE
@@ -156,27 +163,52 @@ def ws_tools(root):
             c["purl"] = "pkg:deb/ubuntu/" + quote(what, safe="")
         elif source == "pipx":
             c["purl"] = "pkg:pypi/" + quote(re.sub(r"\[.*\]$", "", what), safe="")
-        if name.upper() in pinned:
-            c["version"] = pinned[name.upper()]
+        if name in pins:
+            _, ver, src, _asset, sha, sig = pins[name][:6]
+            c["version"] = ver
+            c["properties"] += [
+                prop("pinnedIn", "ws-tools.lock"),
+                prop("signature", sig),
+            ]
+            if re.fullmatch(r"[0-9a-f]{64}", sha):
+                c["hashes"] = [{"alg": "SHA-256", "content": sha}]
+            if src.startswith("pypi:"):
+                c["purl"] = f"pkg:pypi/{quote(src[5:], safe='')}@{ver}"
+            elif src.startswith("github:"):
+                c["purl"] = f"pkg:github/{src[7:]}@{ver}"
         c["bom-ref"] = "ws-tools:" + name
         comps.append(c)
     return comps
 
 
 def tmux_plugins(root):
+    """The @plugin lines of .tmux.conf, with the commit plugins.lock pins each one to (WS-SEC-016)."""
     text = (root / "files/home/.tmux.conf").read_text(encoding="utf-8")
-    return [
-        {
+    pins = {}
+    lock = root / "files/home/.config/tmux-claude/plugins.lock"
+    if lock.is_file():
+        for line in lock.read_text(encoding="utf-8").splitlines():
+            f = line.split()
+            if len(f) >= 3 and not line.lstrip().startswith("#"):
+                pins[f[0]] = f[2]
+    comps = []
+    for p in sorted(set(re.findall(r"^set -g @plugin '([^']+)'", text, re.MULTILINE))):
+        commit = pins.get(p.split("/")[-1])
+        c = {
             "type": "library",
             "bom-ref": "pkg:github/" + p,
             "name": p,
-            "purl": "pkg:github/" + p,
-            "properties": [prop("installedBy", "tpm"), prop("pinned", False)],
+            "purl": "pkg:github/" + p + (f"@{commit}" if commit else ""),
+            "properties": [
+                prop("installedBy", "ws-plugins"),
+                prop("pinned", bool(commit)),
+            ],
         }
-        for p in sorted(
-            set(re.findall(r"^set -g @plugin '([^']+)'", text, re.MULTILINE))
-        )
-    ]
+        if commit:
+            c["version"] = commit
+            c["hashes"] = [{"alg": "SHA-1", "content": commit}]
+        comps.append(c)
+    return comps
 
 
 def ci_components(root):

@@ -17,7 +17,7 @@ moves to the new ones are in [USAGE.md](USAGE.md#18-upgrading-from-2x-names).
 - [tmux layer](#tmux-layer)
 - [Claude Code layer](#claude-code-layer)
 - [Telemetry](#telemetry)
-- [Accounts](#accounts)
+- [Accounts and profiles](#accounts-and-profiles)
 - [Persistence and backups](#persistence-and-backups)
 - [Screensaver](#screensaver)
 - [Language packs](#language-packs)
@@ -142,7 +142,7 @@ flowchart TB
 | Routing | `.claude/hooks/ws-routing.sh`, `intent-route.sh`, `.local/lib/ws-routing.sh`, `cr`, `ws-routing-confirm` | Suggest a model per task and ask before switching. |
 | Telemetry | `ws-traces.sh`, `ws-otel`, `ws-telemetry`, `ws-report`, `ws-hooks` | Collect, aggregate and report. |
 | Commit gate | `.config/git/hooks/_chain`, `ws-gate` | Checks on commit and push, then the repository's own hooks. |
-| Accounts | `claude-account`, `.config/tmux-claude/accounts.sh` | Two Claude accounts, per tab and per project. |
+| Accounts and profiles | `ws-profile`, `.local/lib/ws-profile.sh`, `claude-account`, `.config/tmux-claude/accounts.sh` | Per-tab profiles: Claude organisation, Azure tenant, gh, kubectl, conversations and memory per tab and per project; `work` and `personal` built in. |
 | Secrets | `ws-secret`, `ws-redact`, `ws-history` | Windows Credential Manager access, an output redaction filter, a history scanner. |
 | Remote control | `ws-telegram`, `ws-notify`, `win-notify.sh` | Notifications to Windows and Telegram; answering dialogs from the phone. |
 | Backups | `tmux-backup`, `ws-backup`, `ws-backup-lite`, `ws-restore-lite`, `ws-backup-cloud`, `tmux-recover` | Session state, conversations and environment data. |
@@ -302,11 +302,27 @@ Protection levels are applied by restarting Claude with different arguments, not
 | `bare` | `claude-resume --setting-sources project,local --settings ~/.config/claude-levels/bare.json` |
 | solo mode | `claude-resume --permission-mode auto --settings ~/.config/claude-levels/solo.json`; with `--unsandboxed`, `solo-unsandboxed.json` |
 | any level with `--agent NAME` | The same command prefixed with `WS_AGENT=NAME AZURE_CONFIG_DIR=… GH_CONFIG_DIR=… KUBECONFIG=…` under `~/.config/ws-agent/NAME/` ([ADR 0020](adr/0020-agent-scoped-identities.md)) |
+| any restart of a tab | The same command after `eval "$(ws-profile --export NAME)" &&`, NAME being the tab's profile (`@cprofile`), so the pane's shell and its Claude get the profile's environment ([ADR 0021](adr/0021-per-tab-profiles.md)) |
 
 `claude-resume` runs `claude --continue` with those flags when the folder has a conversation and plain `claude` with
 the same flags when it has none (a tab where Claude never received a message). Called without `--settings` or
 `--setting-sources` (tab launchers, tmux-resurrect, `claude-account`), it adds the normal profile itself, so every kit
-launcher starts at the normal level; a `claude` typed by hand runs at the strict base.
+launcher starts at the normal level; a `claude` typed by hand runs at the strict base. Then it swaps the `--settings`
+file for the copy with the tab's profile fence (`tmux-level --fenced`, below), and `--new` makes it start a new
+conversation.
+
+The launch path of a tab, with profiles:
+
+```mermaid
+flowchart LR
+    new["New tab or pane<br/>(tw, tmux-open, template,<br/>recent, bring, resurrect)"] --> shell["bash + accounts.sh:<br/>wsp_resolve (pin > tab > default)<br/>+ wsp_exports"]
+    restart["Restart of a tab<br/>(ws-profile tab, tmux-level,<br/>tmux-claude-restart, tmux-solo, swarm)"] --> prefix["eval &quot;$(ws-profile --export NAME)&quot; &&"]
+    shell --> cr["claude-resume<br/>(normal level, --fenced settings)"]
+    prefix --> cr
+    cr --> claude["claude with CLAUDE_CONFIG_DIR,<br/>AZURE_CONFIG_DIR, GH_CONFIG_DIR,<br/>KUBECONFIG, WS_PROFILE, WS_MEMORY"]
+    claude --> mcp["Azure MCP server<br/>(inherits the env;<br/>AZURE_TOKEN_CREDENTIALS=AzureCliCredential)"]
+    claude --> hooks["memory-filter.sh, memory-gate.sh<br/>(WS_MEMORY: off, on, wing:W)"]
+```
 
 The profiles are generated on every change (mode 0600). `full` is the whole `~/.claude/settings.json` with the
 sandbox forced on, unsandboxed commands disallowed, the excluded command list removed and, with a project folder,
@@ -379,9 +395,11 @@ Two kinds of data, with different content rules:
 
 Nothing is sent off the machine: the exporter endpoints in `~/.claude/settings.json` point to `127.0.0.1:14318`.
 
-## Accounts
+## Accounts and profiles
 
-`claude-account` runs two Claude accounts on one workstation using Claude Code's `CLAUDE_CONFIG_DIR`:
+`claude-account` runs two Claude accounts on one workstation using Claude Code's `CLAUDE_CONFIG_DIR`; since
+[ADR 0021](adr/0021-per-tab-profiles.md) they are the two built-in profiles of `ws-profile`, and `claude-account` is a
+wrapper of it with the same commands:
 
 | Account | Config directory | Notes |
 |---|---|---|
@@ -394,13 +412,29 @@ history from `~/.claude`, and copies only the onboarding state, trusted folders 
 (`claude-account tab`) exits Claude, sets or unsets `CLAUDE_CONFIG_DIR` in the pane's shell, and resumes the same
 conversation with `claude-resume` (a new one when the tab never had any). The switch refuses if both accounts are logged in to the same organization.
 
-Which account a new shell uses is decided by `accounts.sh`, sourced from `~/.bashrc`:
+A custom profile (`ws-profile new NAME`) adds a client: `~/.config/ws-profiles/NAME/profile.conf` (Claude dir, tenant,
+subscription, conversation sharing, memory mode, label), its own Claude dir `~/.claude-profiles/NAME` (the kit setup
+linked, its own conversations unless `share_conversations` links another profile's) and its `az`, `gh` and `kubectl`
+folders in `~/.config/ws-agent/NAME/`, which is also the agent identity of that name. `~/.local/lib/ws-profile.sh`
+is the only code that knows a profile; everything else calls it.
 
-1. If the working directory is inside a project pinned in `~/.config/claude-accounts/projects.conf` (the repository
-   root, any subfolder, or a `<repo>.wt/…` worktree), the pinned account wins.
-2. Otherwise, the default account in `~/.config/claude-accounts/active` (`work` when the file is missing).
+Which profile a new shell uses is decided by `accounts.sh`, sourced from `~/.bashrc` (`wsp_resolve`):
 
-The SessionStart hook records which account the tab's Claude actually started with in `@caccount`.
+1. If the working directory is inside a project pinned in `~/.config/ws-profiles/projects.conf` (the repository root,
+   any subfolder, or a `<repo>.wt/…` worktree; the longest match wins), the pinned profile wins.
+2. Otherwise, the tab's profile (`@cprofile`), for a split of a profiled tab; a nested shell keeps its parent's.
+3. Otherwise, the default in `~/.config/ws-profiles/default` (`ws-profile use`; `work` when the file is missing).
+
+The shell then exports the profile's variables (`wsp_exports`), so a hand-typed `az`, `gh` or `kubectl` in the tab uses
+the same identity as its Claude. The SessionStart hook records what the tab's Claude actually started with in
+`@cprofile` (and the old `@caccount`), and the bar shows `@cprofile_label` for a custom profile.
+
+The fence: `ws-profile --fence NAME` lists the conversation data of every other conversation store, every profile's
+Claude login and, for a profile with its own store, `~/.cache/ws-memory` and the audit log; `tmux-level --fenced`
+writes `<level>@NAME.json` with them added to `sandbox.filesystem.denyRead` and as `Read` deny rules, and
+`claude-resume` starts Claude with that copy. The profiles' `az`, `gh` and kube folders are denied as a whole
+(`~/.config/ws-agent`); their Claude logins by the glob `~/.claude-profiles/*/.credentials.json` in the settings, the
+managed policy and the guard's list, and as literal paths by the fence.
 
 ## Persistence and backups
 
@@ -701,14 +735,16 @@ Window options written by the state hook and read by everything else:
 | `~/.local/share/ws-kit/pre-english.<date>/` | Files of the pre-3.0 installation that the migration set aside, with their path under `$HOME` | As they were | Until the user deletes the folder |
 | `~/.config/claude-levels/` | `normal-adds.json` (kit file); generated `normal.json`, `solo.json`, `solo-unsandboxed.json`, `full.json`, `full-<hash>.json` (one per project) and `bare.json` | JSON, 0700 / 0600 | Regenerated on every level change |
 | `~/.config/ws-guard/` | `production.conf` (yours), `allow-config-writes` (the window's end, written by you) | Text | Until you change it; the window closes at its epoch |
-| `~/.config/ws-agent/<name>/` | `azure/`, `gh/`, `kube/config` of an agent identity | The tools' own formats | Until you log out or delete it |
+| `~/.config/ws-agent/<name>/` | `azure/`, `gh/`, `kube/config` of an agent identity, which is also the credentials of the profile `<name>` | The tools' own formats, folders 0700 | Until you log out, `ws-profile remove` with the typed name, or delete it |
+| `~/.config/ws-profiles/` | `<name>/profile.conf` per custom profile, `default`, `projects.conf` | Text, 0700 / 0600; read as data | Until changed with `ws-profile` |
+| `~/.claude-profiles/<name>/` | A custom profile's Claude dir: its login, `.claude.json`, its conversations; links to the kit setup in `~/.claude` | Claude Code's own formats, 0700 | Until `ws-profile remove` with the typed name |
 | `~/.local/state/ws-stop-all`, `ws-budget-over`, `ws-budget-override` | Emergency-stop marker; projects over a hard budget; overrides with their expiry | Text | Marker until `ws-stop-all --clear`; the budget flag is ignored after 2 h |
 | `~/.local/state/ws-gate/opt-outs.log`, `ws-kit-update.log`, `ws-backup-lite.log` | Commits without gitleaks; updates applied or refused; each backup with `encrypted` or `UNENCRYPTED` | Text | Appended |
 | `~/.local/share/ws-kit/npm/<name>/`, `mcp-trust.tsv` | Installed pinned npm trees and their recorded hashes; sha256 of local MCP executables pinned on first use | Files, TSV | Until the pin changes |
-| `~/.cache/ws-memory/` | Redacted transcript copies handed to MemPalace when a transcript holds `<private>` | Files, 0700 | 2 days |
+| `~/.cache/ws-memory/` | Redacted transcript copies handed to MemPalace when a transcript holds `<private>`; with `memory=wing:W`, one copy per session (`w-<id>/`) whose cwd names the wing | Files, 0700 | 2 days |
 | `~/.local/share/ws-telemetry/compliance.json` | The last `ws-audit --compliance` result | JSON | Overwritten on each run |
 | `/etc/claude-code/` (optional) | `managed-settings.d/50-ws-kit.json`, `hooks/guard.sh`, `ws-credential-paths.txt` | Root-owned, 0644 / 0755 | Until `install.sh --managed` runs again |
-| `~/.config/claude-accounts/` | `active`, `projects.conf` | Text; `projects.conf` 0600 | Until changed with `claude-account` |
+| `~/.config/claude-accounts/` | `active`, `projects.conf` (before the profiles; `install.sh` copies them into `~/.config/ws-profiles/` once) | Text; `projects.conf` 0600 | Read only when the new files are missing |
 | `~/.config/ws-telegram/`, `~/.local/state/ws-telegram/` | Chat id and switches; pending one-time codes | Text and JSON, created with umask 077 | Codes expire in 10 minutes; the rest until `ws-telegram forget` |
 | `/tmp/claude-agents-<uid>/`, `/tmp/claude-watch-<uid>/`, `/tmp/claude-burn-<uid>/` | Subagent registry, reminder timestamps, cost samples | Files | Temporary |
 | `${XDG_RUNTIME_DIR:-/tmp}/ws-otel-<uid>/`, `ws-cache-<uid>/` | Collector pid; cached command output | Files, 0700 | Temporary |

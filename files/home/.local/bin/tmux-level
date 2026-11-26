@@ -31,10 +31,18 @@
 # Agent identity (WS-AI-026): --agent NAME starts Claude with WS_AGENT=NAME and the az, gh and kubectl credentials
 # of ~/.config/ws-agent/NAME/{azure,gh,kube/config} (log in there yourself, with a reduced-scope identity); guard.sh
 # then refuses to switch them. The tab remembers it (@cagent) for later level changes; --agent none drops it.
+# --agent is the credentials-only case of a profile (ADR-021): a profile NAME keeps its credentials in that same
+# ~/.config/ws-agent/NAME, so --agent NAME gives the tab NAME's az, gh and kubectl logins while it keeps its Claude
+# account; ws-profile tab NAME switches all of it. A level change keeps the tab's profile (@cprofile): the command is
+# typed after «eval "$(ws-profile --export NAME)" &&», which gives the pane's shell that profile's environment.
 # Usage: tmux-level full|normal|bare [PANE] [--agent NAME|none]
 #      tmux-level --profile full|normal|bare|solo [settings.json] [folder]   prints the generated profile (tests)
-#      tmux-level --command full|normal|bare [folder] [--agent NAME]       prints the command Claude would start with
+#      tmux-level --command full|normal|bare [folder] [--agent NAME] [--pane PANE]
+#                                     prints the command Claude would start with (--pane: with that tab's profile)
 #      tmux-level --settings-file normal|solo                              writes that profile, prints its path
+#      tmux-level --prefix PANE          prints the profile prefix a restart of that pane types
+#      tmux-level --fenced settings.json   prints the copy of that profile with the fence of this process's profile
+#                                     (WS_PROFILE, else the one of CLAUDE_CONFIG_DIR), or the same path if none
 set -euo pipefail
 PATH="$HOME/.local/bin:$PATH"   # the tmux server that runs this from a menu may not have it
 D="${WS_LEVELS_DIR:-$HOME/.config/claude-levels}"
@@ -129,6 +137,42 @@ agent_env() {
   printf "WS_AGENT=%s AZURE_CONFIG_DIR='%s' GH_CONFIG_DIR='%s' KUBECONFIG='%s' " "$n" "$a/azure" "$a/gh" "$a/kube/config"
 }
 
+# profile_prefix <pane> — «eval "$(ws-profile --export NAME)" && » for the profile that pane's tab keeps ("" when
+# ws-profile is not installed).
+profile_prefix() {
+  local n
+  [[ -x "$HOME/.local/bin/ws-profile" && -n "${1:-}" ]] || return 0
+  n="$("$HOME/.local/bin/ws-profile" --of-pane "$1" 2>/dev/null)" || return 0
+  [[ "$n" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]] || return 0
+  # shellcheck disable=SC2016  # typed into the pane, expanded by its shell
+  printf 'eval "$(ws-profile --export %s)" && ' "$n"
+}
+
+# fenced <settings.json> — the copy of that file with the fence of this process's profile (ws-profile --fence):
+# sandbox.filesystem.denyRead and Read deny rules for the other profiles' conversations and Claude logins. Lists merge
+# across sources, so the copy only ADDS. No fence, no ws-profile or a file that is not JSON: the same path.
+fenced() {
+  local f="$1" n="${WS_PROFILE:-}" fj out tmp
+  [[ -f "$f" && -x "$HOME/.local/bin/ws-profile" ]] || { printf '%s\n' "$f"; return 0; }
+  if ! [[ "$n" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]]; then
+    case "${CLAUDE_CONFIG_DIR:-}" in
+      ""|"$HOME/.claude") n=work ;; "$HOME/.claude-personal") n=personal ;;
+      "$HOME/.claude-profiles/"*) n="${CLAUDE_CONFIG_DIR#"$HOME/.claude-profiles/"}" ;; *) n=work ;;
+    esac
+  fi
+  fj="$("$HOME/.local/bin/ws-profile" --fence "$n" 2>/dev/null)" || { printf '%s\n' "$f"; return 0; }
+  if [[ "$(jq -r '(.dirs | length) + (.files | length)' <<<"$fj" 2>/dev/null)" == 0 ]]; then printf '%s\n' "$f"; return 0; fi
+  out="${f%.json}@$n.json"; [[ "$out" == "$f" ]] && out="$f@$n.json"
+  tmp="$(mktemp "$(dirname "$out")/.fence.XXXXXX")" || { printf '%s\n' "$f"; return 0; }
+  if jq --argjson fe "$fj" '(. // {})
+      | .sandbox.filesystem.denyRead = (((.sandbox.filesystem.denyRead // []) + (($fe.dirs + $fe.files) | map("/" + .))) | unique)
+      | .permissions.deny = (((.permissions.deny // []) + ($fe.dirs | map("Read(/" + . + "/**)")) + ($fe.files | map("Read(/" + . + ")"))) | unique)' \
+      "$f" > "$tmp" 2>/dev/null; then
+    chmod 600 "$tmp" && mv -f "$tmp" "$out" && printf '%s\n' "$out" && return 0
+  fi
+  rm -f "$tmp"; echo "tmux-level: could not add the profile fence to $f" >&2; printf '%s\n' "$f"
+}
+
 command_for() {   # level [folder] → Claude command (resumes the folder's conversation, or starts a new one)
   local f="$D/full.json"
   mkdir -p "$D" && chmod 700 "$D"
@@ -151,19 +195,25 @@ command_for() {   # level [folder] → Claude command (resumes the folder's conv
 # The level names from before the rename (completo, puro) are still accepted as input.
 canon() { case "$1" in completo) echo full ;; puro) echo bare ;; *) echo "$1" ;; esac; }
 # --agent NAME anywhere in the arguments; the rest stay positional.
-agent="" agent_set=0 args=()
+agent="" agent_set=0 args=() ppane=""
 while (( $# )); do
-  case "$1" in --agent) agent="${2:-}"; agent_set=1; shift 2 || shift ;; *) args+=("$1"); shift ;; esac
+  case "$1" in
+    --agent) agent="${2:-}"; agent_set=1; shift 2 || shift ;;
+    --pane) ppane="${2:-}"; shift 2 || shift ;;
+    *) args+=("$1"); shift ;;
+  esac
 done
 set -- "${args[@]}"
 case "${1:-}" in
   --profile) : "${2:?level}"; profile "$(canon "$2")" "${3:-}" "${4:-}"; exit $? ;;
   --command) : "${2:?level}"; pre="$(agent_env "$agent")" || exit 1; c="$(command_for "$(canon "$2")" "${3:-}")" || exit 1
-             echo "$pre$c"; exit 0 ;;
+             echo "$(profile_prefix "$ppane")$pre$c"; exit 0 ;;
+  --fenced) fenced "${2:?settings file}"; exit 0 ;;
+  --prefix) profile_prefix "${2:-}"; exit 0 ;;
   --settings-file) [[ "${2:-}" == normal || "${2:-}" == solo ]] || { echo "usage: tmux-level --settings-file normal|solo" >&2; exit 2; }
              settings_file "$2"; exit $? ;;
   full|normal|bare|completo|puro) ;;
-  *) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
 
 level="$(canon "$1")"; pane="${2:-$(tmux display -p '#{pane_id}')}"
@@ -173,7 +223,7 @@ win="$(tmux display -p -t "$pane" '#{window_id}')"
 err="$(mktemp)"
 { pre="$(agent_env "$agent" 2>"$err")" && cmd="$(command_for "$level" "$(tmux display -p -t "$pane" '#{pane_current_path}')" 2>"$err")"; } \
   || { tmux display -d 5000 "$(tail -c 300 "$err")"; rm -f "$err"; exit 1; }
-rm -f "$err"; cmd="$pre$cmd"
+rm -f "$err"; cmd="$(profile_prefix "$pane")$pre$cmd"
 
 # Is there a Claude in the pane? (the native binary is named after its version, e.g. 2.1.329)
 running() { [[ ! "$(tmux display -p -t "$pane" '#{pane_current_command}')" =~ ^(bash|zsh|sh|fish|dash)$ ]]; }

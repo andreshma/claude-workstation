@@ -1,16 +1,33 @@
 #!/usr/bin/env bash
 #
 # claude-resume — the kit's way to start Claude in a tab (tmux-resurrect on restore, the tab launchers, tmux-level,
-# tmux-solo, claude-account): resumes the folder's last conversation and, if there is none to resume (no messages
-# ever, or only -p sessions), opens a new Claude. With --resume/-r/--continue/-c the caller already chose: it starts
-# Claude with exactly those arguments.
+# tmux-solo, ws-profile, claude-account): resumes the folder's last conversation and, if there is none to resume (no
+# messages ever, or only -p sessions), opens a new Claude. With --resume/-r/--continue/-c the caller already chose: it
+# starts Claude with exactly those arguments; with --new it always starts a new conversation (ws-profile tab, when the
+# tab moves to a profile that does not share the conversation store).
 # Level: when the caller passes no --settings or --setting-sources it starts at the NORMAL level (ADR-013), that is,
 # with the profile tmux-level generates from ~/.config/claude-levels/normal-adds.json (the commands excluded from the
 # sandbox); the user settings stay strict, so a «claude» typed by hand runs with no exclusions.
-# Usage: claude-resume [claude arguments...]
+# Profile fence (ADR-021): the --settings file is swapped for its copy with the tab's profile fence (tmux-level
+# --fenced: other profiles' conversations and Claude logins denied to sandboxed reads and the Read tool) when there
+# is one; with a single conversation store and no custom profile, the file is used as it is.
+# Usage: claude-resume [--new] [claude arguments...]
+new=0 args=()
+for a in "$@"; do [[ "$a" == --new ]] && new=1 || args+=("$a"); done
+set -- "${args[@]}"
 if [[ " $* " != *" --settings "* && " $* " != *" --setting-sources "* ]] && command -v tmux-level >/dev/null; then
   f="$(tmux-level --settings-file normal 2>/dev/null)" && [[ -s "$f" ]] && set -- --settings "$f" "$@"
 fi
+if command -v tmux-level >/dev/null; then
+  args=("$@")
+  for (( i = 0; i < ${#args[@]} - 1; i++ )); do
+    [[ "${args[i]}" == --settings ]] || continue
+    g="$(tmux-level --fenced "${args[i+1]}" 2>/dev/null)" && [[ -s "$g" ]] && args[i+1]="$g"
+    break
+  done
+  set -- "${args[@]}"
+fi
+(( new )) && exec claude "$@"
 case " $* " in
   *" --resume "*|*" -r "*|*" --continue "*|*" -c "*) exec claude "$@" ;;
 esac

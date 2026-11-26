@@ -1,0 +1,12 @@
+# plugins.lock — TPM and every tmux plugin of ~/.tmux.conf pinned by commit (WS-SEC-016). ws-plugins apply (run by
+# install.sh and ws-update instead of TPM's install_plugins and update_plugins) clones each one and checks out exactly
+# this commit; a plugin that cannot be put at its commit, or whose files were changed, is moved out of
+# ~/.tmux/plugins so tmux does not load it (WS_PLUGINS_ALLOW_UNPINNED=1 keeps it, logged and audited).
+# To move a pin: review the upstream diff between the two commits, change the commit here and run
+# bash tests/supply-tools.sh.
+#
+# name            url                                                commit
+tpm               https://github.com/tmux-plugins/tpm                e261deb1b47614eed3400089ce7197dc68acc4eb
+tmux-resurrect    https://github.com/tmux-plugins/tmux-resurrect     cff343cf9e81983d3da0c8562b01616f12e8d548
+tmux-continuum    https://github.com/tmux-plugins/tmux-continuum     0698e8f4b17d6454c71bf5212895ec055c578da0
+extrakto          https://github.com/laktak/extrakto                 d1af77988081dae496fa4a1f5e5e6bc9ef66767f

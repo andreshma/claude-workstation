@@ -1,0 +1,553 @@
+#!/usr/bin/env bash
+#
+# ws-profile — per-tab profiles (ADR-021): each tmux tab can run with its own Claude account or organisation, Azure
+# tenant and default subscription, gh and kubectl credentials and, by default, its own conversations and no MemPalace,
+# so what you do for one client never flows into another client's organisation. A profile is a Claude config dir +
+# the credential dirs ~/.config/ws-agent/NAME/{azure,gh,kube/config} + options in ~/.config/ws-profiles/NAME/
+# (see ~/.local/lib/ws-profile.sh). Built in: work (~/.claude, your usual credentials) and personal
+# (~/.claude-personal, same conversations as work), the two accounts of claude-account.
+#
+# Usage:
+#   ws-profile new NAME [--tenant ID] [--subscription ID] [--share-with PROFILE] [--memory off|on|wing:W]
+#                  [--label TEXT] [--colour COLOUR] [--claude-dir work|personal] [--no-login]
+#                                   creates it and guides each login here (Claude, az, gh, kubeconfig); in a
+#                                   terminal, never from Claude. --share-with links its conversations to PROFILE's;
+#                                   --claude-dir reuses that account's Claude login (another Azure tenant, same org)
+#   ws-profile login NAME [claude|azure|gh|kube]   one login again (all, asking, without the second argument)
+#   ws-profile logout NAME            signs out of NAME's Claude session only
+#   ws-profile tab NAME [PANE]        restarts the tab's Claude with NAME (keeps its level); resumes the conversation
+#                                   when NAME shares the conversation store, otherwise starts a new one and says so
+#   ws-profile use NAME               profile for new tabs
+#   ws-profile project NAME|remove [folder | --pane ID]   pins NAME to a project (its repo and worktrees)
+#   ws-profile projects               projects with a pinned profile
+#   ws-profile list | status | show NAME
+#   ws-profile setup [NAME]           links the kit setup and MCP servers into NAME's Claude dir (all when omitted)
+#   ws-profile remove NAME            asks; its credentials and conversations only go with the typed name
+#   ws-profile audit                  read-only checks, one per line: status<TAB>check<TAB>detail<TAB>advice
+#   ws-profile menu [PANE]            the tmux menu of profiles (Menu → Claude → Profile)
+# Precedence for a new tab or pane: project pin > the tab's profile (a split) > ws-profile use > work. A restart keeps
+# the tab's profile (@cprofile). Internal: --export NAME · --resolve [DIR] [PANE] · --of-pane PANE · --fence NAME.
+set -uo pipefail
+PATH="$HOME/.local/bin:$PATH"   # tmux menus start it with a minimal PATH
+# shellcheck source=../lib/ws-profile.sh
+. "$HOME/.local/lib/ws-profile.sh" || { echo "✖ ~/.local/lib/ws-profile.sh is missing" >&2; exit 1; }
+
+# From the global state (~/.claude.json) only the finished start-up (onboarding, theme, trusted folders) and the MCP
+# servers are copied to a profile's Claude dir; never the account (oauthAccount, userID, keys).
+STATE_KEYS='["hasCompletedOnboarding","lastOnboardingVersion","lastReleaseNotesSeen","theme",
+  "projects","mcpServers","autoUpdates","editorMode","preferredNotifChannel","verbose",
+  "bypassPermissionsModeAccepted","hasAcknowledgedCostThreshold","shiftEnterKeyBindingInstalled"]'
+
+msg()  { if [[ -n "${TMUX:-}" && ! -t 1 ]]; then tmux display -d 5000 "$1"; else printf '%s\n' "$1"; fi; }
+die()  { msg "✖ $1"; exit "${2:-1}"; }
+need() { wsp_valid "${1:-}" || die "invalid profile name «${1:-}»: ^[a-z0-9][a-z0-9_-]{0,31}\$" 2; }
+not_in_claude() {   # logins and removals are the owner's: never from inside a Claude session
+  [[ -z "${CLAUDECODE:-}" ]] || die "ws-profile $1 is yours to run, in a terminal: not from inside Claude" 2
+}
+ask() { local r; read -rp "$1 " r || return 1; [[ "$r" =~ ^[yY]([eE][sS])?$ ]]; }
+audit() { jq -nc --arg d "${AUDIT_CWD:-$PWD}" '{cwd: $d}' 2>/dev/null | "$HOME/.claude/hooks/audit.sh" "$1" "$2" >/dev/null 2>&1 || true; }
+
+#######################################
+# setup NAME — the profile's Claude dir: the kit setup linked to ~/.claude, its conversations linked only when it
+# shares them (the others' links removed: removing a link never deletes data), and the start-up state and MCP
+# servers of ~/.claude.json (without MemPalace when its memory is off). ~/.claude itself is never touched.
+#######################################
+setup_profile() {
+  local n="$1" dir store share x src="$HOME/.claude.json" dst mem
+  wsp_get "$n" claude_dir; dir="$REPLY"
+  [[ "$dir" == "$HOME/.claude" ]] && return 0
+  mkdir -p "$dir" && chmod 700 "$dir"
+  for x in "${WSP_SETUP[@]}"; do
+    [[ -e "$HOME/.claude/$x" ]] || continue
+    if [[ -L "$dir/$x" ]]; then continue
+    elif [[ -e "$dir/$x" ]]; then echo "  warn    $dir/$x already exists and is not a link: left as is"
+    else ln -s "$HOME/.claude/$x" "$dir/$x"; echo "  link    ${dir/#"$HOME"/\~}/$x"; fi
+  done
+  wsp_get "$n" share_conversations; share="$REPLY"
+  wsp_store "$n"; store="$REPLY"
+  for x in "${WSP_CONVO[@]}"; do
+    if [[ "$share" != no && "$store" != "$dir" ]]; then
+      if [[ ! -e "$store/$x" && "$store" != "$HOME/.claude" ]]; then
+        if [[ "$x" == history.jsonl ]]; then ( umask 077; : >> "$store/$x" ); else mkdir -p "$store/$x"; fi
+      fi
+      [[ -e "$store/$x" && ! -e "$dir/$x" && ! -L "$dir/$x" ]] && { ln -s "$store/$x" "$dir/$x"; echo "  shared  $x → ${store/#"$HOME"/\~}"; }
+    elif [[ -L "$dir/$x" ]]; then
+      rm -f "$dir/$x"; echo "  unlink  $x (isolated profile: its own conversations)"
+    fi
+  done
+  if [[ -f "$src" ]]; then
+    dst="$dir/.claude.json"; wsp_get "$n" memory; mem="$REPLY"
+    [[ -f "$dst" ]] || ( umask 077; echo '{}' > "$dst" )
+    jq --slurpfile s "$src" --argjson k "$STATE_KEYS" --arg mem "$mem" '
+      . as $p | ($s[0] | with_entries(select(.key as $x | $k | index($x)))) as $base
+      | $base * $p
+      | .hasCompletedOnboarding = ($base.hasCompletedOnboarding // .hasCompletedOnboarding)
+      | .projects = (($base.projects // {}) * ($p.projects // {}))
+      | .mcpServers = (($p.mcpServers // {}) + ($base.mcpServers // {}))   # the kit definitions win (pinned)
+      | if $mem == "off" then del(.mcpServers.mempalace) else . end' "$dst" > "$dst.tmp" && mv "$dst.tmp" "$dst"
+    chmod 600 "$dst"
+    echo "  state   start-up and trusted folders copied; MCP: $(jq -r '.mcpServers // {} | keys | join(", ")' "$dst")"
+  fi
+}
+
+#######################################
+# login NAME [what] — one or all of the logins of NAME, in this terminal, each with NAME's own folder.
+#######################################
+login_one() {
+  local n="$1" w="$2" dir c="$WSP_CREDS/$1" t s p
+  wsp_get "$n" claude_dir; dir="$REPLY"
+  # wslview opens the Windows browser from WSL (without it, the CLIs cannot open it on their own).
+  if [[ -z "${BROWSER:-}" ]] && command -v wslview >/dev/null; then export BROWSER=wslview; fi
+  case "$w" in
+    claude)
+      echo "Claude for «$n»: in the browser, switch claude.ai to the organisation of this profile first."
+      echo "If the browser does not open: the c key copies the URL; if it shows a code, paste it here with Ctrl+Shift+V."
+      if [[ "$dir" == "$HOME/.claude" ]]; then env -u CLAUDE_CONFIG_DIR claude auth login
+      else [[ -f "$dir/.claude.json" ]] || setup_profile "$n" >/dev/null; CLAUDE_CONFIG_DIR="$dir" claude auth login; fi ;;
+    azure)
+      wsp_builtin "$n" && die "$n uses your usual az login (az login in a plain shell)"
+      command -v az >/dev/null || { echo "  skipped az: the Azure CLI is not installed"; return 0; }
+      wsp_get "$n" tenant; t="$REPLY"; wsp_get "$n" subscription; s="$REPLY"
+      AZURE_CONFIG_DIR="$c/azure" az login ${t:+--tenant "$t"} || return 1
+      [[ -n "$s" ]] && { AZURE_CONFIG_DIR="$c/azure" az account set --subscription "$s" || return 1; }
+      AZURE_CONFIG_DIR="$c/azure" az account show --query '{tenant: tenantId, subscription: name}' -o tsv ;;
+    gh)
+      wsp_builtin "$n" && die "$n uses your usual gh login (gh auth login in a plain shell)"
+      command -v gh >/dev/null || { echo "  skipped gh: the GitHub CLI is not installed"; return 0; }
+      GH_CONFIG_DIR="$c/gh" gh auth login ;;
+    kube)
+      wsp_builtin "$n" && die "$n uses your usual kubeconfig"
+      read -rp "Kubeconfig to copy for «$n» (a path; empty skips): " p || p=""
+      p="${p/#\~/$HOME}"
+      if [[ -z "$p" ]]; then echo "  skipped kubeconfig (kubectl in this profile has no cluster)"
+      elif [[ -f "$p" ]]; then install -m 600 "$p" "$c/kube/config" && echo "  copied  kubeconfig → ${c/#"$HOME"/\~}/kube/config"
+      else echo "  skipped kubeconfig: $p does not exist"; fi ;;
+    *) die "usage: ws-profile login NAME [claude|azure|gh|kube]" 2 ;;
+  esac
+}
+login() {
+  local n="${1:-}" w="${2:-}" x
+  need "$n"; not_in_claude login; wsp_exists "$n" || die "no profile «$n»: ws-profile new $n"
+  if [[ -n "$w" ]]; then login_one "$n" "$w"; return; fi
+  for x in claude azure gh kube; do
+    wsp_builtin "$n" && [[ "$x" != claude ]] && continue
+    if ask "Log in to $x for «$n» now? [y/N]"; then login_one "$n" "$x" || echo "  $x login did not finish: ws-profile login $n $x"; fi
+  done
+}
+
+new_profile() {
+  local n="${1:-}" tenant="" sub="" share=no mem=off label="" colour="" cdir="" nologin=0 f c
+  need "$n"; shift; not_in_claude new
+  wsp_builtin "$n" && die "$n is built in: ws-profile login $n"
+  [[ -e "$WSP_CONF/$n/profile.conf" ]] && die "«$n» already exists: ws-profile show $n · ws-profile login $n"
+  while (( $# )); do
+    case "$1" in
+      --tenant) tenant="${2:-}"; shift ;;
+      --subscription) sub="${2:-}"; shift ;;
+      --share-with) share="${2:-}"; shift ;;
+      --memory) mem="${2:-}"; shift ;;
+      --label) label="${2:-}"; shift ;;
+      --colour|--color) colour="${2:-}"; shift ;;
+      --claude-dir) cdir="${2:-}"; shift ;;
+      --no-login) nologin=1 ;;
+      *) die "unknown option: $1 (ws-profile --help)" 2 ;;
+    esac
+    shift
+  done
+  [[ "$share" == no ]] || { need "$share"; wsp_exists "$share" || die "--share-with: no profile «$share»"; [[ "$share" != "$n" ]] || die "a profile cannot share with itself"; }
+  [[ "$mem" == off || "$mem" == on || "$mem" =~ ^wing:[a-z0-9][a-z0-9_]{0,63}$ ]] || die "--memory: off, on or wing:<name> (a-z 0-9 _)" 2
+  [[ -z "$tenant" || "$tenant" =~ ^[A-Za-z0-9.-]{1,64}$ ]] || die "--tenant: a tenant id or domain" 2
+  [[ -z "$sub" || "$sub" =~ ^[A-Za-z0-9\ ._()-]{1,64}$ ]] || die "--subscription: an id or a name" 2
+  # shellcheck disable=SC2088  # written to profile.conf as is: ~ is expanded when it is read
+  case "$cdir" in
+    "") cdir="~/.claude-profiles/$n" ;;
+    work) cdir="~/.claude" ;;
+    personal) cdir="~/.claude-personal" ;;
+    *) die "--claude-dir: work or personal (omit it for the profile's own Claude login)" 2 ;;
+  esac
+  mkdir -p "$WSP_CONF/$n" && chmod 700 "$WSP_CONF" "$WSP_CONF/$n"
+  f="$WSP_CONF/$n/profile.conf"
+  ( umask 077
+    printf '# profile.conf — ws-profile %s, created %s (see ~/.local/lib/ws-profile.sh)\n' "$n" "$(date +%F)"
+    printf 'claude_dir=%s\ntenant=%s\nsubscription=%s\nshare_conversations=%s\nmemory=%s\nlabel=%s\ncolour=%s\n' \
+      "$cdir" "$tenant" "$sub" "$share" "$mem" "${label:-$n}" "${colour:-colour214}" ) > "$f"; chmod 600 "$f"
+  c="$WSP_CREDS/$n"; mkdir -p "$c/azure" "$c/gh" "$c/kube"; chmod 700 "$WSP_CREDS" "$c" "$c/azure" "$c/gh" "$c/kube"
+  echo "Profile «$n»: settings ${f/#"$HOME"/\~} · credentials ${c/#"$HOME"/\~} · Claude ${cdir}"
+  setup_profile "$n"
+  (( nologin )) || login "$n"
+  echo
+  echo "Next: ws-profile tab $n (this tab) · ws-profile project $n <folder> (always, for a repo) · ws-profile show $n"
+}
+
+#######################################
+# Tabs: the shared restart loop (the same one as tmux-solo and the old claude-account).
+#######################################
+# claude_running <pane> — is a Claude running in the pane? Either signal is enough: the foreground command is not a
+# shell (the native binary is named after its version, e.g. "2.1.325"), or a claude process descends from the pane.
+claude_running() {
+  local root cur
+  cur="$(tmux display -p -t "$1" '#{pane_current_command}')"
+  [[ "$cur" =~ ^(bash|zsh|sh|fish|dash)$ ]] || return 0
+  root="$(tmux display -p -t "$1" '#{pane_pid}')"
+  ps -e -o pid=,ppid=,comm=,args= | awk -v r="$root" '
+    { parent[$1] = $2
+      if ($3 ~ /^claude$/ || $4 ~ /(^|\/)claude$/ || $4 ~ /\/claude\/versions\// || ($3 == "node" && $0 ~ /claude/)) c[$1] = 1 }
+    END { for (p in c) for (q = parent[p]; q > 1; q = parent[q]) if (q == r) { found = 1; break }
+          exit !found }'
+}
+# restart_pane <pane> <command> — closes the Claude in the pane (if any) and types the command.
+restart_pane() {
+  local pane="$1" i
+  if claude_running "$pane"; then
+    # Ctrl+C first: it clears whatever is typed in the input box; otherwise «<text>/exit» is sent as a message and
+    # Claude never closes. If /exit still does not close it in 10 s, Ctrl+C twice (Claude's own way out).
+    tmux send-keys -t "$pane" Escape; sleep 0.5
+    tmux send-keys -t "$pane" C-c; sleep 0.4
+    claude_running "$pane" && { tmux send-keys -t "$pane" -l "/exit"; tmux send-keys -t "$pane" Enter; }
+    for (( i = 0; i < 40; i++ )); do
+      claude_running "$pane" || break
+      (( i == 20 )) && { tmux send-keys -t "$pane" C-c; sleep 0.3; tmux send-keys -t "$pane" C-c; }
+      sleep 0.5
+    done
+    (( i < 40 )) || die "Claude did not close; close it (/exit) and try again"
+  fi
+  tmux send-keys -t "$pane" -l "$2"; tmux send-keys -t "$pane" Enter
+}
+
+# of_pane <pane> — REPLY = the profile a restart of that pane keeps: the tab's @cprofile, the old @caccount, or the
+# one its folder resolves to.
+of_pane() {
+  local w r
+  w="$(tmux display -p -t "$1" '#{window_id}' 2>/dev/null)" || { wsp_default; return; }
+  r="$(tmux show -wqv -t "$w" @cprofile 2>/dev/null)"
+  [[ -z "$r" ]] && r="$(tmux show -wqv -t "$w" @caccount 2>/dev/null)"
+  if [[ -n "$r" ]] && wsp_valid "$r"; then REPLY="$r"; return; fi
+  wsp_resolve "$(tmux display -p -t "$1" '#{pane_current_path}' 2>/dev/null)"
+}
+
+# mark_tab <window> <name> — the tab's options: @cprofile, the label and colour of the bar (custom profiles only),
+# the old @caccount (personal or work) and the «·P» suffix of the personal account, as claude-account did.
+mark_tab() {
+  local w="$1" n="$2" name
+  tmux set -w -t "$w" @cprofile "$n"
+  if wsp_builtin "$n"; then tmux set -wu -t "$w" @cprofile_label 2>/dev/null; tmux set -wu -t "$w" @cprofile_colour 2>/dev/null
+  else wsp_get "$n" label; tmux set -w -t "$w" @cprofile_label "$REPLY"
+       wsp_get "$n" colour; tmux set -w -t "$w" @cprofile_colour "$REPLY"; fi
+  tmux set -w -t "$w" @caccount "$([[ "$n" == personal ]] && echo personal || echo work)"
+  name="$(tmux display -p -t "$w" '#W')"; name="${name%·P}"
+  [[ "$n" == personal ]] && name="$name·P"
+  tmux rename-window -t "$w" "$name"
+}
+
+tab() {
+  local n="" pane="" quiet=0 win path cur dir lvl cmd sp resume=1 a b pin
+  while (( $# )); do case "$1" in --quiet) quiet=1 ;; *) if [[ -z "$n" ]]; then n="$1"; else pane="$1"; fi ;; esac; shift; done
+  need "$n"; wsp_exists "$n" || die "no profile «$n»: ws-profile list"
+  pane="${pane:-$(tmux display -p '#{pane_id}')}"
+  win="$(tmux display -p -t "$pane" '#{window_id}')" || die "no pane $pane"
+  path="$(tmux display -p -t "$pane" '#{pane_current_path}')"
+  of_pane "$pane"; cur="$REPLY"
+  wsp_get "$n" claude_dir; dir="$REPLY"
+  if [[ "$dir" != "$HOME/.claude" ]]; then
+    [[ -f "$dir/.credentials.json" ]] || die "«$n» is not signed in to Claude: ws-profile login $n claude (Menu → Claude → Profile)"
+    # Without the start-up state, Claude would show the login screen.
+    jq -e '.hasCompletedOnboarding' "$dir/.claude.json" >/dev/null 2>&1 || setup_profile "$n" >/dev/null
+  fi
+  wsp_store "$cur"; a="$REPLY"; wsp_store "$n"; b="$REPLY"
+  [[ "$a" == "$b" ]] || resume=0
+  # The tab keeps its level: solo (as claude-account did), full or bare (tmux-level), otherwise normal.
+  if [[ -n "$(tmux show -wqv -t "$win" @csolo)" ]]; then
+    if [[ -n "$(tmux show -wqv -t "$win" @csolo_nosb)" ]]; then sp="${WS_LEVELS_DIR:-$HOME/.config/claude-levels}/solo-unsandboxed.json"
+    else sp="$(tmux-level --settings-file solo 2>/dev/null)" || sp="$HOME/.config/claude-solo/settings.json"; fi
+    cmd="claude-resume --permission-mode auto --settings '$sp'"
+  else
+    lvl="$(tmux show -wqv -t "$win" @clevel)"; [[ "$lvl" == full || "$lvl" == bare ]] || lvl=normal
+    cmd="$(tmux-level --command "$lvl" "$path" 2>/dev/null)" || cmd="claude-resume"
+  fi
+  # Another conversation store: a new conversation, never a resume of what the other profile cannot see.
+  (( resume )) || cmd="${cmd/#claude-resume/claude-resume --new}"
+  restart_pane "$pane" "eval \"\$(ws-profile --export $n)\" && $cmd"
+  mark_tab "$win" "$n"
+  AUDIT_CWD="$path" audit profile-tab "$cur → $n ($([[ $resume == 1 ]] && echo same conversation || echo new conversation))"
+  wsp_pin "$path"; pin="$REPLY"; [[ "$pin" == "$n" ]] && pin=""   # only a pin to ANOTHER profile is worth saying
+  (( quiet )) && return 0
+  if (( resume )); then msg "$(tmux display -p -t "$win" '#W'): profile $n, same conversation${pin:+ · project pinned to $pin}"
+  else msg "$(tmux display -p -t "$win" '#W'): profile $n, NEW conversation ($n does not share conversations with $cur; its earlier ones: claude-resume -r)${pin:+ · project pinned to $pin}"; fi
+}
+
+use() {
+  local n="${1:-}" quiet="${2:-}"
+  need "$n"; wsp_exists "$n" || die "no profile «$n»: ws-profile list"
+  mkdir -p "$WSP_CONF" && chmod 700 "$WSP_CONF"
+  ( umask 077; echo "$n" > "$WSP_CONF/default" )
+  if tmux has-session 2>/dev/null; then   # applies to the tmux server even when called from outside
+    tmux set -g @cprofile_def "$n"; tmux set -g @caccount_def "$([[ "$n" == personal ]] && echo personal || echo work)"
+    # The old claude-account set CLAUDE_CONFIG_DIR in the server's environment; accounts.sh decides now.
+    tmux set-environment -gu CLAUDE_CONFIG_DIR 2>/dev/null
+  fi
+  [[ -n "$quiet" ]] || msg "New tabs: profile $n"
+}
+
+# root_of <folder> — project root: the main repo (also from a worktree) or the folder if it is not a repo.
+root_of() {
+  local d c; d="$(realpath -e "${1:-.}")" || return 1
+  c="$(git -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [[ "$c" == */.git ]]; then echo "${c%/.git}"; else git -C "$d" rev-parse --show-toplevel 2>/dev/null || echo "$d"; fi
+}
+
+project() {
+  local n="" d="." p="" r f="$WSP_CONF/projects.conf" tmp quiet="" a
+  for a in "$@"; do
+    case "$a" in --quiet) quiet=1 ;; *) if [[ -z "$n" ]]; then n="$a"; elif [[ "$d" == . && -z "$p" ]]; then d="$a"; p=1; else p="$a"; fi ;; esac
+  done
+  [[ "$n" == remove ]] || { need "$n"; wsp_exists "$n" || die "no profile «$n»: ws-profile list"; }
+  if [[ "$d" == --pane ]]; then [[ "$p" != 1 && -n "$p" ]] || die "usage: ws-profile project NAME|remove --pane ID" 2
+    d="$(tmux display -p -t "$p" '#{pane_current_path}')"; fi
+  r="$(root_of "$d")" || die "Folder not found: $d"
+  [[ "$r" == *$'\n'* ]] && die "Invalid path"
+  mkdir -p "$WSP_CONF" && chmod 700 "$WSP_CONF"
+  [[ -f "$f" || ! -f "$WSP_LEGACY/projects.conf" ]] || cp "$WSP_LEGACY/projects.conf" "$f"
+  touch "$f"; tmp="$(mktemp "$WSP_CONF/.projects.XXXXXX")"
+  awk -v r="$r" '{ p = $0; sub(/^[^ \t]+[ \t]+/, "", p); if (p != r) print }' "$f" > "$tmp"
+  [[ "$n" == remove ]] || printf '%s %s\n' "$n" "$r" >> "$tmp"
+  chmod 600 "$tmp"; mv "$tmp" "$f"
+  [[ -n "$quiet" ]] && return 0
+  if [[ "$n" == remove ]]; then msg "$(basename "$r"): no pinned profile (uses the one for new tabs)"
+  else msg "$(basename "$r"): new tabs always use the $n profile"; fi
+}
+
+projects() {
+  local f="$WSP_CONF/projects.conf"
+  [[ -s "$f" ]] || f="$WSP_LEGACY/projects.conf"
+  if [[ -s "$f" ]] && grep -qvE '^[[:space:]]*(#|$)' "$f"; then
+    grep -vE '^[[:space:]]*(#|$)' "$f" | awk '{ c = $1; sub(/^[^ \t]+[ \t]+/, ""); printf "  %-9s %s\n", c, $0 }'
+  else echo "  (no project with a pinned profile)"; fi
+}
+
+# auth_txt NAME — Claude's login status of that profile (text). stdin from /dev/null: `timeout` puts Claude in
+# another process group and, if it touches the terminal, it stays stopped.
+auth_txt() {
+  wsp_get "$1" claude_dir
+  if [[ "$REPLY" == "$HOME/.claude" ]]; then env -u CLAUDE_CONFIG_DIR timeout -k 2 15 claude auth status --text </dev/null 2>&1
+  else CLAUDE_CONFIG_DIR="$REPLY" timeout -k 2 15 claude auth status --text </dev/null 2>&1; fi
+}
+
+# az_of NAME — the default subscription of NAME's az folder, read from its azureProfile.json (no az call, no token).
+az_of() {
+  local f
+  if wsp_builtin "$1"; then f="${AZURE_CONFIG_DIR_DEFAULT:-$HOME/.azure}/azureProfile.json"; else f="$WSP_CREDS/$1/azure/azureProfile.json"; fi
+  sed '1s/^\xEF\xBB\xBF//' "$f" 2>/dev/null | jq -r '[.subscriptions[]? | select(.isDefault) | "\(.name) (tenant \(.tenantId))"] | first // "not signed in"' 2>/dev/null \
+    || echo "not signed in"
+}
+
+show_profile() {
+  local n="${1:-}" k dir store
+  need "$n"; wsp_exists "$n" || die "no profile «$n»: ws-profile list"
+  wsp_get "$n" claude_dir; dir="$REPLY"; wsp_store "$n"; store="$REPLY"
+  printf '%-22s %s\n' profile "$n$(wsp_builtin "$n" && echo ' (built in)')"
+  printf '%-22s %s%s\n' "claude dir" "${dir/#"$HOME"/\~}" "$([[ -f "$dir/.credentials.json" || "$dir" == "$HOME/.claude" ]] || echo ' (not signed in)')"
+  printf '%-22s %s\n' conversations "$([[ "$store" == "$dir" ]] && echo own || echo "shared: ${store/#"$HOME"/\~}")"
+  for k in memory tenant subscription label colour; do wsp_get "$n" "$k"; [[ -n "$REPLY" ]] && printf '%-22s %s\n' "$k" "$REPLY"; done
+  if wsp_builtin "$n"; then printf '%-22s %s\n' credentials "your usual ones (~/.azure, ~/.config/gh, ~/.kube)"
+  else printf '%-22s %s\n' credentials "${WSP_CREDS/#"$HOME"/\~}/$n/{azure,gh,kube/config}"; fi
+  printf '%-22s %s\n' "az default" "$(az_of "$n")"
+  printf '%-22s %s\n' pinned "$(awk -v n="$n" '$1 == n { sub(/^[^ \t]+[ \t]+/, ""); printf "%s ", $0 }' "$WSP_CONF/projects.conf" 2>/dev/null)"
+}
+
+list() {
+  local n d m s
+  wsp_names; wsp_default; d="$REPLY"
+  printf '  %-12s %-10s %-14s %s\n' PROFILE MEMORY CONVERSATIONS "AZURE TENANT"
+  for n in "${WSP_NAMES[@]}"; do
+    wsp_get "$n" memory; m="$REPLY"; wsp_store "$n"; s="$REPLY"; wsp_get "$n" claude_dir
+    [[ "$s" == "$REPLY" ]] && s=own || { wsp_of_dir "$s"; s="with ${REPLY:-?}"; }
+    wsp_get "$n" tenant
+    printf '%s %-12s %-10s %-14s %s\n' "$([[ "$n" == "$d" ]] && echo '*' || echo ' ')" "$n" "$m" "$s" "${REPLY:-$(wsp_builtin "$n" && echo '(your usual)' || echo '-')}"
+  done
+  echo "  * new tabs · ws-profile show NAME · ws-profile status (logins)"
+}
+
+status() {
+  local n t rc
+  wsp_default; echo "New tabs: $REPLY"
+  wsp_names
+  for n in "${WSP_NAMES[@]}"; do
+    wsp_get "$n" claude_dir
+    printf '%-12s ' "$n:"
+    if [[ ! -d "$REPLY" ]]; then echo "not prepared (ws-profile setup $n)"; continue; fi
+    t="$(auth_txt "$n")" && rc=0 || rc=$?
+    if (( rc == 124 || rc == 137 )); then printf 'no answer in 15 s'
+    elif grep -qi '^Organization:' <<<"$t"; then grep -iE '^(Organization|Email):' <<<"$t" | tr '\n' ' '
+    else printf '%s' "$(head -1 <<<"$t")"; fi
+    wsp_builtin "$n" || printf '· az: %s' "$(az_of "$n")"
+    echo
+  done
+  echo "Projects with a pinned profile:"; projects
+}
+
+remove() {
+  local n="${1:-}" t dir
+  need "$n"; not_in_claude remove
+  wsp_builtin "$n" && die "$n is built in and cannot be removed"
+  [[ -d "$WSP_CONF/$n" || -d "$WSP_CREDS/$n" ]] || die "no profile «$n»"
+  ask "Remove profile «$n» (its settings and project pins; credentials and conversations are asked next)? [y/N]" \
+    || { echo "Nothing changed."; return 0; }
+  rm -rf -- "${WSP_CONF:?}/$n"
+  if [[ -f "$WSP_CONF/projects.conf" ]]; then
+    awk -v n="$n" '$1 != n' "$WSP_CONF/projects.conf" > "$WSP_CONF/.projects.tmp" && chmod 600 "$WSP_CONF/.projects.tmp" \
+      && mv "$WSP_CONF/.projects.tmp" "$WSP_CONF/projects.conf"
+  fi
+  wsp_default; [[ "$REPLY" == "$n" ]] && use work quiet
+  echo "Removed the settings of «$n»."
+  dir="$WSP_CLAUDE_ROOT/$n"
+  echo "Still on disk: ${WSP_CREDS/#"$HOME"/\~}/$n (az, gh and kubectl logins)$([[ -d "$dir" ]] && echo " and ${dir/#"$HOME"/\~} (Claude login and conversations)")."
+  read -rp "To delete them too, type the profile name (anything else keeps them): " t || t=""
+  if [[ "$t" == "$n" ]]; then
+    rm -rf -- "${WSP_CREDS:?}/$n" "${WSP_CLAUDE_ROOT:?}/$n"; echo "Deleted its credentials and conversations."
+    audit profile-remove "$n (credentials and conversations deleted)"
+  else echo "Kept them."; audit profile-remove "$n (credentials kept)"; fi
+}
+
+#######################################
+# fence NAME — JSON {dirs, files}: what a tab with NAME must not read with a sandboxed command or the Read tool:
+# the conversations of every other conversation store, every profile's Claude login (literal paths, whatever
+# glob support the sandbox has) and, for a profile with its own store, the MemPalace hand-off copies and the
+# audit log (which hold other tabs' commands and transcripts). tmux-level --fenced merges it into the level profile.
+#######################################
+fence() {
+  local n="$1" mine s x q d
+  local -a dirs=() files=() stores=()
+  wsp_store "$n"; mine="$REPLY"
+  wsp_names
+  for q in "${WSP_NAMES[@]}"; do wsp_store "$q"; stores+=("$REPLY"); done
+  for d in "$WSP_CLAUDE_ROOT"/*/; do [[ -d "$d" ]] && stores+=("${d%/}") && files+=("${d%/}/.credentials.json"); done
+  for s in "${stores[@]}"; do
+    [[ "$s" == "$mine" || -L "$s" ]] && continue
+    for x in "${WSP_CONVO[@]}"; do
+      if [[ -d "$s/$x" && ! -L "$s/$x" ]]; then dirs+=("$s/$x"); elif [[ -f "$s/$x" && ! -L "$s/$x" ]]; then files+=("$s/$x"); fi
+    done
+  done
+  [[ "$mine" != "$HOME/.claude" ]] && dirs+=("${XDG_CACHE_HOME:-$HOME/.cache}/ws-memory" "$HOME/.claude/audit")
+  jq -nc '{dirs: ($ARGS.positional[:($n | tonumber)] | unique), files: ($ARGS.positional[($n | tonumber):] | unique)}' \
+    --arg n "${#dirs[@]}" --args "${dirs[@]}" "${files[@]}"
+}
+
+#######################################
+# audit — read-only checks for ws-audit, one per line: status<TAB>check<TAB>detail<TAB>advice.
+#######################################
+covered() {   # covered <path> <pattern…> — the path is a pattern, under one, or matched by a glob one
+  local p="$1" e; shift
+  for e in "$@"; do
+    e="${e/#\~/$HOME}"; [[ "$e" == //* ]] && e="${e:1}"; e="${e%/}"
+    # shellcheck disable=SC2053  # the entry is matched as a glob on purpose (sandbox and guard globs)
+    [[ "$p" == "$e" || "$p" == "$e"/* || "$p" == $e ]] && return 0
+  done
+  return 1
+}
+audit_checks() {
+  local n m t s key dir f c line w p
+  local -a deny=() cred=() custom=()
+  local -A seen=()
+  out() { printf '%s\t%s\t%s\t%s\n' "$@"; }
+  wsp_names
+  for n in "${WSP_NAMES[@]}"; do wsp_builtin "$n" || custom+=("$n"); done
+  out info "profiles: ${#WSP_NAMES[@]} (custom: ${#custom[@]})" "${custom[*]}" ""
+  mapfile -t deny < <(jq -r '(.sandbox.filesystem.denyRead // [])[]' "$HOME/.claude/settings.json" 2>/dev/null)
+  mapfile -t cred < <(grep -vhE '^[[:space:]]*(#|$)' "$HOME/.local/lib/ws-credential-paths.txt" /etc/claude-code/ws-credential-paths.txt 2>/dev/null | sed 's/[[:space:]]*#.*//')
+  for n in "${custom[@]}"; do
+    wsp_get "$n" claude_dir; dir="$REPLY"; c="$WSP_CREDS/$n"; f="$WSP_CONF/$n/profile.conf"
+    [[ "$(stat -c %a "$f" 2>/dev/null)" =~ ^[0-6]00$ ]] || out warn "profile $n: profile.conf is readable by others" "$(stat -c %a "$f" 2>/dev/null)" "chmod 600 $f"
+    wsp_get "$n" tenant; t="$REPLY"; wsp_get "$n" subscription; s="$REPLY"
+    if [[ -n "$t$s" ]]; then key="${t,,}|${s,,}"
+      [[ -n "${seen[$key]:-}" ]] && out warn "profiles ${seen[$key]} and $n declare the same tenant and subscription" "$t ${s:+· $s}" \
+        "One of them is probably a copy: give each client its own tenant (or remove one)."
+      seen[$key]="${seen[$key]:+${seen[$key]}, }$n"
+    fi
+    wsp_get "$n" share_conversations
+    if [[ "$REPLY" == no && "$dir" == "$WSP_CLAUDE_ROOT"/* ]]; then
+      line=""; for p in "${WSP_CONVO[@]}"; do [[ -L "$dir/$p" ]] && line+="$p "; done
+      [[ -z "$line" ]] && out ok "profile $n keeps its own conversations" "" "" \
+        || out fail "profile $n is isolated but links conversations" "$line" "ws-profile setup $n removes the links (the data stays where they point)"
+    fi
+    if [[ "$dir" != "$HOME/.claude" && "$dir" != "$HOME/.claude-personal" ]]; then
+      covered "$dir/.credentials.json" "${deny[@]}" && out ok "profile $n: the sandbox cannot read its Claude login" "" "" \
+        || out fail "profile $n: its Claude login is readable by sandboxed commands" "$dir/.credentials.json" \
+               "Add ~/.claude-profiles/*/.credentials.json to sandbox.filesystem.denyRead (the kit's settings.json has it)"
+      covered "$dir/.credentials.json" "${cred[@]}" || out warn "profile $n: the guard's credential list does not cover its Claude login" \
+        "$dir/.credentials.json" "Reinstall the kit (~/.local/lib/ws-credential-paths.txt)"
+    fi
+    covered "$c/azure/msal_token_cache.json" "${deny[@]}" && covered "$c/gh/hosts.yml" "${deny[@]}" && covered "$c/kube/config" "${deny[@]}" \
+      && out ok "profile $n: the sandbox cannot read its az, gh and kubectl credentials" "" "" \
+      || out fail "profile $n: its az, gh or kubectl credentials are readable by sandboxed commands" "$c" "Add ~/.config/ws-agent to sandbox.filesystem.denyRead"
+    [[ ! -d "$c" || "$(stat -c %a "$c")" == 700 ]] || out warn "profile $n: ${c/#"$HOME"/\~} is not 0700" "$(stat -c %a "$c")" "chmod 700 $c"
+    [[ -d "$dir" ]] || out warn "profile $n has no Claude dir yet" "$dir" "ws-profile login $n claude"
+  done
+  if [[ -f "$WSP_CONF/projects.conf" ]]; then
+    while read -r n p; do
+      [[ -n "$n" && "$n" != \#* ]] || continue
+      wsp_exists "$n" || out warn "a project is pinned to a profile that does not exist" "$n → $p" "ws-profile project remove $p, or ws-profile new $n"
+    done < "$WSP_CONF/projects.conf"
+  fi
+  wsp_default; wsp_exists "$REPLY" || out warn "the profile for new tabs does not exist" "$REPLY" "ws-profile use work"
+  if tmux has-session 2>/dev/null; then
+    while IFS=$'\t' read -r w n; do
+      [[ -n "$n" ]] && wsp_valid "$n" && ! wsp_builtin "$n" || continue
+      wsp_get "$n" claude_dir
+      if ! wsp_exists "$n" || [[ ! -d "$REPLY" ]]; then
+        out warn "tab $w runs with profile $n, whose settings or Claude dir are missing" "$REPLY" "ws-profile tab work in that tab, or ws-profile new $n"
+      fi
+    done < <(tmux list-windows -a -F "#{session_name}:#{window_index} #{window_name}"$'\t'"#{@cprofile}" 2>/dev/null)
+  fi
+}
+
+#######################################
+# menu PANE — the tmux menu of profiles: switch this tab, the one for new tabs, the project pin, logins.
+#######################################
+menu() {
+  local pane="${1:-$(tmux display -p '#{pane_id}')}" cur def n i=0 key self="$HOME/.local/bin/ws-profile" lbl
+  local -a items=()
+  of_pane "$pane"; cur="$REPLY"; wsp_default; def="$REPLY"; wsp_names
+  items+=("-#[nodim]── Switch this tab ──" "" "")
+  for n in "${WSP_NAMES[@]}"; do
+    i=$((i + 1)); key=""; (( i <= 9 )) && key="$i"
+    wsp_get "$n" label; lbl="$n"; wsp_builtin "$n" || [[ "$REPLY" == "$n" ]] || lbl="$n ($REPLY)"
+    if [[ "$n" == "$cur" ]]; then items+=("$lbl ✓" "$key" "display 'This tab already runs with $n'")
+    else items+=("$lbl" "$key" "confirm-before -p \"Restart #W with profile $n? (y/n)\" \"run-shell -b '$self tab $n $pane'\""); fi
+  done
+  items+=("-#[nodim]── This tab's profile: $cur ──" "" ""
+    "New tabs use: $def$([[ "$def" != "$cur" ]] && echo " → switch to $cur")" u "run-shell -b '$self use $cur'"
+    "Always use $cur for this project" f "run-shell -b '$self project $cur --pane $pane'"
+    "Unpin this project" r "run-shell -b '$self project remove --pane $pane'"
+    "Log in to Claude for $cur" L "new-window -n login-$cur \"~/.local/bin/tmux-pause 'ws-profile login $cur claude'\""
+    "Status of every profile" s "display-popup -E -w 90% -h 70% -T ' Profiles ' \"~/.local/bin/tmux-pause 'ws-profile status'\""
+    "New profile…" N "command-prompt -p 'New profile name:' \"new-window -n new-profile \\\"~/.local/bin/tmux-pause 'ws-profile new %%'\\\"\""
+    "" "‹ Back" BSpace "source-file ~/.config/tmux-claude/menu-claude.tmux")
+  tmux display-menu -O -T "#[align=centre] 👤 Profile · #W · $cur " -x C -y C -- "${items[@]}"
+}
+
+case "${1:-}" in
+  new)      shift; new_profile "$@" ;;
+  login)    shift; login "$@" ;;
+  logout)   need "${2:-}"; wsp_get "$2" claude_dir
+            [[ "$REPLY" == "$HOME/.claude" ]] && die "$2 uses ~/.claude: sign out with /logout in a Claude of that account"
+            CLAUDE_CONFIG_DIR="$REPLY" claude auth logout ;;
+  tab)      shift; tab "$@" ;;
+  use)      shift; use "$@" ;;
+  project)  shift; project "$@" ;;
+  projects) projects ;;
+  list|"")  list ;;
+  status)   status ;;
+  show)     show_profile "${2:-}" ;;
+  setup)    if [[ -n "${2:-}" ]]; then need "$2"; wsp_exists "$2" || die "no profile «$2»"; setup_profile "$2"
+            else wsp_names; for n in "${WSP_NAMES[@]}"; do [[ "$n" == work ]] && continue; echo "== $n"; setup_profile "$n"; done; fi ;;
+  remove)   shift; remove "$@" ;;
+  audit)    audit_checks ;;
+  menu)     shift; menu "$@" ;;
+  --export) wsp_exports "${2:-}" || { echo false; exit 1; }; printf '%s\n' "$REPLY" ;;
+  --resolve) w=""; [[ -n "${3:-}" ]] && w="$(tmux show -wqv -t "$(tmux display -p -t "$3" '#{window_id}')" @cprofile 2>/dev/null)"
+            wsp_resolve "${2:-$PWD}" "$w"; echo "$REPLY" ;;
+  --of-pane) of_pane "${2:?pane}"; echo "$REPLY" ;;
+  --fence)  need "${2:-}"; fence "$2" ;;
+  -h|--help|help) sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) sed -n '9,29p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

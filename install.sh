@@ -253,6 +253,7 @@ install_managed() {
 if (( MANAGED )); then install_managed; exit 0; fi
 
 migrate_names
+migrate_profiles
 log "Files ($([[ $DRY -eq 1 ]] && echo 'dry run' || echo "backup: ${BACKUP_DIR/#"$HOME"/\~}"))"
 while IFS= read -r rel; do apply_file "$rel"; done < <(manifest_files "$FILES")
 ensure_bashrc
@@ -270,12 +271,17 @@ if (( GITHOOKS )); then
   else printf '  skipped core.hooksPath already points to %s (not changed)\n' "$hp_current"; fi
 fi
 
+# TPM and the tmux plugins at the commits of plugins.lock (WS-SEC-016), not TPM's install_plugins (branch tip): a plugin
+# that cannot be put at its commit is left out of ~/.tmux/plugins and reported; the install goes on.
 if (( PLUGINS )); then
-  log "tmux plugins"
-  if [[ ! -d "$HOME/.tmux/plugins/tpm" ]]; then
-    printf '  new     tpm\n'; (( DRY )) || git clone -q https://github.com/tmux-plugins/tpm "$HOME/.tmux/plugins/tpm"
+  log "tmux plugins (pinned by commit in ~/.config/tmux-claude/plugins.lock)"
+  if (( DRY )); then
+    awk '!/^[[:space:]]*#/ && NF >= 3 { printf "  check   %s %s\n", $1, substr($3, 1, 12) }' \
+      "$FILES/.config/tmux-claude/plugins.lock"
+  elif ! WS_PLUGINS_LOCK="$FILES/.config/tmux-claude/plugins.lock" \
+         bash "$FILES/.local/bin/ws-plugins" apply </dev/null | sed 's/^/  /'; then
+    warn "A tmux plugin is not at its pinned commit (see above): ws-plugins verify; tmux runs without it."
   fi
-  (( DRY )) || "$HOME/.tmux/plugins/tpm/bin/install_plugins" | sed 's/^/  /'
 fi
 
 if (( MCP )) && [[ -s "$MCP_FILE" ]]; then
@@ -305,6 +311,15 @@ if (( MCP )) && [[ -s "$MCP_FILE" ]]; then
   done < <(jq -r 'keys[]' "$MCP_FILE")
 fi
 
+# Custom profiles (ADR-021) keep their own .claude.json: give them the kit's setup links and MCP definitions again.
+if (( ! DRY )) && [[ -x "$HOME/.local/bin/ws-profile" ]] && compgen -G "$HOME/.config/ws-profiles/*/profile.conf" >/dev/null; then
+  log "Profiles (kit setup and MCP servers)"
+  for f in "$HOME"/.config/ws-profiles/*/profile.conf; do
+    n="${f%/profile.conf}"; n="${n##*/}"
+    printf '  profile %s\n' "$n"
+    "$HOME/.local/bin/ws-profile" setup "$n" | sed 's/^/  /' || warn "ws-profile setup $n did not finish: run it again"
+  done
+fi
 # The managed copy of the guard is not updated by a normal install (it needs sudo): say so when it is stale.
 if [[ -f "$MANAGED_DIR/hooks/guard.sh" ]] && ! cmp -s "$MANAGED_DIR/hooks/guard.sh" "$FILES/.claude/hooks/guard.sh"; then
   warn "$MANAGED_DIR/hooks/guard.sh is older than the kit's: run bash install.sh --managed"

@@ -56,6 +56,8 @@
 .blerc
 .local/bin/ws-completions
 .local/bin/claude-account
+.local/bin/ws-profile
+.local/lib/ws-profile.sh
 .config/tmux-claude/accounts.sh
 .local/bin/tmux-recover
 .local/bin/tmux-popup-run
@@ -152,3 +154,7 @@
 .config/agent-browser/policy.json
 .config/agent-browser/allowed-domains.txt
 .config/claude-levels/normal-adds.json
+.local/lib/ws-mirror.sh
+.local/lib/ws-tools.lock
+.local/bin/ws-plugins
+.config/tmux-claude/plugins.lock

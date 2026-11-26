@@ -12,6 +12,10 @@
 #     (sha256 of tool, subject, predicate and object): those are allowed, the rest of that run still asks.
 # On UserPromptSubmit, a prompt with <private> gets a note for Claude not to store, quote or send that part.
 # Opt-out (audited on every write): WS_MEMORY_GATE=warn keeps the private block and the audit record but does not ask.
+# The tab's profile comes first (ADR-021, WS_MEMORY or the profile of CLAUDE_CONFIG_DIR): memory=off BLOCKS every
+# MemPalace tool, reads too (the palace holds the other clients' work); memory=wing:W forces wing W on the tools that
+# take one (search, list_drawers, list_rooms, diary_read, diary_write, add_drawer) and blocks the rest, which cannot
+# be limited to one wing. The opt-out above never lifts either.
 # Fails closed for memory writes it cannot read (no jq or invalid JSON); anything else passes.
 # Usage: called by Claude Code (matcher mcp__.*mempalace.* for PreToolUse; no matcher for UserPromptSubmit).
 set -uo pipefail
@@ -35,6 +39,32 @@ fi
 
 [[ "$tool" == mcp__*mempalace* ]] || exit 0
 short="${tool##*__}"; short="${short#mempalace_}"
+
+mode="${WS_MEMORY:-on}"
+if [[ -r "$HOME/.local/lib/ws-profile.sh" ]]; then
+  # shellcheck source=../../.local/lib/ws-profile.sh
+  . "$HOME/.local/lib/ws-profile.sh" && wsp_memory && mode="$REPLY"
+elif [[ "$mode" != on && "$mode" != wing:* ]]; then mode=off; fi
+case "$mode" in
+  on) ;;
+  wing:*)
+    wing="${mode#wing:}"
+    if [[ ! "$short" =~ ^(search|list_drawers|list_rooms|diary_read|diary_write|add_drawer)$ ]]; then
+      audit blocked "memory scoped to wing $wing: $short cannot be limited to it"
+      printf 'BLOCKED by policy (memory-gate.sh): this tab'"'"'s profile limits MemPalace to the wing «%s», and %s cannot be limited to one wing.\n' "$wing" "$short" >&2
+      exit 2
+    fi
+    input="$(jq -c --arg w "$wing" '.tool_input = ((.tool_input // {}) | .wing = $w)' <<<"$input")" || exit 2
+    if [[ ! "$short" =~ $WRITE ]]; then
+      jq -nc --argjson u "$(jq -c '.tool_input' <<<"$input")" --arg w "$wing" '{hookSpecificOutput: {hookEventName: "PreToolUse",
+        permissionDecision: "allow", updatedInput: $u, permissionDecisionReason: "MemPalace read limited to the wing \($w) (this tab'"'"'s profile)"}}'
+      exit 0
+    fi ;;
+  *)
+    audit blocked "memory off (profile ${WS_PROFILE:-?}): $short"
+    printf 'BLOCKED by policy (memory-gate.sh): this tab runs with the profile «%s», whose memory is off: MemPalace is not used here (neither read nor written), so other clients'"'"' work stays out of this organisation. Work from the conversation and the repository.\n' "${WS_PROFILE:-?}" >&2
+    exit 2 ;;
+esac
 [[ "$short" =~ $WRITE ]] || exit 0
 
 if jq -e '[.tool_input | .. | strings | select(test("</?private>"; "i"))] | length > 0' >/dev/null <<<"$input"; then

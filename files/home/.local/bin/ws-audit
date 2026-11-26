@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ws-audit — full, READ-ONLY audit of the workstation, by pillars.
 
-Pillars: tmux · shortcuts and menu · Claude Code · sandbox · security · resilience · performance ·
+Pillars: tmux · shortcuts and menu · Claude Code · sandbox · profiles · security · resilience · performance ·
 observability. Each check gives ok / warn / fail / info, the detail and the recommendation.
 
 Usage:
@@ -141,7 +141,14 @@ def p_tmux() -> None:
         _, behind = sh(f"timeout 15 git -C '{d}' fetch -q 2>/dev/null; git -C '{d}' rev-list --count HEAD..@{{u}} 2>/dev/null", 25)
         behind = behind.strip() if behind.strip().isdigit() else "?"
         res("ok" if behind in ("0", "?") else "warn", f"plugin {p}", f"last local commit {date}; {behind} new commits on the remote",
-            "Ctrl+b U updates plugins (review the changes first).")
+            "Move its pin in plugins.lock as a kit change (review the upstream diff first), then ws-plugins apply.")
+    # Pinned by commit (WS-SEC-016): every plugin at its plugins.lock commit, unchanged, and none outside the lock.
+    if shutil.which("ws-plugins"):
+        rc, pv = sh("ws-plugins verify 2>&1", 60)
+        bad = [l for l in pv.splitlines() if l.startswith("FAIL")]
+        res("ok" if rc == 0 else "fail", "tmux plugins at their pinned commits (plugins.lock)",
+            "; ".join(bad[:3])[:200],
+            "ws-plugins apply puts them back; a plugin moved by Ctrl+b U or edited by hand is not the reviewed code.")
     for option, expected, reco in (("@continuum-restore", "on", "set -g @continuum-restore on"),
                                    ("@continuum-save-interval", None, "1–5 min"),
                                    ("@resurrect-capture-pane-contents", "on", "set -g @resurrect-capture-pane-contents on (you see the latest of each pane after restoring)")):
@@ -244,8 +251,100 @@ def p_claude() -> None:
             continue
         _, t = sh(f"{env} timeout 15 claude auth status --text </dev/null 2>/dev/null | sed -n 's/^Organization: //p'")
         res("ok" if t else "warn", f"{account} session: {t or 'not signed in'}")
-    mg = Path("/etc/claude-code/managed-settings.json")
-    res("info", "settings managed by the organization", "local file present" if mg.exists() else "no local file (may come from the cloud)")
+    managed_settings()
+    mcp_registration()
+
+
+MANAGED = Path(os.environ.get("WS_MANAGED_DIR") or "/etc/claude-code")
+
+
+def managed_settings(d: Path = MANAGED) -> None:
+    """Managed policy (WS-AI-002): the organization's managed-settings.json and the drop-ins of managed-settings.d,
+    including the kit's 50-ws-kit.json (install.sh --managed). Each must be valid JSON, root-owned and not writable by
+    you; the kit's drop-in must keep its floor (bypass mode off, the root-owned guard failing closed)."""
+    files = [d / "managed-settings.json", *sorted((d / "managed-settings.d").glob("*.json"))]
+    present = [f for f in files if f.is_file()]
+    if not present:
+        res("warn", "managed policy", f"no {d}/managed-settings.json and no drop-in in managed-settings.d "
+            "(an organization's policy may still come from the cloud)",
+            "Owner step: sudo bash install.sh --managed installs the kit's drop-in 50-ws-kit.json.")
+        return
+    for f in present:
+        st = f.stat()
+        try:
+            json.loads(f.read_text(encoding="utf-8"))
+            valid = True
+        except (OSError, ValueError):
+            valid = False
+        safe = st.st_uid == 0 and not st.st_mode & 0o022
+        res("ok" if valid and safe else "fail", f"managed policy file {f.name}",
+            ("" if valid else "not valid JSON (Claude Code ignores it); ")
+            + ("" if safe else "not root-owned or writable by others"),
+            f"sudo bash install.sh --managed (or fix {f}: root:root, 644, valid JSON).")
+    kit = d / "managed-settings.d/50-ws-kit.json"
+    if not kit.is_file():
+        res("info", "the kit's managed drop-in", "not installed (only an organization policy is present)",
+            "sudo bash install.sh --managed adds it after the organization's file.")
+        return
+    m = jload(kit)
+    hooks = [h for g in m.get("hooks", {}).get("PreToolUse", []) for h in g.get("hooks", [])]
+    guard = [h for h in hooks if h.get("command") == str(d / "hooks/guard.sh") and h.get("onFailure") == "block"]
+    floor = m.get("permissions", {}).get("disableBypassPermissionsMode") == "disable" and bool(guard)
+    res("ok" if floor else "fail", "the kit's managed drop-in keeps its floor",
+        "" if floor else "bypass mode not disabled, or the guard hook is missing or does not fail closed",
+        "Reinstall it: sudo bash install.sh --managed.")
+    g = d / "hooks/guard.sh"
+    mine = H / ".claude/hooks/guard.sh"
+    same = g.is_file() and mine.is_file() and g.read_bytes() == mine.read_bytes()
+    res("ok" if same else "warn", "managed guard.sh matches the kit's",
+        "" if same else f"{g} is missing or older than {mine}",
+        "After a kit update that changes guard.sh: sudo bash install.sh --managed.")
+
+
+def mcp_registration() -> None:
+    """Registered MCP servers against the kit's allow list, files/mcp-servers.json (WS-AI-010): user and local scope in
+    ~/.claude.json (and the personal account's), project scope in the .mcp.json of every project Claude Code knows.
+    A server outside the list fails; an unapproved project server only warns (it asks before it runs)."""
+    kit = Path(os.environ.get("WS_KIT") or H / "code/claude-workstation")
+    allowed = set(jload(kit / "files/mcp-servers.json"))
+    if not allowed:
+        res("warn", "MCP servers against the kit's allow list", f"{kit}/files/mcp-servers.json not found",
+            "Set WS_KIT to your claude-workstation checkout.")
+        return
+    found: list[tuple[str, str, str, bool]] = []   # name, scope, where, approved
+    for cfg in (H / ".claude.json", H / ".claude-personal/.claude.json"):
+        c = jload(cfg)
+        if not isinstance(c, dict):
+            continue
+        for n in c.get("mcpServers", {}):
+            found.append((n, "user", str(cfg), True))
+        for path, p in (c.get("projects") or {}).items():
+            if not isinstance(p, dict):
+                continue
+            for n in p.get("mcpServers") or {}:
+                found.append((n, "local", path, True))
+            mj = jload(Path(path) / ".mcp.json")
+            ok_list = set(p.get("enabledMcpjsonServers") or [])
+            for n in (mj.get("mcpServers") if isinstance(mj, dict) else None) or {}:
+                found.append((n, "project", path, n in ok_list or bool(p.get("enableAllProjectMcpServers"))))
+    seen: set[tuple[str, str, str]] = set()
+    bad, pending = [], []
+    for n, scope, where, approved in found:
+        if n in allowed or (n, scope, where) in seen:
+            continue
+        seen.add((n, scope, where))
+        (bad if approved else pending).append((n, scope, where))
+    fix = {"user": "claude mcp remove {n} -s user", "local": "cd {w} && claude mcp remove {n} -s local",
+           "project": "remove it from {w}/.mcp.json, or reject it in /mcp"}
+    res("ok" if not bad else "fail", f"registered MCP servers in the kit's allow list: {len(bad)} outside",
+        "; ".join(f"{n} ({s}, {w})" for n, s, w in bad[:4]),
+        "A server not in files/mcp-servers.json runs outside the sandbox with your credentials. "
+        + (fix[bad[0][1]].format(n=bad[0][0], w=bad[0][2]) if bad else "")
+        + " If you want it: add it to files/mcp-servers.json and its lock in the kit (a reviewed change),"
+        " then install.sh.")
+    if pending:
+        res("warn", f"project MCP servers waiting for approval, not in the allow list: {len(pending)}",
+            "; ".join(f"{n} ({w})" for n, _, w in pending[:4]), "Do not approve them in /mcp unless you reviewed them.")
 
 
 # ============================================================================================
@@ -312,6 +411,23 @@ def p_sandbox() -> None:
     res("ok" if not suspect else "fail", "secrets in environment variables", ", ".join(suspect), "Claude and its commands inherit the environment: move them to a vault.")
     if AI:
         escape_tests()
+
+
+def p_profiles() -> None:
+    """Per-tab profiles (ADR-021): the checks of `ws-profile audit` (same tenant and subscription in two profiles,
+    conversation links in an isolated profile, credentials the sandbox could read, tabs whose profile is missing)."""
+    pillar("Profiles")
+    wp = H / ".local/bin/ws-profile"
+    if not wp.exists():
+        res("info", "ws-profile is not installed"); return
+    try:
+        out = subprocess.run([str(wp), "audit"], capture_output=True, text=True, timeout=30, check=False).stdout  # nosec B603 — the kit's own command, fixed arguments
+    except (OSError, subprocess.TimeoutExpired) as e:
+        res("warn", "ws-profile audit did not answer", str(e)[:120]); return
+    for line in out.splitlines():
+        f = (line.split("\t") + ["", "", "", ""])[:4]
+        if f[0] in ("ok", "warn", "fail", "info"):
+            res(f[0], f[1], f[2], f[3])
 
 
 def escape_tests() -> None:
@@ -438,7 +554,8 @@ def p_security() -> None:
             "Something edited the audit log: ws-audit --verify-log lists every break; keep a copy and investigate.")
     _, hp = sh("git config --global core.hooksPath")
     res("ok" if hp else "warn", f"global git gate: {hp or 'no core.hooksPath'}")
-    # Repos where the gate does not run in full (WS-SEC-004): a local hooksPath or committing without gitleaks fail;
+    # Repos where the gate does not run in full (WS-SEC-004): a local hooksPath or a scanner opt-out (allowNoGitleaks,
+    # allowNoOsv, allowNoCheckov) fail;
     # skipping single checks (ws.gate.skip) is a documented per-repo choice and only warns.
     rc, by = sh("ws-gate bypasses 2>/dev/null", 120)
     lines = [l for l in by.splitlines() if "\t" in l]
@@ -446,13 +563,14 @@ def p_security() -> None:
     if rc in (0, 1):
         res("fail" if hard else ("warn" if lines else "ok"), f"repos that bypass the git gate: {len(lines)}",
             "; ".join(l.replace("\t", ": ") for l in lines[:4]),
-            "Remove the local core.hooksPath or ws.gate.allowNoGitleaks (install gitleaks: ws-tools install base).")
+            "Remove the local core.hooksPath or the ws.gate.allowNo* opt-out "
+            "(install the scanners: ws-tools install gate).")
     else:
         res("warn", "repos that bypass the git gate", "ws-gate bypasses did not run", "Reinstall the kit (ws-gate).")
     optlog = H / ".local/state/ws-gate/opt-outs.log"
     if optlog.exists():
         n = sum(1 for _ in optlog.open(encoding="utf-8", errors="replace"))
-        res("info", f"commits made without gitleaks (opt-out log): {n}", str(optlog))
+        res("info", f"commits and pushes made without a scanner (opt-out log): {n}", str(optlog))
     # The last light backup must be encrypted (WS-SEC-013).
     try:
         last = (H / ".local/state/ws-backup-lite.log").read_text(encoding="utf-8", errors="replace").splitlines()[-1]
@@ -461,6 +579,7 @@ def p_security() -> None:
     if last:
         res("fail" if "UNENCRYPTED" in last else "ok", "last light backup is encrypted", last[-120:] if "UNENCRYPTED" in last else "",
             "Run ws-backup-cloud setup once (and sudo apt-get install age), then ws-backup-lite --now.")
+    mirror_state()
     # Pinned npm packages and local MCP executables (WS-AI-009).
     if shutil.which("ws-pinned"):
         rc, pv = sh("ws-pinned verify 2>&1", 120)
@@ -485,6 +604,23 @@ def p_security() -> None:
         "Rotate those credentials and then: ws-history --clean")
     _, up = sh("apt list --upgradable 2>/dev/null | grep -c security || true", 40)
     res("ok" if up.strip() in ("", "0") else "warn", f"pending security updates (apt): {up.strip() or 0}", "", "sudo apt-get upgrade")
+
+
+def mirror_state() -> None:
+    """The Windows-side mirrors (ws-backup, tmux-backup) are encrypted per file (WS-SEC-013): the last run of each,
+    from ~/.local/state/ws-backup-mirror.state written by ws-mirror.sh."""
+    try:
+        rows = (H / ".local/state/ws-backup-mirror.state").read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return
+    last: dict[str, str] = {}
+    for r in rows:
+        f = r.split(" ", 2)
+        if len(f) == 3:
+            last[f[1]] = f[2]
+    clear = [f"{Path(d).name}: {m}" for d, m in last.items() if m.startswith("UNENCRYPTED")]
+    res("fail" if clear else "ok", "Windows-side mirrors are encrypted", "; ".join(clear)[:160],
+        "Run ws-backup-cloud setup once (and sudo apt-get install age); the next ws-backup seals the clear copies.")
 
 
 def p_resilience() -> None:
@@ -577,7 +713,7 @@ if __name__ == "__main__":
     if "--verify-log" in sys.argv:
         rest = sys.argv[sys.argv.index("--verify-log") + 1:]
         sys.exit(1 if verify_log(Path(rest[0]) if rest else AUDIT_DIR)[1] else 0)
-    for f in (p_tmux, p_shortcuts, p_claude, p_sandbox, p_security, p_resilience, p_performance, p_observability):
+    for f in (p_tmux, p_shortcuts, p_claude, p_sandbox, p_profiles, p_security, p_resilience, p_performance, p_observability):
         try:
             f()
         except Exception as e:  # noqa: BLE001 — a broken section must not prevent the rest of the report

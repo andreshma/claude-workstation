@@ -1,11 +1,24 @@
 #!/usr/bin/env bash
 #
-# tmux-backup — copies the tmux-resurrect backups to Windows after every save
-# (hook @resurrect-hook-post-save-all). If WSL breaks or is reinstalled, the state of the
-# tabs survives in C:\Users\@WIN_USER@\.tmux-resurrect-backup.
+# tmux-backup — copies the tmux-resurrect saves to Windows after every save (hook @resurrect-hook-post-save-all).
+# If WSL breaks or is reinstalled, the state of the tabs survives in C:\Users\@WIN_USER@\.tmux-resurrect-backup.
+# The copies are encrypted with age like the conversation mirror (WS-SEC-013, ~/.local/lib/ws-mirror.sh):
+# tmux_resurrect_<date>.txt.age and last.txt.age; in clear only while no key exists. Restore: ws-restore-lite --mirror.
+# Usage: tmux-backup   (called by tmux) · WS_BACKUP_WINHOME overrides the Windows profile.
 src="${XDG_DATA_HOME:-$HOME/.local/share}/tmux/resurrect"
-dst=@WINHOME@/.tmux-resurrect-backup
-mkdir -p "$dst" && cp -u "$src"/tmux_resurrect_*.txt "$dst"/ 2>/dev/null && cp -fL "$src/last" "$dst/last.txt" 2>/dev/null
+dst="${WS_BACKUP_WINHOME:-@WINHOME@}/.tmux-resurrect-backup"
+# shellcheck source=/dev/null
+if mkdir -p "$dst" && source "$HOME/.local/lib/ws-mirror.sh" 2>/dev/null; then
+  mirror_init
+  for f in "$src"/tmux_resurrect_*.txt; do [[ -f "$f" ]] && mirror_file "$f" "$dst/${f##*/}"; done
+  # last is a link to the save tmux restores (tmux-recover may point it at an older one): its target is always copied
+  # again, under the name restores look for.
+  if [[ -e "$src/last" ]]; then
+    rm -f "$dst/last.txt" "$dst/last.txt.age"; mirror_file "$(readlink -f "$src/last")" "$dst/last.txt"
+  fi
+  mirror_done "$dst"
+fi
+[[ -n "${WS_TMUX_BACKUP_NO_CHAIN:-}" ]] && exit 0   # tests: only the copy
 "$HOME/.local/bin/ws-backup" >/dev/null 2>&1 &
 "$HOME/.local/bin/ws-backup-lite" --if-due >/dev/null 2>&1 &
 "$HOME/.local/bin/ws-telemetry" build --if-due >/dev/null 2>&1 &

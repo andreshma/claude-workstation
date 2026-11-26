@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+#
+# ws-plugins — TPM and the tmux plugins pinned by commit (WS-SEC-016), from ~/.config/tmux-claude/plugins.lock.
+# install.sh and ws-update call it instead of TPM's install_plugins and update_plugins, which follow the branch tip.
+#
+# Usage:
+#   ws-plugins apply    clones what is missing and checks out each plugin's pinned commit; a plugin that cannot be put
+#                       at its commit, or that carries changed or extra scripts, is moved to
+#                       ~/.local/share/ws-kit/plugins-quarantine/ so tmux does not load it (fail closed)
+#   ws-plugins verify   every plugin of the lock is at its commit with no changed file, and every @plugin of
+#                       ~/.tmux.conf is in the lock; exit 1 otherwise (ws-audit runs it; it changes nothing)
+#   ws-plugins list     the pins
+# WS_PLUGINS_ALLOW_UNPINNED=1 keeps a plugin that failed in apply: logged in ~/.local/state/ws-plugins/overrides.log and
+# in the audit log (ws-audit --verify-log). WS_PLUGINS_LOCK, WS_PLUGINS_DIR and WS_PLUGINS_CONF override the lock,
+# ~/.tmux/plugins and ~/.tmux.conf (tests).
+set -uo pipefail
+LOCK="${WS_PLUGINS_LOCK:-$HOME/.config/tmux-claude/plugins.lock}"
+DIR="${WS_PLUGINS_DIR:-$HOME/.tmux/plugins}"
+CONF="${WS_PLUGINS_CONF:-$HOME/.tmux.conf}"
+QDIR="${WS_PLUGINS_QUARANTINE:-$HOME/.local/share/ws-kit/plugins-quarantine}"
+G=(git -c advice.detachedHead=false -c core.hooksPath=/dev/null)
+
+rows() { awk '!/^[[:space:]]*#/ && NF >= 3 { print $1, $2, $3 }' "$LOCK" 2>/dev/null; }
+
+#######################################
+# Whether a plugin folder is exactly its pinned commit: HEAD is the commit, no tracked file differs and no untracked
+# script (*.tmux, *.sh: what TPM and the plugins run) was added. Arguments: folder, commit. Outputs: the reason if not.
+#######################################
+at_pin() {
+  local d="$1" c="$2" head st
+  [[ -d "$d/.git" ]] || { echo "not a git checkout"; return 1; }
+  head="$("${G[@]}" -C "$d" rev-parse HEAD 2>/dev/null)"
+  [[ "$head" == "$c" ]] || { echo "at ${head:0:12}, the pin is ${c:0:12}"; return 1; }
+  st="$("${G[@]}" -C "$d" status --porcelain 2>/dev/null | grep -vE '^\?\? ' | head -3)"
+  [[ -z "$st" ]] || { echo "changed files: ${st//$'\n'/, }"; return 1; }
+  st="$("${G[@]}" -C "$d" status --porcelain 2>/dev/null | grep -E '^\?\? .*\.(tmux|sh)$' | head -3)"
+  [[ -z "$st" ]] || { echo "added scripts: ${st//$'\n'/, }"; return 1; }
+}
+
+#######################################
+# A plugin that failed: moved out of the plugins folder (tmux no longer loads it), unless the audited override.
+# Arguments: name, folder, reason. Returns: 1 (the failure stands), 0 when overridden.
+#######################################
+reject() {
+  local n="$1" d="$2" why="$3" s
+  if [[ "${WS_PLUGINS_ALLOW_UNPINNED:-}" == 1 ]]; then
+    s="${XDG_STATE_HOME:-$HOME/.local/state}/ws-plugins"; mkdir -p "$s"
+    printf '%s\t%s\t%s\n' "$(date -Is)" "$n" "$why" >> "$s/overrides.log"
+    if [[ -x "$HOME/.claude/hooks/audit.sh" ]]; then
+      jq -nc --arg c "ws-plugins apply $n" '{tool_name: "ws-plugins", tool_input: {command: $c}}' \
+        | (cd / && "$HOME/.claude/hooks/audit.sh" override "ws-plugins unpinned $n: $why") >/dev/null 2>&1
+    fi
+    echo "! $n: $why; kept (WS_PLUGINS_ALLOW_UNPINNED=1, logged and audited)"; return 0
+  fi
+  if [[ -e "$d" ]]; then
+    mkdir -p "$QDIR" && mv "$d" "$QDIR/$n.$(date +%Y%m%d-%H%M%S)"
+    echo "✖ $n: $why; moved to ${QDIR/#"$HOME"/\~} (tmux will not load it)"
+  else echo "✖ $n: $why"; fi
+  return 1
+}
+
+apply_one() {
+  local n="$1" url="$2" c="$3" d="$DIR/$1" st=same why
+  if [[ -e "$d" && ! -d "$d/.git" ]]; then reject "$n" "$d" "not a git checkout" || return 1; return 0; fi
+  if [[ ! -d "$d" ]]; then
+    mkdir -p "$DIR"
+    "${G[@]}" clone -q --no-checkout "$url" "$d" 2>/dev/null \
+      || { echo "✖ $n: could not clone $url"; rm -rf "$d"; return 1; }
+    st=new
+  fi
+  if [[ "$("${G[@]}" -C "$d" rev-parse HEAD 2>/dev/null)" != "$c" ]] || ! at_pin "$d" "$c" >/dev/null; then
+    [[ "$st" == new ]] || st=pinned
+    "${G[@]}" -C "$d" remote set-url origin "$url" 2>/dev/null   # fetch from the lock's source, not the checkout's
+    if ! "${G[@]}" -C "$d" cat-file -e "$c^{commit}" 2>/dev/null; then
+      if ! "${G[@]}" -C "$d" fetch -q origin 2>/dev/null && ! "${G[@]}" -C "$d" fetch -q origin "$c" 2>/dev/null \
+         && [[ "$st" != new ]] && at_pin "$d" "$("${G[@]}" -C "$d" rev-parse HEAD 2>/dev/null)" >/dev/null; then
+        # Offline, and the checkout is an untouched upstream commit: it stays (tmux keeps working); run it again.
+        echo "! $n: upstream not reachable; kept at $("${G[@]}" -C "$d" rev-parse --short=12 HEAD)" \
+             "(run ws-plugins apply again)"
+        return 1
+      fi
+    fi
+    # --force puts back a tracked file that was changed; an untracked script stays and is caught below. A commit that
+    # is still missing after a fetch means upstream rewrote its history: rejected below.
+    "${G[@]}" -C "$d" checkout -q --force --detach "$c" 2>/dev/null
+  fi
+  if ! why="$(at_pin "$d" "$c")"; then reject "$n" "$d" "${why:-cannot be put at its commit}" || return 1; return 0; fi
+  printf '%-8s %s %s\n' "$st" "$n" "${c:0:12}"
+}
+
+verify_all() {
+  local n url c why rc=0 p
+  while read -r n url c; do
+    if why="$(at_pin "$DIR/$n" "$c")"; then printf 'ok      %s %s\n' "$n" "${c:0:12}"
+    else printf 'FAIL    %s: %s (ws-plugins apply)\n' "$n" "${why:-missing}"; rc=1; fi
+  done < <(rows)
+  # Every plugin tmux loads must be pinned: an @plugin missing from the lock would be installed by TPM at the tip.
+  while IFS= read -r p; do
+    rows | awk -v n="${p##*/}" '$1 == n { f = 1 } END { exit !f }' \
+      || { printf 'FAIL    %s: in ~/.tmux.conf but not in plugins.lock\n' "$p"; rc=1; }
+  done < <(sed -nE "s/^[[:space:]]*set(-option)? -g @plugin ['\"]([^'\"]+)['\"].*/\2/p" "$CONF" 2>/dev/null)
+  return "$rc"
+}
+
+[[ -s "$LOCK" ]] || { echo "✖ no plugins.lock at $LOCK" >&2; exit 1; }
+case "${1:-}" in
+  apply) rc=0; while read -r n url c; do apply_one "$n" "$url" "$c" || rc=1; done < <(rows); exit "$rc" ;;
+  verify) verify_all; exit $? ;;
+  list) rows | awk '{ printf "%-16s %s %s\n", $1, substr($3, 1, 12), $2 }' ;;
+  *) sed -n '3,16p' "$0"; exit 2 ;;
+esac

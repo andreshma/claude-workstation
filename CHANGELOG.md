@@ -31,11 +31,21 @@ After installing, in this order:
 8. Run `ws-audit --verify-log` once; the anchor file appears after the first session ends.
 9. Two live checks that could not be made in tests: a MemPalace write from Claude shows a prompt with the provenance
    filled in, and a prompt blocked by `prompt-screen.sh` shows its reason. Run `claude doctor` as well.
-10. Optional: `~/.config/ws-guard/production.conf` (production subscriptions and kube contexts), `hard=1` in
+10. Profiles: `install.sh` copies `~/.config/claude-accounts/{active,projects.conf}` into `~/.config/ws-profiles/`
+    once; `claude-account` keeps working. For each client: `ws-profile new NAME --tenant … --subscription …` in a
+    terminal (it guides the Claude, az, gh and kubeconfig logins), then `ws-profile project NAME <repo>`, and check
+    with `ws-profile status` and, in that tab, an Azure MCP read that the tenant is the client's.
+11. Optional: `~/.config/ws-guard/production.conf` (production subscriptions and kube contexts), `hard=1` in
     `~/.config/ws-telemetry/budgets.conf`, `bash install.sh --managed`, agent identities (`tmux-level … --agent NAME`
     after logging in under `~/.config/ws-agent/NAME`), `ws-telegram approve pin`, `ws-tools install agent-browser`,
     the Chrome DevTools MCP server (`ws-tools install chrome-devtools-mcp`, then
     `bash install.sh --mcp-opt-in chrome-devtools`), and `[interop] appendWindowsPath=false` in `/etc/wsl.conf`.
+
+11. Hardening follow-ups: run `ws-backup --now` once a key exists (`ws-backup-cloud setup`) so the Windows-side
+    mirrors are sealed; `ws-tools install gate` on every machine that pushes lock files or IaC (a push that needs
+    osv-scanner or checkov is blocked without them; `ws.gate.allowNoOsv` and `ws.gate.allowNoCheckov` opt out,
+    logged); `bash install.sh` puts the tmux plugins at their pinned commits (`ws-plugins verify`); add the CI job
+    "Clean install (Ubuntu 24.04)" to the required checks of `main`.
 
 Breaking behaviour changes, each described below:
 
@@ -47,6 +57,19 @@ Breaking behaviour changes, each described below:
 - `ws-kit-update` refuses releases whose tag is not signed by a key in `allowed_signers`.
 
 ### Added
+
+- `ws-restore-lite --mirror PATH [--to DIR]` recovers a file or folder of the Windows-side mirrors: encrypted `.age`
+  copies are decrypted (cloud key from Credential Manager or `--identity`), clear copies of older mirrors are copied;
+  nothing in `~/.claude` is overwritten.
+- `ws-plugins apply|verify|list`: TPM and every tmux plugin pinned by commit in
+  `~/.config/tmux-claude/plugins.lock`; `install.sh` and `ws-update` use it instead of TPM's `install_plugins` and
+  `update_plugins`; `ws-audit` fails when a plugin is off its pin or not in the lock.
+- `~/.local/lib/ws-tools.lock` pins the GitHub binaries ws-tools installs (osv-scanner, tflint, k9s, hadolint,
+  starship, agg, cosign) by version and sha256, and checkov by version; `ws-tools pins` lists them;
+  `ws-tools install gate` installs the git gate's scanners (gitleaks, osv-scanner, checkov).
+- `.github/scripts/bump-pinned.sh <name> [version]`: one command to move a pinned npm package or to finish a
+  Dependabot bump (package-lock, `files/mcp-servers.lock.json`, integrity, AI-BOM, then the three checks).
+- Suites `tests/gate-scanners.sh`, `tests/supply-tools.sh`, `tests/telegram-audit.sh` and `tests/audit-mcp.sh`.
 
 - Governance documents in `docs/governance/`: the AI use policy, the AI bill of materials (models, subagents, MCP
   servers, hooks, external services), the AI incident response playbooks and the review cadence.
@@ -99,10 +122,55 @@ Breaking behaviour changes, each described below:
   SBOM; `release.yml` refuses an unsigned tag and attaches the SBOM to the release. New suites cover the hooks,
   the audit chain, anomalies, approval fatigue, the spend gate, the memory gate, solo mode, the supply chain, kit
   updates, Telegram approvals, backup encryption, the gate's secret scan and Windows interop.
-- ADRs [0016](docs/adr/0016-solo-mode-inside-the-sandbox.md) to [0020](docs/adr/0020-agent-scoped-identities.md).
+- ADRs [0016](docs/adr/0016-solo-mode-inside-the-sandbox.md) to [0021](docs/adr/0021-per-tab-profiles.md).
+- Per-tab profiles (`ws-profile`, [ADR 0021](docs/adr/0021-per-tab-profiles.md)): each tab can run with its own Claude
+  organisation (`~/.claude-profiles/NAME`), Azure tenant and default subscription, gh and kubectl logins
+  (`~/.config/ws-agent/NAME`, the agent identity of the same name) and, by default, its own conversations and no
+  MemPalace. `ws-profile new NAME [--tenant] [--subscription] [--share-with] [--memory off|on|wing:W]` guides each
+  login in a terminal and refuses to run inside Claude; `ws-profile tab NAME` restarts the tab with the profile and
+  starts a new conversation when the conversation store differs; `use`, `project`, `list`, `status`, `show`, `setup`,
+  `remove` (credentials only with the typed name). Precedence for a new tab: project pin > the tab's profile > the
+  default. Menu → Claude → Profile lists the profiles; the bar and `tmux-find` show `⬢label` for a custom one.
+- `~/.local/lib/ws-profile.sh`: the one function that computes a tab's environment (`CLAUDE_CONFIG_DIR`,
+  `AZURE_CONFIG_DIR`, `GH_CONFIG_DIR`, `KUBECONFIG`, `AZURE_TOKEN_CREDENTIALS=AzureCliCredential` for the Azure MCP
+  server, `WS_PROFILE`, `WS_MEMORY`), used by `accounts.sh` for every new shell and typed as
+  `eval "$(ws-profile --export NAME)" &&` by `tmux-level`, `tmux-claude-restart`, `tmux-solo`, `tmux-swarm` and
+  `ws-profile tab`.
+- Profile fence: `claude-resume` starts Claude with `tmux-level --fenced`, a copy of the level settings that denies
+  sandboxed reads and the Read tool on the other profiles' conversations and on every profile's Claude login.
+  `claude-resume --new` starts a new conversation.
+- `ws-audit` pillar «Profiles» (`ws-profile audit`): two profiles with the same tenant and subscription, an isolated
+  profile that links conversations, credentials the sandbox could read, tabs running with a missing profile.
+- `tests/profiles.sh`, profile cases in `tests/guard.sh` and `ws-test` (tab switch, isolation, memory off, label).
 
 ### Changed
 
+- `claude-account` is a wrapper of `ws-profile` (`work` and `personal` are its built-in profiles) with the same
+  commands and messages; its settings moved to `~/.config/ws-profiles/` (`migrate.sh`, idempotent, dry-run aware).
+  `claude-work` and `claude-personal` are shell functions now, next to `claude-as NAME`.
+- MemPalace per profile: `memory-filter.sh` hands nothing to the MemPalace hooks in a tab with `memory=off` and, with
+  `memory=wing:W`, a transcript copy whose cwd files it into wing W; `memory-gate.sh` blocks every MemPalace tool with
+  memory off and forces the wing with `wing:W`. The recall hook is unaffected.
+- `tmux-level --agent NAME` is the credentials-only case of the profile NAME; a level change, a restart and solo mode
+  keep the tab's profile.
+- The Windows-side mirrors (`%UserProfile%\.claude-wsl-backup` from `ws-backup`, `.tmux-resurrect-backup` from
+  `tmux-backup`) are encrypted per file with age to the light backup's keys (WS-SEC-013), stay incremental, and seal
+  the clear copies left by earlier versions; without a key they stay in clear and `ws-audit` fails on it. Expiry in
+  `ws-backup-lite` handles the `.age` copies.
+- The git gate requires osv-scanner on a push that changes a lock file or manifest, and checkov on one that changes
+  Terraform, Bicep, a Dockerfile, a Kubernetes manifest or a CI workflow (WS-SEC-004); `ws-gate bypasses` and
+  `ws-audit` report the new opt-outs.
+- ws-tools installs GitHub binaries at their pinned version and sha256 instead of the latest release checked
+  against its own checksum file, verifies tflint's cosign signature (installing the pinned cosign first) and fails
+  closed; `WS_TOOLS_ALLOW_UNVERIFIED=1` overrides, logged and audited (WS-SEC-016).
+- Telegram approvals, denials, PIN checks and ▶ Run commands (redacted) are recorded in the audit hash chain as
+  `telegram` events (WS-SEC-011). ▶ Run stays refused in solo tabs, now with the reason in the code.
+- `ws-audit` fails on a registered MCP server (user, local or approved project scope, both accounts) that is not in
+  `files/mcp-servers.json`, and reads the kit's drop-in `managed-settings.d/50-ws-kit.json` next to
+  `managed-settings.json` (valid, root-owned, floor intact, guard current) (WS-AI-010, WS-AI-002).
+- The Azure MCP server moves to `@azure/mcp` 4.0.0-beta.9 (supersedes Dependabot's bump): there is still no stable
+  4.x, and the reason is recorded in the lock.
+- CI: the "Clean install (Ubuntu 24.04)" job is no longer `continue-on-error` (WS-SEC-017).
 - **Breaking: the user settings are strict.** `sandbox.excludedCommands` moved from `settings.json` to
   `~/.config/claude-levels/normal-adds.json`; the normal level is `claude-resume --settings normal.json` on top of
   every settings source, every kit launcher starts at normal, and a `claude` typed by hand runs with no exclusions
@@ -156,6 +224,13 @@ Breaking behaviour changes, each described below:
 
 ### Fixed
 
+- `ws-restore-lite --test` ended silently (no FAIL line, no verdict) on a backup without `~/.claude/projects`.
+- `ws-test` read the machine's `/tmp/claude-burn-<uid>/limits` (your real plan usage) in its Telegram alert case, so
+  "alerts are not repeated" failed whenever your weekly usage was at 90 %; `ws-telegram` now honours `WS_BURN_DIR`
+  like `statusline.sh`, and the test points it at its own folder.
+- Stale comments in `ws-runtime-gate.sh` (ws-anomaly also counts denials and sandbox hits) and `ws-telegram` (solo
+  runs inside the sandbox).
+
 - `ws-restore-lite` could not extract an encrypted (`.age`) backup; it now also reads the cloud key from the Credential
   Manager when `--identity` is not given.
 - `export.sh` deleted `files/mcp-servers.lock.json` and `files/etc/` and replaced the kit's MCP definitions with the
@@ -165,6 +240,14 @@ Breaking behaviour changes, each described below:
 
 ### Security
 
+- Profiles: `~/.claude-profiles/*/.credentials.json` denied to sandboxed reads (glob, which Claude Code expands on
+  Linux, plus literal paths in every tab's fence), to the Read tool and in the guard's credential list (glob lines
+  expanded per call); the profiles' az, gh and kube folders live under `~/.config/ws-agent`, denied as a whole. The
+  guard blocks, in a custom profile's tab, changing `CLAUDE_CONFIG_DIR`, the credential variables or
+  `AZURE_TOKEN_CREDENTIALS`, `env -i`, `az login|logout`, `gh auth login|logout|switch|refresh|setup-git` and
+  `claude auth login|logout|setup-token`; in every tab, `WS_PROFILE`/`WS_MEMORY` and the `ws-profile` and
+  `claude-account` commands that switch or create profiles; `~/.config/ws-profiles`, the profiles' Claude settings
+  and `~/.local/lib/ws-profile.sh` are hard-protected (and Edit-denied in `settings.json` and the managed policy).
 - Security model, residual risks and the agentic (ASI01–ASI10) cross-reference updated in
   [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) and [SECURITY.md](SECURITY.md).
 

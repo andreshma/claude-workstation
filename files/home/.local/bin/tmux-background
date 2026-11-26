@@ -3,7 +3,7 @@
 # tmux-background — maintains the status bar and runs the background tasks. tmux-watch calls it on every bar refresh.
 #   Always (cheap, tmux options only):
 #     · each tab's Claude state with its time (tmux-status --all)
-#     · tab label, recording ⏺ and CI/PR in the tab formats
+#     · tab label, recording ⏺, CI/PR and the custom profile (⬢label, ws-profile) in the tab formats
 #     · your personal segments in status-right, each one ONCE: ~/.config/ws-local/bar-extra.conf
 #       (one line per segment, e.g. #(~/.local/bin/ws-cache 30 ~/path/my-segment.sh); «# » = comment).
 #       That file is personal: it does not go into the team kit. It survives theme changes and config reloads.
@@ -30,6 +30,10 @@ bar() {
   done
   for o in window-status-format window-status-current-format; do   # 🔒/🔓 of the protection level (patch 59)
     [[ "$(tmux show -gv "$o" 2>/dev/null)" == *"@clevel_ico"* ]] || tmux set -ag "$o" '#{?@clevel_ico, #{@clevel_ico},}'
+  done
+  for o in window-status-format window-status-current-format; do   # the tab's custom profile (ws-profile, ADR-021)
+    [[ "$(tmux show -gv "$o" 2>/dev/null)" == *"@cprofile_label"* ]] \
+      || tmux set -ag "$o" '#{?@cprofile_label, #[fg=#{?@cprofile_colour,#{@cprofile_colour},colour214}]⬢#{@cprofile_label}#[fg=default],}'
   done
   # In focus mode the bar is minimal on purpose; on leaving, the previous one is restored (with your segments).
   [[ -f "$EXTRA" && -z "$(tmux show -gqv @focus_end 2>/dev/null)" ]] || return 0

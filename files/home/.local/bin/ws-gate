@@ -11,7 +11,7 @@
 #   ws-gate repo [folder]         full report of the repo in Markdown (prints the path)
 #   ws-gate repo-view [folder]    same, and opens it in less (used by the menu, Q)
 #   ws-gate bypasses [folder]     repos under the folder (default $REPOS and ~/code) where the gate does not run in
-#                                 full: a local core.hooksPath, ws.gate.skip or ws.gate.allowNoGitleaks (ws-audit)
+#                                 full: a local core.hooksPath, ws.gate.skip or a ws.gate.allowNo* opt-out (ws-audit)
 #
 # Per-repo configuration (git config):
 #   ws.gate.skip       comma-separated list: lint,size,osv,checkov,tflint,clippy,msg
@@ -19,9 +19,13 @@
 #   ws.gate.strict     true so that checkov and tflint also block on pre-push
 #   ws.gate.allowNoGitleaks  true to commit without gitleaks installed (each such commit is logged in
 #                      ~/.local/state/ws-gate/opt-outs.log); without it, a missing gitleaks blocks the commit
+#   ws.gate.allowNoOsv       the same for osv-scanner on a push that changes a lock file or manifest
+#   ws.gate.allowNoCheckov   the same for checkov on a push that changes Terraform, Bicep, a Dockerfile, a
+#                      Kubernetes manifest or a CI workflow
 # If the repo has a .pre-commit-config.yaml, its lint rules and only secrets and size are checked here.
-# The secret scan is mandatory (ADR 0013): gitleaks missing = commit blocked. The other tools that are not
-# installed are skipped with a warning (ws-tools installs them).
+# The secret scan is mandatory (ADR 0013): gitleaks missing = commit blocked. osv-scanner and checkov are mandatory
+# only when the push has files they apply to (WS-SEC-004): missing = push blocked, unless the opt-out above. The other
+# tools that are not installed are skipped with a warning. ws-tools install gate installs the three, pinned.
 set -uo pipefail
 MAX_MB=5
 RED=$'\033[31m'; YEL=$'\033[33m'; DIM=$'\033[2m'; RST=$'\033[0m'
@@ -40,12 +44,37 @@ opt_out() {
 }
 
 #######################################
+# A scanner the push needs is not installed (WS-SEC-004): blocks, unless the repo opted out with ws.gate.<opt>,
+# which warns and is logged like allowNoGitleaks. Arguments: tool, opt-out key, what was not checked, repo.
+#######################################
+missing_tool() {
+  if [[ "$(git config --type=bool --get "ws.gate.$2" 2>/dev/null)" == true ]]; then
+    wrn "no $1: $3 were NOT checked (ws.gate.$2 is set; logged)"
+    opt_out "$2" "$4"
+  else
+    err "$1 is missing, so $3 cannot be checked: ws-tools install $1 (or ws-tools install gate)"
+    note "only if you must push without it in this repo: git config ws.gate.$2 true (logged)"
+  fi
+}
+
+# applies_iac <file> — a file checkov must see: Terraform, Bicep, a Dockerfile, a CI workflow or a Kubernetes manifest.
+applies_iac() {
+  case "$1" in
+    *.tf|*.bicep|*Dockerfile*|*.dockerfile|*Containerfile*|.github/workflows/*.yml|.github/workflows/*.yaml) return 0 ;;
+    .gitlab-ci.yml|azure-pipelines.yml|azure-pipelines.yaml) return 0 ;;
+    *.yml|*.yaml) [[ -f "$2" ]] && grep -qE '^apiVersion:' "$2" 2>/dev/null && grep -qE '^kind:' "$2" 2>/dev/null ;;
+    *) return 1 ;;
+  esac
+}
+
+#######################################
 # Lists the repositories under the given folders where the gate does not run in full: a repository-local
-# core.hooksPath (it replaces the global dispatcher), ws.gate.skip or ws.gate.allowNoGitleaks.
+# core.hooksPath (it replaces the global dispatcher), ws.gate.skip or a scanner opt-out (ws.gate.allowNoGitleaks,
+# allowNoOsv, allowNoCheckov).
 # Arguments: folders (default: $REPOS and ~/code). Outputs: "repo<TAB>finding" lines. Returns: 1 if any.
 #######################################
 bypasses() {
-  local d g r hp found=0 global; global="$(git config --global --get core.hooksPath 2>/dev/null)"
+  local d g r hp o found=0 global; global="$(git config --global --get core.hooksPath 2>/dev/null)"
   (( $# )) || set -- ${REPOS:+"$REPOS"} "$HOME/code"
   for d in "$@"; do
     [[ -d "$d" ]] || continue
@@ -57,8 +86,10 @@ bypasses() {
       fi
       hp="$(git -C "$r" config --get ws.gate.skip 2>/dev/null)"
       [[ -n "$hp" ]] && { printf '%s\tws.gate.skip=%s\n' "$r" "$hp"; found=1; }
-      [[ "$(git -C "$r" config --type=bool --get ws.gate.allowNoGitleaks 2>/dev/null)" == true ]] \
-        && { printf '%s\tws.gate.allowNoGitleaks=true\n' "$r"; found=1; }
+      for o in allowNoGitleaks allowNoOsv allowNoCheckov; do
+        [[ "$(git -C "$r" config --type=bool --get "ws.gate.$o" 2>/dev/null)" == true ]] \
+          && { printf '%s\tws.gate.%s=true\n' "$r" "$o"; found=1; }
+      done
     done < <(find "$d" -maxdepth 3 -name .git \( -type d -o -type f \) 2>/dev/null | sort)
   done
   return "$found"
@@ -159,7 +190,7 @@ pre_push() {
 
   local locks=() f
   for f in "${changed[@]}"; do
-    case "${f##*/}" in package-lock.json|pnpm-lock.yaml|yarn.lock|requirements*.txt|poetry.lock|uv.lock|Pipfile.lock|Cargo.lock|packages.lock.json|go.sum|composer.lock|Gemfile.lock)
+    case "${f##*/}" in package-lock.json|pnpm-lock.yaml|yarn.lock|bun.lock|requirements*.txt|poetry.lock|uv.lock|Pipfile.lock|pdm.lock|Cargo.lock|packages.lock.json|go.sum|go.mod|composer.lock|Gemfile.lock|pom.xml|gradle.lockfile|pubspec.lock|mix.lock)
       [[ -f "$r/$f" ]] && locks+=(-L "$r/$f") ;; esac
   done
   if (( ${#locks[@]} )) && ! skip osv; then
@@ -170,12 +201,16 @@ pre_push() {
       local n; n="$(jq -r '[.results[]?.packages[]?.vulnerabilities[]?] | length' <<<"$js" 2>/dev/null)"
       if awk -v m="${max:-0}" 'BEGIN { exit !(m >= 9.0) }'; then err "osv-scanner: $n vulnerabilities, at least one CRITICAL (CVSS ${max})"
       elif (( ${n:-0} > 0 )); then wrn "osv-scanner: $n vulnerabilities (max CVSS ${max}); review them before the PR"; fi
-    else wrn "no osv-scanner: dependencies were not checked"; fi
+    else missing_tool osv-scanner allowNoOsv "the dependencies of this push" "$r"; fi
   fi
 
-  local iac=() dirs=()
+  # iac: what checkov scans (every YAML too, as before); needs: whether the push has a file checkov applies to.
+  local iac=() dirs=() needs=0
   for f in "${changed[@]}"; do
-    case "$f" in *.tf|*.bicep|*Dockerfile*|*.dockerfile|*.yaml|*.yml) [[ -f "$r/$f" ]] && iac+=("$r/$f") ;; esac
+    case "$f" in
+      *.tf|*.bicep|*Dockerfile*|*.dockerfile|*Containerfile*|*.yaml|*.yml) [[ -f "$r/$f" ]] && iac+=("$r/$f") ;;
+    esac
+    applies_iac "$f" "$r/$f" && needs=1
   done
   if (( ${#iac[@]} )) && ! skip checkov; then
     if has checkov; then
@@ -185,7 +220,8 @@ pre_push() {
         printf '%s\n' "$out" | grep -E 'Check:|FAILED|File:' | head -30 >&2
         if [[ "$strict" == true ]]; then err "checkov: findings in IaC"; else wrn "checkov: findings in IaC"; fi
       fi
-    else note "no checkov: IaC was not checked"; fi
+    elif (( needs )); then missing_tool checkov allowNoCheckov "the IaC, container and workflow files of this push" "$r"
+    else note "no checkov: the YAML files were not checked"; fi
   fi
 
   mapfile -t dirs < <(for f in "${changed[@]}"; do [[ "$f" == *.tf ]] && dirname "$r/$f"; done | sort -u)
@@ -237,7 +273,7 @@ case "${1:-}" in
   bypasses)   shift; bypasses "$@"; exit $? ;;
   repo-view)  echo "Reviewing $(basename "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")…"
               f="$(repo_report "${2:-}")" || { read -rsn1; exit 1; }; less -R "$f"; exit 0 ;;
-  *) sed -n '3,26p' "$0"; exit 2 ;;
+  *) sed -n '3,28p' "$0"; exit 2 ;;
 esac
 if (( fail )); then printf '%sGate: blocked. Fix what is marked with ✖ (or git config ws.gate.skip …).%s\n' "$RED" "$RST" >&2; exit 1; fi
 (( warn )) && printf '%sGate: passes with warnings.%s\n' "$YEL" "$RST" >&2

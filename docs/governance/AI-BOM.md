@@ -117,7 +117,7 @@ by `untrusted-content.sh` (WS-AI-001).
 | `mempalace` | stdio | `@WINHOME@/.local/bin/mempalace-mcp.exe` | sha256 pinned on first registration (`~/.local/share/ws-kit/mcp-trust.tsv`) | No | 15 |
 | `recall` | stdio | `@WINHOME@/source/repos/recall/.venv/Scripts/python.exe -I -m recall mcp` | sha256 pinned on first registration (`~/.local/share/ws-kit/mcp-trust.tsv`) | No | 0 |
 | `microsoft-learn` | http | `https://learn.microsoft.com/api/mcp` | URL only (server side) | No | 0 |
-| `azure` | stdio | `@HOME@/.local/share/ws-kit/npm/azure-mcp/node_modules/.bin/azmcp server start` | `@azure/mcp@4.0.0-beta.7`, npm sha512 in the lock (prerelease) | No | 31 |
+| `azure` | stdio | `@HOME@/.local/share/ws-kit/npm/azure-mcp/node_modules/.bin/azmcp server start` | `@azure/mcp@4.0.0-beta.9`, npm sha512 in the lock (prerelease) | No | 31 |
 | `ms-release-comms` | http | `https://www.microsoft.com/releasecommunications/mcp` | URL only (server side) | No | 0 |
 | `chrome-devtools` | stdio | `@HOME@/.local/share/ws-kit/npm/chrome-devtools-mcp/node_modules/.bin/chrome-devtools-mcp --isolated --no-usage-statistics --no-performance-crux --redact-network-headers` | `chrome-devtools-mcp@1.14.0`, npm sha512 in the lock | Yes | 0 |
 <!-- ai-bom:end mcp -->
@@ -147,7 +147,7 @@ npm packages the kit pins and installs with `ws-pinned` (`ws-tools install agent
 | Package folder | Package and version | Lock | Used as |
 |---|---|---|---|
 | `agent-browser` | `agent-browser@0.44.0` | `files/home/.local/lib/ws-npm/agent-browser/package-lock.json` | CLI tool |
-| `azure-mcp` | `@azure/mcp@4.0.0-beta.7` | `files/home/.local/lib/ws-npm/azure-mcp/package-lock.json` | MCP server `azure` |
+| `azure-mcp` | `@azure/mcp@4.0.0-beta.9` | `files/home/.local/lib/ws-npm/azure-mcp/package-lock.json` | MCP server `azure` |
 | `chrome-devtools-mcp` | `chrome-devtools-mcp@1.14.0` | `files/home/.local/lib/ws-npm/chrome-devtools-mcp/package-lock.json` | MCP server `chrome-devtools` |
 <!-- ai-bom:end tools -->
 

@@ -3,7 +3,10 @@
 # tests/backup-encryption.sh — light backups encrypted by default and Windows-side copies that expire (WS-SEC-013),
 # in a temporary HOME: with only the cloud key the backup is .age and opens with it, with no key it is made in clear
 # with a warning and logged UNENCRYPTED, ws-restore-lite --test opens an encrypted one, and the expiry pass deletes
-# old copies whose original is gone while keeping current ones, the newest tmux save and last.txt.
+# old copies whose original is gone while keeping current ones, the newest tmux save and last.txt. ws-restore-lite
+# --test reports a backup without conversations instead of exiting silently. The Windows-side mirrors (ws-backup,
+# tmux-backup) are in clear without a key and encrypted per file with one, clear copies are sealed, the copy stays
+# incremental, ws-restore-lite --mirror restores old clear and new encrypted mirrors, and expiry handles .age copies.
 #
 # Usage: bash tests/backup-encryption.sh      (exit 0 = all OK; the encryption cases need age, else they are skipped)
 set -uo pipefail
@@ -73,6 +76,63 @@ bash "$B/ws-backup-lite" --prune-copies
 check "the newest tmux save stays even when it is old" test -e "$W/.tmux-resurrect-backup/tmux_resurrect_60.txt"
 check "WS_BACKUP_COPY_DAYS=0 turns the expiry off" bash -c "WS_BACKUP_COPY_DAYS=0 bash '$B/ws-backup-lite' --prune-copies && test -e '$W/.tmux-resurrect-backup/tmux_resurrect_60.txt'"
 check "the expiry is logged" grep -q 'expired' "$HOME/.local/state/ws-backup-lite.log"
+
+echo "4) ws-restore-lite --test on a backup without conversations"
+mkdir -p "$T/noproj/.local/share/tmux/resurrect" "$T/noproj/inventory"
+printf 'window\t0\n' > "$T/noproj/.local/share/tmux/resurrect/last"; echo vim > "$T/noproj/inventory/apt-manual.txt"
+tar -C "$T/noproj" -cf - .local inventory | gzip > "$T/claude-lite-noproj.tar.gz"
+bash "$B/ws-restore-lite" --test "$T/claude-lite-noproj.tar.gz" > "$T/np.out" 2>&1; rc=$?
+check "it says why it fails (no silent exit under set -e)" grep -q 'FAIL.*contains no conversations' "$T/np.out"
+check "  it still checks the rest of the backup" grep -q 'saved tabs' "$T/np.out"
+check "  and gives a verdict with exit 1" bash -c "grep -q '1 failed' '$T/np.out' && test $rc -eq 1"
+
+echo "5) the Windows-side mirrors (ws-backup, tmux-backup)"
+M="$T/mw"; mkdir -p "$M" "$HOME/.claude/audit"; echo '{"ev":"start"}' > "$HOME/.claude/audit/2026-01-01.jsonl"
+mkdir -p "$HOME/.local/lib"; cp "$ROOT/files/home/.local/lib/ws-mirror.sh" "$HOME/.local/lib/"
+for f in 2026-01-01T10 2026-01-02T10; do echo "window $f" > "$HOME/.local/share/tmux/resurrect/tmux_resurrect_$f.txt"; done
+ln -sf "$HOME/.local/share/tmux/resurrect/tmux_resurrect_2026-01-02T10.txt" "$HOME/.local/share/tmux/resurrect/last"
+mirror() { WS_BACKUP_WINHOME="$M" bash "$B/ws-backup" --now; }
+tbackup() { WS_BACKUP_WINHOME="$M" WS_TMUX_BACKUP_NO_CHAIN=1 bash "$B/tmux-backup"; }
+mv "$HOME/.config/ws-backup" "$T/keys.off"; mkdir -p "$HOME/.config/ws-backup"
+mirror
+check "without a key the conversation mirror is in clear (as before)" test -f "$M/.claude-wsl-backup/projects/-repo/c1.jsonl"
+check "  and the state says UNENCRYPTED" grep -q 'claude-wsl-backup UNENCRYPTED' "$HOME/.local/state/ws-backup-mirror.state"
+check "an old clear mirror restores with --mirror" bash -c "bash '$B/ws-restore-lite' --mirror '$M/.claude-wsl-backup/projects' --to '$T/r0' && cmp '$T/r0/projects/-repo/c1.jsonl' '$HOME/.claude/projects/-repo/c1.jsonl'"
+rm -rf "$HOME/.config/ws-backup"; mv "$T/keys.off" "$HOME/.config/ws-backup"
+if command -v age >/dev/null && [[ -s "$HOME/.config/ws-backup/cloud-recipient" ]]; then
+  mirror
+  check "with the key the next run encrypts (WS-SEC-013)" test -f "$M/.claude-wsl-backup/projects/-repo/c1.jsonl.age"
+  check "  the clear copy is removed" not test -e "$M/.claude-wsl-backup/projects/-repo/c1.jsonl"
+  check "  no clear file is left anywhere in the mirror" bash -c "! find '$M/.claude-wsl-backup' -type f ! -name '*.age' ! -name '.*' | grep -q ."
+  check "  the audit log is mirrored too" test -f "$M/.claude-wsl-backup/audit/2026-01-01.jsonl.age"
+  check "  the copy opens with the cloud key" bash -c "age -d -i '$T/cloud.key' '$M/.claude-wsl-backup/projects/-repo/c1.jsonl.age' | cmp - '$HOME/.claude/projects/-repo/c1.jsonl'"
+  check "  and keeps the original's mtime" test "$(stat -c %Y "$M/.claude-wsl-backup/projects/-repo/c1.jsonl.age")" -eq "$(stat -c %Y "$HOME/.claude/projects/-repo/c1.jsonl")"
+  check "  the state says encrypted" bash -c "tail -1 '$HOME/.local/state/ws-backup-mirror.state' | grep -q ' encrypted$'"
+  echo orphan > "$M/.claude-wsl-backup/projects/-repo/left.jsonl"; rm -f "$M/.claude-wsl-backup/.mode"
+  mirror
+  check "a clear copy left by an earlier version is sealed in place" bash -c "test -f '$M/.claude-wsl-backup/projects/-repo/left.jsonl.age' && ! test -e '$M/.claude-wsl-backup/projects/-repo/left.jsonl'"
+  i1="$(stat -c %i "$M/.claude-wsl-backup/projects/-repo/c1.jsonl.age")"; mirror
+  check "an unchanged conversation is not encrypted again (incremental)" test "$(stat -c %i "$M/.claude-wsl-backup/projects/-repo/c1.jsonl.age")" = "$i1"
+  echo '{"type":"assistant"}' >> "$HOME/.claude/projects/-repo/c1.jsonl"; touch -d '+1 minute' "$HOME/.claude/projects/-repo/c1.jsonl"; mirror
+  check "a conversation that grew is encrypted again" bash -c "age -d -i '$T/cloud.key' '$M/.claude-wsl-backup/projects/-repo/c1.jsonl.age' | grep -q assistant"
+  check "the 15-minute limit still applies without --now" bash -c "touch '$M/.claude-wsl-backup/.last'; echo x >> '$HOME/.claude/projects/-repo/c1.jsonl'; touch -d '+2 minutes' '$HOME/.claude/projects/-repo/c1.jsonl'; WS_BACKUP_WINHOME='$M' bash '$B/ws-backup'; ! age -d -i '$T/cloud.key' '$M/.claude-wsl-backup/projects/-repo/c1.jsonl.age' | grep -qx x"
+  tbackup
+  check "tmux-backup encrypts the tmux saves" bash -c "test -f '$M/.tmux-resurrect-backup/tmux_resurrect_2026-01-01T10.txt.age' && test -f '$M/.tmux-resurrect-backup/last.txt.age'"
+  check "  last.txt is the save last points to" bash -c "age -d -i '$T/cloud.key' '$M/.tmux-resurrect-backup/last.txt.age' | grep -q 2026-01-02T10"
+  check "  and nothing tmux saved is left in clear" bash -c "! find '$M/.tmux-resurrect-backup' -type f -name '*.txt' | grep -q ."
+  check "ws-restore-lite --mirror decrypts a conversation folder" bash -c "bash '$B/ws-restore-lite' --mirror '$M/.claude-wsl-backup/projects/-repo' --to '$T/r1' --identity '$T/cloud.key' && grep -q assistant '$T/r1/-repo/c1.jsonl'"
+  check "  and a tmux save, with the key from Credential Manager" bash -c "bash '$B/ws-restore-lite' --mirror '$M/.tmux-resurrect-backup' --to '$T/r2' && grep -q 2026-01-02T10 '$T/r2/.tmux-resurrect-backup/last.txt'"
+  check "  without overwriting what is already there" bash -c "echo mine > '$T/r1/-repo/c1.jsonl'; bash '$B/ws-restore-lite' --mirror '$M/.claude-wsl-backup/projects/-repo' --to '$T/r1' --identity '$T/cloud.key'; grep -qx mine '$T/r1/-repo/c1.jsonl'"
+  age-keygen -o "$T/other.key" 2>/dev/null
+  check "  a key it was not encrypted to fails with exit 1" not bash "$B/ws-restore-lite" --mirror "$M/.claude-wsl-backup/projects/-repo" --to "$T/r3" --identity "$T/other.key"
+  rm -f "$HOME/.claude/projects/-repo/left.jsonl"; touch -d '40 days ago' "$M/.claude-wsl-backup/projects/-repo/left.jsonl.age"
+  for d in 50 3; do f="$M/.tmux-resurrect-backup/tmux_resurrect_old$d.txt.age"; echo x > "$f"; touch -d "$d days ago" "$f"; done
+  WS_BACKUP_WINHOME="$M" bash "$B/ws-backup-lite" --prune-copies
+  check "expiry removes an old encrypted copy whose original is gone" not test -e "$M/.claude-wsl-backup/projects/-repo/left.jsonl.age"
+  check "  and keeps an encrypted copy whose original exists" test -e "$M/.claude-wsl-backup/projects/-repo/c1.jsonl.age"
+  check "  old encrypted tmux saves expire, recent ones stay" bash -c "! test -e '$M/.tmux-resurrect-backup/tmux_resurrect_old50.txt.age' && test -e '$M/.tmux-resurrect-backup/tmux_resurrect_old3.txt.age'"
+  check "  last.txt.age stays" test -e "$M/.tmux-resurrect-backup/last.txt.age"
+else skip "age is not installed: the encrypted mirror cases"; fi
 
 printf '\n%d ok, %d failed, %d skipped\n' "$PASS" "$FAIL" "$SKIP"
 (( FAIL == 0 ))

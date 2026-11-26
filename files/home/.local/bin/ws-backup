@@ -1,10 +1,22 @@
 #!/usr/bin/env bash
 #
-# ws-backup — copies Claude's conversations (~/.claude/projects) and the audit log
-# (~/.claude/audit) to Windows. Incremental, deletes nothing at the destination; at most every 15 minutes.
+# ws-backup — copies Claude's conversations (~/.claude/projects) and the audit log (~/.claude/audit) to Windows
+# (%UserProfile%\.claude-wsl-backup). Incremental, deletes nothing at the destination; at most every 15 minutes.
+# Encrypted with age per file (<name>.age) to the light backup's keys (WS-SEC-013, ~/.local/lib/ws-mirror.sh); in
+# clear, and reported by ws-audit, only while no key exists (ws-backup-cloud setup). Restore: ws-restore-lite --mirror.
 # Called by tmux-backup after every tmux-resurrect save.
-dst=@WINHOME@/.claude-wsl-backup
+# Usage: ws-backup [--now]   (--now ignores the 15-minute limit) · WS_BACKUP_WINHOME overrides the Windows profile.
+set -uo pipefail
+umask 077
+dst="${WS_BACKUP_WINHOME:-@WINHOME@}/.claude-wsl-backup"
 stamp="$dst/.last"
-if [ -f "$stamp" ] && [ $(( $(date +%s) - $(stat -c %Y "$stamp") )) -lt 900 ]; then exit 0; fi
-mkdir -p "$dst" && rsync -a ~/.claude/projects ~/.claude/audit "$dst/" 2>/dev/null && touch "$stamp"
+if [[ "${1:-}" != --now && -f "$stamp" ]] && (( $(date +%s) - $(stat -c %Y "$stamp") < 900 )); then exit 0; fi
+# shellcheck source=/dev/null
+source "$HOME/.local/lib/ws-mirror.sh" 2>/dev/null || exit 0
+mkdir -p "$dst" || exit 0
+mirror_init
+rc=0
+for d in projects audit; do mirror_tree "$HOME/.claude/$d" "$dst/$d" || rc=1; done
+mirror_done "$dst"
+(( rc == 0 )) && touch "$stamp"
 exit 0
