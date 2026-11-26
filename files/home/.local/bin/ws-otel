@@ -38,6 +38,7 @@ import signal
 import subprocess  # nosec B404 — only to relaunch itself in the background
 import sys
 import time
+import zlib
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -286,9 +287,13 @@ class Receiver(BaseHTTPRequestHandler):
             return self._resp(415, b'{"error":"use OTEL_EXPORTER_OTLP_PROTOCOL=http/json"}')
         try:
             if (self.headers.get("Content-Encoding") or "").lower() == "gzip":
-                raw = gzip.decompress(raw)
+                # Bounded: a small gzip body must not expand into gigabytes (WS-SEC-012).
+                d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                raw = d.decompress(raw, MAX_BODY + 1)
+                if len(raw) > MAX_BODY or d.unconsumed_tail:
+                    return self._resp(413)
             save(flatten(kind, json.loads(raw)))
-        except (ValueError, OSError, EOFError):
+        except (ValueError, OSError, EOFError, zlib.error):
             return self._resp(400)
         self._resp(200)
 

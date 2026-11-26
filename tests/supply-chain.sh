@@ -106,7 +106,10 @@ check "  and the install says why" grep -q 'rogue is not in mcp-servers.lock.jso
 check "the local server is registered and pinned on first use" bash -c "jq -e '.mcpServers.loc' '$H/.claude.json' && grep -q '^loc' '$H/.local/share/ws-kit/mcp-trust.tsv'"
 check "the remote server in the lock is registered" reg microsoft-learn
 if grep -q 'new     chrome-devtools-mcp\|same    chrome-devtools-mcp' "$T/i1.log"; then
-  check "the npm server is registered at the pinned path" bash -c "[[ \$(jq -r '.mcpServers[\"chrome-devtools\"].command' '$H/.claude.json') == '$H/.local/share/ws-kit/npm/chrome-devtools-mcp/node_modules/.bin/chrome-devtools-mcp' ]]"
+  check "the npm server is registered at the pinned path, through ws-mcp-jail (ADR-024)" \
+    jq -e --arg h "$H" '.mcpServers["chrome-devtools"] | .command == ($h + "/.local/bin/ws-mcp-jail")
+      and .args[(.args | index("--")) + 1] == ($h + "/.local/share/ws-kit/npm/chrome-devtools-mcp/node_modules/.bin/chrome-devtools-mcp")' \
+    "$H/.claude.json"
 else skip "npm server install (registry unreachable)"; fi
 printf '#!/bin/sh\n# changed\n' > "$LOC"
 jq 'del(.mcpServers.loc)' "$H/.claude.json" > "$H/c" && mv "$H/c" "$H/.claude.json"
