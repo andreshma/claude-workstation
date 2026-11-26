@@ -205,7 +205,7 @@ check "a profile that is not signed in to Claude is refused" bash -c "grep -q 'b
 : > "$T/tmux.log"
 run env FAKE_PATH="$T/repos/other" ws-profile tab acme %1 >/dev/null 2>&1
 check "work → acme (another store): a NEW conversation, typed after the profile's environment" \
-  grep -qF -- "send-keys -t %1 -l eval \"\$(ws-profile --export acme)\" && claude-resume --new --settings '$T/levels/normal.json'" "$T/tmux.log"
+  grep -qF -- "send-keys -t %1 -l eval \"\$(ws-profile --export acme)\" && WS_LEVEL=normal claude-resume --new --settings '$T/levels/normal.json'" "$T/tmux.log"
 check "…and the tab is marked: @cprofile, its label and colour, @caccount work" bash -c "
   grep -q 'set -w -t @1 @cprofile acme' '$T/tmux.log' && grep -q 'set -w -t @1 @cprofile_label acme' '$T/tmux.log' && grep -q 'set -w -t @1 @cprofile_colour colour214' '$T/tmux.log' && grep -q 'set -w -t @1 @caccount work' '$T/tmux.log'"
 check "…audited" grep -q 'profile-tab|work → acme (new conversation)' "$T/audit.log"
@@ -213,14 +213,14 @@ WP setup personal >/dev/null 2>&1; echo x > "$H/.claude-personal/.credentials.js
 : > "$T/tmux.log"
 run env FAKE_PATH="$T/repos/other" ws-profile tab personal %1 >/dev/null 2>&1
 check "work → personal (shared store): resumes the same conversation, «·P» added" bash -c "
-  grep -qF -- \"send-keys -t %1 -l eval \\\"\\\$(ws-profile --export personal)\\\" && claude-resume --settings '$T/levels/normal.json'\" '$T/tmux.log' && grep -q 'rename-window -t @1 api·P' '$T/tmux.log'"
+  grep -qF -- \"send-keys -t %1 -l eval \\\"\\\$(ws-profile --export personal)\\\" && WS_LEVEL=normal claude-resume --settings '$T/levels/normal.json'\" '$T/tmux.log' && grep -q 'rename-window -t @1 api·P' '$T/tmux.log'"
 : > "$T/tmux.log"
 run env FAKE_PATH="$T/repos/other" FAKE_cprofile=acme FAKE_csolo=1 ws-profile tab work %1 >/dev/null 2>&1
-check "a tab in solo mode stays in solo mode (as claude-account did)" grep -q -- "-l eval .*--export work)\" && claude-resume --new --permission-mode auto --settings" "$T/tmux.log"
+check "a tab in solo mode stays in solo mode (as claude-account did)" grep -q -- "-l eval .*--export work)\" && WS_LEVEL=solo claude-resume --new --permission-mode auto --settings" "$T/tmux.log"
 : > "$T/tmux.log"
 run env FAKE_cprofile=acme tmux-level --command normal "" --pane %1 > "$T/cmd.out"
-check "tmux-level --command … --pane keeps the tab's profile" grep -qF "eval \"\$(ws-profile --export acme)\" && claude-resume --settings" "$T/cmd.out"
-check "tmux-level --command without --pane is unchanged (no prefix)" bash -c "[[ \$(HOME='$H' PATH='$H/.local/bin:$F:/usr/bin:/bin' WS_LEVELS_DIR='$T/levels' tmux-level --command normal) == claude-resume* ]]"
+check "tmux-level --command … --pane keeps the tab's profile" grep -qF "eval \"\$(ws-profile --export acme)\" && WS_LEVEL=normal claude-resume --settings" "$T/cmd.out"
+check "tmux-level --command without --pane is unchanged (no prefix)" bash -c "[[ \$(HOME='$H' PATH='$H/.local/bin:$F:/usr/bin:/bin' WS_LEVELS_DIR='$T/levels' tmux-level --command normal) == WS_LEVEL=normal\ claude-resume* ]]"
 
 echo "8) claude-account is a wrapper"
 run claude-account use personal >/dev/null 2>&1

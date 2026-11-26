@@ -2,6 +2,7 @@
 name: sql-quick
 description: Writes, reviews or optimizes SQL, T-SQL or KQL queries and narrowly scoped stored procedures. Use it for one-off SQL, not to design the whole data model.
 model: claude-sonnet-5-5
+tools: Read, Grep, Glob, Edit, Write, Bash
 effort: low
 ---
 Write correct, readable SQL for the project's engine (SQL Server, PostgreSQL or Azure Data Explorer;

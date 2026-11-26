@@ -1,0 +1,11 @@
+{
+  "_comment": "Network per protection level (WS-SEC-003, ADR-028), read by tmux-level when it generates the full and solo profiles. Keys are Claude Code's sandbox.network settings (code.claude.com/docs/en/sandboxing, verified 2026-11-26): deniedDomains blocks a host for sandboxed commands even inside an allowed wildcard, in every permission mode, and passed with --settings a repository cannot lift it; strictAllowlist (Claude Code 2.1.219 or later) refuses a host outside the allow list instead of prompting. The base settings.json already denies gist.github.com, gist.githubusercontent.com and uploads.github.com at every level. normal adds nothing here; bare has no sandbox. Yours to edit in a plain shell (guard.sh protects this folder from Claude).",
+  "full": {
+    "strictAllowlist": true,
+    "deniedDomains": ["github.com", "api.github.com", "codeload.github.com", "objects.githubusercontent.com"]
+  },
+  "solo": {
+    "strictAllowlist": true,
+    "deniedDomains": ["github.com", "api.github.com"]
+  }
+}

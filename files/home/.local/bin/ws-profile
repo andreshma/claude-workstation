@@ -261,13 +261,13 @@ tab() {
     [[ -n "$(tmux show -wqv -t "$win" @csolo_net)" ]] && sv=solo-net
     [[ -n "$(tmux show -wqv -t "$win" @csolo_nosb)" ]] && sv=solo-unsandboxed
     sp="$(tmux-level --settings-file "$sv" 2>/dev/null)" || sp="$HOME/.config/claude-solo/settings.json"
-    cmd="claude-resume --permission-mode auto --settings '$sp'"
+    cmd="WS_LEVEL=solo claude-resume --permission-mode auto --settings '$sp'"
   else
     lvl="$(tmux show -wqv -t "$win" @clevel)"; [[ "$lvl" == full || "$lvl" == bare ]] || lvl=normal
     cmd="$(tmux-level --command "$lvl" "$path" 2>/dev/null)" || cmd="claude-resume"
   fi
   # Another conversation store: a new conversation, never a resume of what the other profile cannot see.
-  (( resume )) || cmd="${cmd/#claude-resume/claude-resume --new}"
+  (( resume )) || cmd="${cmd/claude-resume/claude-resume --new}"   # after the WS_LEVEL=… prefix
   restart_pane "$pane" "eval \"\$(ws-profile --export $n)\" && $cmd"
   mark_tab "$win" "$n"
   AUDIT_CWD="$path" audit profile-tab "$cur → $n ($([[ $resume == 1 ]] && echo same conversation || echo new conversation))"
