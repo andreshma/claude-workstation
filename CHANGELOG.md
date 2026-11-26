@@ -6,6 +6,30 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- Each tab's own resources in the status bar (ADR 0029): the monitor line (`Ctrl+b v`) starts with `tab N` and the
+  current tab's CPU (% of one core), RAM (PSS), I/O operations and bytes per second, TCP traffic down/up and GPU
+  memory, then `| host` and the whole machine (now with its GPU). One sampler per tmux server (`tmux-res`) walks
+  `/proc` every 2 s and writes window options; the bar only reads them. GPU per tab shows `--` where the driver
+  reports no processes (WSL2/WDDM); UDP/QUIC and Windows processes reached through interop are not attributable and
+  the runbook says so. Menu → Settings: tab resources full/compact/off (`u`) and a CPU glyph after each tab (`i`, off
+  by default); `ws-settings res-mode|res-tabs`, `tmux-res mode|tabs|status|show`.
+- `tmux-fit N -- command`: gives a `#()` segment a fixed width in screen columns (also for your `bar-extra.conf`).
+
+### Changed
+
+- The status bar reads the default Azure subscription from the CLI's profile file (`tmux-az-name`) instead of
+  running `az account show` on every refresh, which started a Python process every 15 s.
+
+### Fixed
+
+- The tab list no longer shifts when values change: tab names are cut and padded, each tab has fixed slots for its
+  state mark and context, the current tab's state text is 18 columns, the traffic light, the subscription and the
+  branch have fixed widths, and the monitor line's numbers and sparklines keep theirs. The other tabs no longer show
+  the subagent count `◆N` (their `●` turns purple; the current tab says "🐝 3 agents").
+- `ws-settings help` printed two lines of code after its usage.
+
 ## [4.0.0] - 2026-11-26
 
 This release hardens the agent against the gaps of the AI and security assessment in `docs/compliance/`. Several

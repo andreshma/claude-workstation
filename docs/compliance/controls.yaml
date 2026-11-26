@@ -2521,8 +2521,8 @@ controls:
   effort: S
 - id: WS-GOV-014
   title: Performance budgets of the interactive path
-  objective: The hooks that run on every tool call and the shell start-up stay within stated budgets, measured by the tests
-    and the audit.
+  objective: The hooks that run on every tool call, the shell start-up and the status bar's per-tab resource sampler stay
+    within stated budgets, measured by the tests and the audit.
   maps_to:
   - WAF-PE:PE:01
   - WAF-PE:PE:04
@@ -2534,10 +2534,20 @@ controls:
   - files/home/.local/bin/ws-audit:997-1003 (terminal start-up under 0.8 s; memory and disk)
   - tests/hook-chain-budget.sh (the whole PreToolUse and PostToolUse chain of settings.json for a Bash and a Read call,
     under 400 ms on average)
+  - tests/tab-resources.sh:190-213 (one tmux-res sample with 40 tabs and 300 processes under 20 ms of CPU, 1 % of a core
+    every 2 s)
+  - files/home/.local/bin/tmux-res:882-928 (the sampler samples nothing without a client, writes only changed and shown
+    options in one tmux call per sample, off-screen tabs every 10 s, never while a menu is open)
+  - 'docs/adr/0029-per-tab-resources-and-fixed-width-status-bar.md (measured on the owner''s machine, WSL2, 20 cores, host
+    load average 7-14: 40 tabs, ~290 processes in them, ~550 on the machine, sampler plus its tmux client 0.7-1.05 % of one
+    core with idle tabs and 1.1-2.0 % with 10 busy tabs, over 120 s each)'
   check:
   - bash tests/guard.sh
   - bash tests/hook-chain-budget.sh
-  gap: Measured on the test machine, not on the owner's (ws-audit reports the start-up time there).
+  - bash tests/tab-resources.sh
+  gap: Measured on the test machine, not on the owner's (ws-audit reports the start-up time there; tmux-res status
+    reports the sampler's own cost). With many busy tabs on a loaded host the sampler goes over 1 % at its 2 s default
+    (@ws_res_interval 3 or 4 brings it under).
   risk: 'low: slow hooks cost time and push the owner towards bare or solo, not a direct security loss.'
   remediation: Keep; a new hook on the interactive path must keep the chain under budget.
   effort: M

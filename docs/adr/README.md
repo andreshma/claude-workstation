@@ -35,6 +35,7 @@ comments and the changelog refer to a record as `ADR-0NN` (for example `ADR-013`
 | [0026](0026-telegram-notification-policy-and-pin-input.md) | Telegram notification policy (approvals, digest, quiet hours) and PIN input that just works | Accepted |
 | [0027](0027-mcp-stdio-policy-filter-and-tool-pinning.md) | A policy filter in the stdio path of every local MCP server, with tool-definition pinning | Accepted |
 | [0028](0028-network-per-level-mcp-egress-and-settings-menu.md) | Network egress per protection level, an egress proxy for jailed MCP servers, and a Settings menu | Accepted |
+| [0029](0029-per-tab-resources-and-fixed-width-status-bar.md) | Per-tab resources from one /proc sampler, and a status bar of fixed-width segments | Accepted |
 
 Records 0001 to 0007 are not in this repository. Its history mentions 0001 to 0006 only as part of a design
 document that was never part of it, and nothing mentions 0007; the code, the changelog and the other documents do not

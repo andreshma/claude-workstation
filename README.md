@@ -49,6 +49,7 @@ terminal does not solve:
 |---|---|
 | You cannot tell which session is waiting for you | The status bar shows each tab's state and for how long (thinking, running a tool, waiting for approval, "👉 waiting for you" when Claude ended its turn asking you something, done). `Ctrl+b a` lists the active tabs across groups; the menu jumps to the next tab that is waiting |
 | Sessions die with the terminal or a reboot | tmux-resurrect and continuum save every minute and on every structural change; Claude resumes its conversation in each restored tab |
+| You cannot tell which session is eating the machine | The monitor line shows the current tab's own CPU, RAM, I/O, TCP traffic and GPU next to the machine's, in fixed-width segments that never shift the tab list |
 | Every task runs on the most expensive model | A routing hook suggests a model per task and asks before switching |
 | Nobody knows what the usage looks like | Local telemetry: cost, tokens, words, API latency and errors, tool and hook timings, CPU, RAM and disk per project, weekly trends and estimation ratios |
 | An agent can run anything | A sandbox, allow/ask/deny rules, a guard hook and a commit gate; protection levels per tab, with a minimum floor that no level turns off |

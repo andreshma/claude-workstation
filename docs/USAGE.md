@@ -539,6 +539,8 @@ the backup key and the Telegram PIN are only typed in a terminal popup.
 | `R` | Secret rotation periods (edit) | `ws-settings rotation`: `name=days` |
 | `n` | Windows notifications: on / off | `ws-settings notify on\|off` |
 | `g`, `v` | Telegram ›; Theme and screensaver › | The Telegram and Appearance submenus |
+| `u` | Tab resources in the status bar: full → compact → off | `ws-settings res-mode full\|compact\|off` (`tmux-res mode`): the current tab's panel on the monitor line, CPU and RAM on the right, or the sampler stopped ([Resources of each tab](#resources-of-each-tab)) |
+| `i` | CPU glyph after each tab: on / off | `ws-settings res-tabs on\|off` (`tmux-res tabs`) |
 | `U` | Update the kit (signed release) | `ws-kit-update` |
 | `A`, `C`, `h` | Audit; Compliance; Health | `ws-audit`; `ws-audit --compliance`; `ws-health` |
 | `s` | All current values | `ws-settings show` |
@@ -552,11 +554,11 @@ watcher's traffic light, the Azure subscription, the git branch and the time.
 
 | Mark | Meaning |
 |---|---|
-| `●` (colored) | Claude's state: blue thinking, orange tool, red needs you, green done, purple subagents. The current tab also shows the label |
-| `◆3` | Three subagents running |
+| `●` (colored) | Claude's state: blue thinking, orange tool, red needs you, green done, purple subagents. The current tab also shows the label (e.g. "🐝 3 agents 4m") |
 | `ctx 62%` / `62%` | Context used |
 | `⏳` | No Claude activity for a while |
-| `!` | Bell: something in the tab asked for attention |
+| `!` | Bell: something in the tab asked for attention (when Claude is not running in it; the tab turns yellow either way) |
+| `▃` (colored) | The tab's CPU, with `tmux-res tabs on` (off by default) |
 | `[Z]` | A pane is zoomed |
 | 🔒 / 🔓 | Protection level `full` / `bare` |
 | 🤖 before the name | Solo mode (🌐🤖 with the network tools, 🔓🤖 without sandbox) |
@@ -596,6 +598,7 @@ asks you to run a command, decide, confirm or provide a value. `WS_YOURTURN=0` t
 | `⏳ 3(12m)` | Tab 3 has had no activity for 12 minutes |
 | `◉ $4.1/h` | Estimated spend of all sessions over the last 10 minutes, at API-equivalent prices. Green, yellow from 5 USD/h, red from 15 |
 | `5h 82%` | Usage limit, when the plan exposes it |
+| `tab CPU  12% RAM   0.4G` | The current tab's own CPU and RAM, when the monitor line is hidden or the mode is `compact` (see below) |
 | Subscription, branch, time | Active Azure subscription, branch of the tab's folder, clock |
 
 Thresholds are tmux options: `@cwatch_remind` (3 min), `@cwatch_stall` (10 min), `@cburn_warn` (5), `@cburn_crit`
@@ -603,6 +606,47 @@ Thresholds are tmux options: `@cwatch_remind` (3 min), `@cwatch_stall` (10 min),
 
 `Ctrl+b v` adds a second line with CPU, RAM and network sparklines, free space on `C:`, spend per hour and the count of
 working, waiting and finished Claude sessions.
+
+### Fixed widths
+
+Every segment keeps its width whatever its value, so the tab list never shifts while numbers change: tab names are cut
+and padded (14 columns, 18 for the current tab), the state mark and the context of each tab have a fixed slot (blank
+when there is nothing), the current tab's state text is 18 columns, the traffic light is `@ws_watch_width` columns (24)
+and the subscription and branch 18 and 16 (`tmux-fit` pads and cuts them by screen columns, emoji count as two). Only
+structural changes move the list: opening or closing a tab, Claude starting or leaving a tab, a label. Your own
+segments in `~/.config/ws-local/bar-extra.conf` can use the same helper: `#(~/.local/bin/tmux-fit 12 -- my-command)`.
+
+### Resources of each tab
+
+The monitor line starts with the **current tab's own** usage, then `| host` and the whole machine:
+
+```
+ tab 12 CPU 123% RAM   1.2G IO 1.2k/s  12M/s NET ↓1.2M ↑ 56K GPU   -- | host GPU  12%  3.6/8G CPU ▁▂▅▇… 43%  RAM …
+```
+
+A tab is a tmux window; its processes are every pane's process and everything they started (a process that outlived
+its parent stays in its tab). One sampler per tmux server (`tmux-res`, started by the bar) reads `/proc` every 2 s; the
+bar only reads what it wrote.
+
+| Field | What it is |
+|---|---|
+| `CPU` | % of **one** core (100 % = one core busy; up to 2000 % on 20 cores, shown capped at 999 %). Yellow from 80 %, red from 150 % |
+| `RAM` | PSS in GiB: shared memory is split between the processes that share it, so tabs add up to the real use. Yellow from 4 GiB, red from 8 GiB |
+| `IO` | read and write system calls per second (files, but also pipes, terminals and sockets: Linux has no per-process disk operation count), then bytes per second the Linux disk read or wrote. Files under `/mnt/c` are not disk bytes for Linux (they go to Windows): they show only as operations |
+| `NET ↓ ↑` | TCP bytes per second received and sent by the tab's sockets, loopback left out. UDP and QUIC are not counted |
+| `GPU` | GPU memory of the tab's processes when the driver reports them (native Linux). Under WSL2 it never does: `--`, and the GPU of the whole machine is after `host` |
+
+Not attributable to a tab: Windows processes reached through interop (an `.exe` MCP server, `pwsh.exe`): only the
+Linux side is counted, and their CPU and memory are in Windows. A tab's usage is that of its processes, not of the
+machine: the machine numbers are always after `host`.
+
+| Setting | How |
+|---|---|
+| Panel on the monitor line (default) / compact on the right / off | Menu → Settings → `u`, or `tmux-res mode full\|compact\|off` |
+| CPU glyph after each tab (off by default: with ~40 tabs the list is already wider than the terminal) | Menu → Settings → `i`, or `tmux-res tabs on\|off` |
+| Thresholds | `tmux set -g @ws_res_cpu_warn 80`, `@ws_res_cpu_crit 150` (% of one core), `@ws_res_ram_warn 4`, `@ws_res_ram_crit 8` (GiB) |
+| Sampling | `@ws_res_interval` (2 s), `@ws_res_pss_every` (60 s), `@ws_res_gpu off` (no GPU queries) |
+| All tabs in a table, the sampler and its cost | `tmux-res show`, `tmux-res status` |
 
 ## 8. Finding the tab that needs you
 
