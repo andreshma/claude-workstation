@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- `ws.gate.skip=yaml`: skips only yamllint in a repository whose YAML is a dialect validated by its own CI (a
+  stricter subset parser); shellcheck, ruff and the other linters still run.
 - Each tab's own resources in the status bar (ADR 0029): the monitor line (`Ctrl+b v`) starts with `tab N` and the
   current tab's CPU (% of one core), RAM (PSS), I/O operations and bytes per second, TCP traffic down/up and GPU
   memory, then `| host` and the whole machine (now with its GPU). One sampler per tmux server (`tmux-res`) walks

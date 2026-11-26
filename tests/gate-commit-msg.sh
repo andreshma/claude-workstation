@@ -107,6 +107,15 @@ CLAUDE_CODE_CHILD_SESSION=1 CLAUDE_CODE_SESSION_ID=s-3 commit "$A" "chore: opted
 check "ws.gate.agentTrailer=false leaves it out" not grep -q '^Agent-Session:' <(body "$A")
 check "  and the opt-out is logged" grep -q 'agentTrailer' "$HOME/.local/state/ws-gate/opt-outs.log"
 
+echo "5) ws.gate.skip=yaml: only yamllint is skipped (a repo whose YAML is a dialect checked by its own CI)"
+Y="$T/yamlrepo"; git init -q "$Y"; git -C "$Y" remote add origin "$T/bare.git"
+printf '#!/bin/sh\necho "syntax error: mapping values are not allowed here"; exit 1\n' > "$B/yamllint"; chmod 755 "$B/yamllint"
+check "a YAML file yamllint rejects blocks the commit" not commit "$Y" "chore: add data" data.yaml
+git -C "$Y" config ws.gate.skip yaml
+check "  and passes with ws.gate.skip=yaml" commit "$Y" "chore: add data" data.yaml
+check "  while a shell script is still linted (shellcheck finding blocks)" not commit "$Y" "chore: add script" run.sh
+rm -f "$B/yamllint"
+
 REAL_SC="$(PATH="${PATH#"$B:"}" command -v shellcheck || true)"
 [[ -n "$REAL_SC" ]] && check "shellcheck ws-gate" "$REAL_SC" -S warning "$ROOT/files/home/.local/bin/ws-gate"
 

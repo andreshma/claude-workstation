@@ -1509,7 +1509,7 @@ The other `WS_*` variables follow the same pattern: the Spanish word became its 
 | A command prints "was renamed to …" or is not found after upgrading to 3.0 | Use the new name and the new subcommand or option: [Upgrading from 2.x names](#18-upgrading-from-2x-names) |
 | Prompts typed in Spanish are no longer routed or detected | `ws-lang es` ([Language](#15-language)) |
 | `export.sh` refuses because of "possible secrets" | Move the secret to a vault; a detection pattern goes in `secrets-allow.txt` after review |
-| The gate blocks a commit | Fix what is marked; per repository, from your own shell: `git config ws.gate.skip …` |
+| The gate blocks a commit | Fix what is marked; per repository, from your own shell: `git config ws.gate.skip …` (`lint,size,osv,checkov,tflint,clippy,msg,yaml`; `yaml` skips only yamllint, for a repository whose YAML is a dialect its own CI validates) |
 | Claude reports a read-only file system | That is the sandbox; run the command yourself or add a justified exclusion |
 | Open tabs do not send OpenTelemetry data | Export starts when Claude starts: restart the tab (`tmux-claude-restart --all`) |
 | WSL is damaged | New Ubuntu → `install.sh` → `ws-restore-lite --restore` → logins |

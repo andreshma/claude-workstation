@@ -15,7 +15,8 @@
 #                                 full: a local core.hooksPath, ws.gate.skip or a ws.gate.allowNo* opt-out (ws-audit)
 #
 # Per-repo configuration (git config):
-#   ws.gate.skip       comma-separated list: lint,size,osv,checkov,tflint,clippy,msg
+#   ws.gate.skip       comma-separated list: lint,size,osv,checkov,tflint,clippy,msg,yaml (yaml: only yamllint, for
+#                      repos whose YAML is a dialect checked by their own CI; the rest of lint still runs)
 #   ws.gate.allowMain  true to allow a direct push to main/master (e.g. personal repos)
 #   ws.gate.strict     true so that checkov and tflint also block on pre-push
 #   ws.gate.allowNoGitleaks  true to commit without gitleaks installed (each such commit is logged in
@@ -198,7 +199,7 @@ lint_file() {
     *.rs)        has rustfmt && run rustfmt --check --edition 2021 "$f" ;;
     *.tf)        has terraform && run terraform fmt -check -diff "$f" ;;
     *.json)      run jq empty "$f" ;;
-    *.yml|*.yaml) has yamllint && run yamllint -d relaxed --no-warnings "$f" ;;
+    *.yml|*.yaml) skip yaml || { has yamllint && run yamllint -d relaxed --no-warnings "$f"; } ;;
   esac
   case "$base" in
     Dockerfile|Dockerfile.*|*.dockerfile|Containerfile)
