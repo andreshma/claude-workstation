@@ -223,6 +223,10 @@ check "res-tabs on is saved"                      bash -c "$(declare -f ws); ws 
 check "an unknown mode is refused"                bash -c "$(declare -f ws); ws res-mode loud; [[ \$? == 2 ]]"
 check "show lists both values"                    bash -c "$(declare -f ws); ws show | grep -q 'resmode *compact' && ws show | grep -q 'restabs *on'"
 check "the change is in the audit log"            grep -rq 'tab resources compact' "$T/audit"
+check "res-interval 3 is saved for tmux-res"      bash -c "$(declare -f ws); ws res-interval 3 && grep -qx res_interval=3 '$HOME/.config/tmux-claude/settings'"
+check "an interval outside 2-5 is refused"        bash -c "$(declare -f ws); ws res-interval 1; [[ \$? == 2 ]]"
+check "show lists the interval"                   bash -c "$(declare -f ws); ws show | grep -q 'resinterval *3'"
+check "the sampler reads the saved interval"      bash -c "XDG_CONFIG_HOME='$HOME/.config' python3 -B -c \"import importlib.machinery as m, importlib.util as u; l=m.SourceFileLoader('r','$R'); s=u.spec_from_loader('r',l); r=u.module_from_spec(s); l.exec_module(r); assert r.config(None)['interval']==3.0\""
 rm -rf "$HOME/.config/tmux-claude/settings" "$HOME/.local/bin" "$HOME/.claude"
 
 echo "== 5. the status path never walks /proc"

@@ -153,7 +153,8 @@ The per-tab panel (monitor line, `Ctrl+b v`) comes from one sampler per tmux ser
 - **Values frozen:** the sampler skips writes while a menu is open and samples nothing while no client is attached;
   if it died, `tmux-res ensure`. A `tmux: …` line in its log is a write tmux refused (a tab closed between two
   samples is normal; anything else, report it).
-- **Too expensive:** `tmux set -g @ws_res_interval 4` halves the cost; `@ws_res_gpu off` stops the GPU queries;
+- **Too expensive:** Menu → Settings → `j` (or `ws-settings res-interval 4`) halves the cost and is saved across tmux
+  restarts (`tmux set -g @ws_res_interval 4` lasts only while the server runs); `@ws_res_gpu off` stops the GPU queries;
   `tmux-res mode off` stops the sampler. Measured with 40 tabs and ~290 processes: see WS-GOV-014 in
   `docs/compliance/controls.yaml`.
 
